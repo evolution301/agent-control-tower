@@ -5,6 +5,34 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.5.1] - 2026-11-04
+
+Three defects found while migrating a live hand-rolled `.agents/` system onto tower.
+
+### Fixed
+
+- **Title lookup created duplicate sessions.** A long-lived desktop host can answer `session/list`
+  with empty `projections.rows`, so no title was visible and `auto` fell through to
+  `session/create`, producing a second session with the same title. The lookup now falls back to the
+  on-disk projection cache (`~/.dsh/storages/session_projcache/sessions/*.json` ->
+  `record.rows.title.val`), which keeps titles the RPC row does not carry. An RPC title still wins.
+- **`tower role list` crashed on a GBK console.** A charter copied from an editor carries a UTF-8 BOM
+  and a markdown heading; both reached `description` and `UnicodeEncodeError` killed the command.
+  Descriptions are normalised on write and on read (BOM, leading `#`, collapsed whitespace), and the
+  CLI degrades unencodable output with `errors="replace"` instead of raising.
+- **`tower doctor` was silent about verify commands that cannot run.** A config using `python` on a
+  machine without it on `PATH` failed every accept with exit 9009 and no diagnosis. `doctor` now
+  resolves each verify command's first token and reports `is not on PATH` (shell builtins such as
+  `echo` are recognised, explicit paths are checked directly).
+
+## [0.5.0] - 2026-11-04
+
+### Added
+
+- `tower board` / `tower board --watch` and `tower panel` (local read-only web panel on
+  127.0.0.1:8787, refreshes every 2s): one snapshot of the task board, two renderings.
+- `docs/assets/panel.png` screenshot and a panel section in both READMEs.
+
 ## [0.4.0] - 2026-11-04
 
 ### Added
