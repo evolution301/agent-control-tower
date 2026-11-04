@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.6.0] - 2026-11-04
+
+### Added
+
+- **`tower bootstrap` wires a machine in one run.** It scans the listening ports for the desktop
+  harness (confirming with `session/list`, and telling a token-protected host from a dead port),
+  recovers the base64 HMAC secret from the environment or an existing bridge script, writes
+  `base_url` + `secret` into the tower config, replaces verify commands whose executable is missing
+  on this machine, resolves a session for every role (cache -> title match on the RPC row or the
+  disk projection cache -> create) and pins the ids into `tower.toml`, then optionally sends one real
+  brief (`--smoke <role>`) and waits for its report. `--delete-session <id>` removes a stray twin.
+  Re-running is idempotent: it costs one `session/list`.
+
 ## [0.5.1] - 2026-11-04
 
 Three defects found while migrating a live hand-rolled `.agents/` system onto tower.

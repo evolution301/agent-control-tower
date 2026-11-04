@@ -301,6 +301,13 @@ def remove_role(config_path: Path, name: str, *, purge: bool = False) -> dict:
     return {"name": name, "purged": removed_dir}
 
 
+def set_session(config_path: Path, name: str, session_id: str) -> None:
+    """Pin one role's session id into `adapters.dsh.sessions`."""
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    _set_session(lines, name, session_id)
+    config_path.write_text("".join(lines), encoding="utf-8")
+
+
 def config_file(start: Path | str | None = None) -> Path:
     """The tower config file for a workspace (used by the CLI subcommands)."""
     return find_config_path(start)

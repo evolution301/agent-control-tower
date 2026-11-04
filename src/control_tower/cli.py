@@ -462,6 +462,41 @@ def cmd_role_remove(args) -> int:
     return 0
 
 
+def cmd_bootstrap(args) -> int:
+    from .bootstrap import run_bootstrap
+
+    cfg = _cfg(args)
+    path = config_file(cfg.workspace)
+    try:
+        summary = run_bootstrap(
+            path,
+            base_url=args.base_url or "",
+            secret=args.secret or "",
+            pin=not args.no_pin,
+            smoke_role=args.smoke or "",
+            delete=args.delete_session or "",
+            workspace=cfg.workspace,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        _say(args, f"error: {exc}")
+        return 2
+    if getattr(args, "json", False):
+        _print(summary, as_json=True)
+        return 1 if summary.get("error") else 0
+    print("config: " + summary["config"])
+    for step in summary["steps"]:
+        print("  " + json.dumps(step, ensure_ascii=False))
+    for row in summary.get("roles", []):
+        print("  %-16s %-44s %s" % (row["role"], row["session_id"] or "(unresolved)", row["resolution"]))
+    if summary.get("smoke"):
+        print("smoke: exit=%s" % summary["smoke"]["exit_code"])
+        print(summary["smoke"]["text"])
+    if summary.get("error"):
+        _say(args, "error: " + summary["error"])
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tower", description="Dispatch tasks to role agents and verify their reports.")
     p.add_argument("--version", action="version", version=f"agent-control-tower {__version__}")
@@ -561,6 +596,14 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--purge", action="store_true", help="also delete roles/<name>/")
     r.add_argument("--json", action="store_true")
     r.set_defaults(func=cmd_role_remove)
+    s = sub.add_parser("bootstrap", help="wire this machine in one run: harness URL, secret, role sessions")
+    s.add_argument("--base-url", default="", help="harness URL (default: probe the listening ports)")
+    s.add_argument("--secret", default="", help="base64 HMAC secret (default: env or the bridge scripts)")
+    s.add_argument("--no-pin", action="store_true", help="do not write resolved session ids into tower.toml")
+    s.add_argument("--smoke", default="", help="role to send one real brief to when the wiring is done")
+    s.add_argument("--delete-session", default="", help="delete one session id (e.g. an accidental twin)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_bootstrap)
     return p
 
 
