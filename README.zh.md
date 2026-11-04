@@ -79,6 +79,8 @@ tower rework T-0001 --note "Checks 没写结果，重跑测试"
 | 两个 agent 互相覆盖 | 每个角色一个 `write_scopes`，一个目录 |
 | 上下文一压缩就丢活 | 状态落盘，`tower rework T-0012` 带着意见继续 |
 | 项目没法交接 | 报告和任务的 `git log` 本身就是交接文档 |
+| 每份回执都要你读一遍才知道要不要人插手 | `tower attention` 只列 `ready` / `blocked` / `failed` |
+| 重试或双击产生重复任务 | `tower dispatch --key <id>` 直接返回已有任务 |
 
 ## 安装
 
@@ -154,11 +156,17 @@ dsh plugin --profile <name> add ./packages/dsh-tower
 ## 回执契约（以及为什么必须有校验器）
 
 ```markdown
+## Status         → progress | waiting | ready | blocked | failed | dropped
 ## Summary        → 2–5 句话
 ## Files          → - <路径> — <改了什么>            （文件必须真实存在）
 ## Checks         → - <实际跑的命令> → <实际看到的结果>  （只写命令 = 不合格）
 ## Open issues    → 没做完的，或 "none"
+## Attention      → 仅当 Status 是 blocked/failed：一个具体问题
 ```
+
+状态是一套封闭词表，来自 DeepSeek 的 [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype) 研究原型：
+lead 按状态路由而不是读散文，`tower attention` 只显示真的在等人的任务。我们抄了什么、刻意没抄什么，见
+[docs/superagent-ideas.md](docs/superagent-ideas.md)。
 
 `tower accept` 会机械地拒掉：缺章节 · check 没带结果 · 报告里的文件不存在 · `verify_commands` 任何一条失败。
 
@@ -177,7 +185,8 @@ verify_commands:
 | `tower init <dir>` | 生成配置和角色目录 |
 | `tower dispatch <role> "<brief>"` | 建任务并执行 |
 | `tower batch role1 role2 --brief "…"` | 同一 brief 分发给多个角色 |
-| `tower inbox [--all] [--read]` | 角色提交的回执 |
+| `tower inbox [--all] [--read]` | 角色提交的全部回执（审计日志） |
+| `tower attention` | **只**列出在等人的任务 |
 | `tower accept <task>` | 校验后接受（校验不过自动转打回） |
 | `tower rework <task> --note "…"` | 带意见打回并重派 |
 | `tower status [--json]` | 任务看板 |
@@ -234,6 +243,7 @@ my-project/
 | [DSH 快速开始](docs/dsh-quickstart.md) | 主推配置的完整步骤 + 它能避免的 5 个失败模式 |
 | [架构](docs/architecture.md) | 组件、状态机、为什么用文件而不是队列 |
 | [适配器](docs/adapters.md) | mock / cli / dsh / openai，以及怎么加自己的 |
+| [从 dsh-superagent 抄了什么](docs/superagent-ideas.md) | 吸收的 5 个设计 + 刻意没抄的 |
 | [贡献指南](CONTRIBUTING.md) | 硬规则、PR 检查清单、适配器写法 |
 
 ## 许可

@@ -114,7 +114,8 @@ def test_verify_accepts_good_report_and_runs_commands(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"summary": "s", "files": ["roles/backend/f.txt"], "checks": ["pytest → 9 passed"]}
+    task.report = {"state": "ready", "summary": "s", "files": ["roles/backend/f.txt"],
+                   "checks": ["pytest → 9 passed"]}
     result = verify_report(tower, task)
     assert result.ok, result.problems
     assert result.ran and result.ran[0]["exit_code"] == 0
@@ -147,3 +148,85 @@ def test_inbox_mark_read(tower):
     assert board.inbox()
     assert board.mark_inbox_read() >= 1
     assert board.inbox(unread_only=True) == []
+
+
+# ---------------------------------------------------------------- v0.2 structured state
+
+
+def test_parse_report_reads_status_and_attention():
+    text = """## Status
+blocked
+
+## Summary
+Cannot proceed without the API key.
+
+## Files
+- none
+
+## Checks
+- `curl /health` → 401
+
+## Attention
+Which environment should I use, staging or production?
+"""
+    report = parse_report(text)
+    assert report["state"] == "blocked"
+    assert report["attention"]["question"].startswith("Which environment")
+
+
+def test_verify_rejects_unknown_status(tower):
+    board = Board(tower)
+    task = board.create("backend", "x")
+    (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
+    task.report = {"state": "done-ish", "summary": "s", "files": ["roles/backend/f.txt"],
+                   "checks": ["pytest → ok"]}
+    result = verify_report(tower, task)
+    assert not result.ok
+    assert any("unknown status" in p for p in result.problems)
+
+
+def test_verify_requires_attention_when_blocked(tower):
+    board = Board(tower)
+    task = board.create("backend", "x")
+    (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
+    task.report = {"state": "blocked", "summary": "s", "files": ["roles/backend/f.txt"],
+                   "checks": ["pytest → failed"], "attention": None}
+    result = verify_report(tower, task)
+    assert not result.ok
+    assert any("Attention" in p for p in result.problems)
+
+
+def test_dispatch_records_state_attention_and_assignment(tower):
+    board = Board(tower)
+    task = board.create("backend", "produce artifact")
+    task = dispatch(tower, board, task)
+    assert task.state == "ready"
+    assert task.assignments and task.assignments[0]["adapter"] == "mock"
+
+
+def test_attention_queue_only_lists_person_tasks(tower):
+    board = Board(tower)
+    quiet = board.create("backend", "a")
+    quiet.state = "waiting"
+    board.save(quiet)
+    needs = board.create("backend", "b")
+    needs.state = "blocked"
+    needs.attention = {"question": "staging or prod?"}
+    board.save(needs)
+    queue = [t.id for t in board.needs_person()]
+    assert needs.id in queue
+    assert quiet.id not in queue
+
+
+def test_idempotency_key_prevents_duplicates(tower):
+    board = Board(tower)
+    first = board.create("backend", "one", idem_key="req-42")
+    again = board.find_by_idem("req-42")
+    assert again is not None and again.id == first.id
+    assert board.find_by_idem("req-43") is None
+
+
+def test_mandate_is_recorded(tower):
+    board = Board(tower)
+    task = board.create("backend", "x", mandate={"requester": "alice", "strength": "explicit"})
+    assert board.load(task.id).mandate["requester"] == "alice"

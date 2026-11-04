@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .board import Task
+from .board import REPORT_STATES, Task
 from .config import TowerConfig
 
 
@@ -37,6 +37,16 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
         "files": lambda r: bool(r.get("files")),
         "checks": lambda r: bool(r.get("checks")),
     }
+
+    # v0.2 — structured state, not prose. Borrowed from dsh-superagent: the lead
+    # should be able to route on a closed vocabulary instead of reading paragraphs.
+    state = (report.get("state") or "").strip().lower()
+    if not state:
+        problems.append("report is missing '## Status' (progress|waiting|ready|blocked|failed|dropped)")
+    elif state not in REPORT_STATES:
+        problems.append(f"unknown status '{state}' — expected one of {sorted(REPORT_STATES)}")
+    elif state in ("blocked", "failed") and not (report.get("attention") or {}).get("question"):
+        problems.append(f"status '{state}' requires one concrete question under '## Attention'")
     for need in cfg.accept_requires:
         check = requirements.get(need)
         if check is None:

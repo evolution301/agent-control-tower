@@ -82,6 +82,8 @@ tower rework T-0001 --note "Checks list no results; re-run the suite"
 | Two agents overwrite each other | `write_scopes` per role, one directory per role |
 | Work lost after compaction | State on disk; `tower rework T-0012` resumes with the note attached |
 | Can't hand the project over | `git log` of reports and tasks *is* the handover doc |
+| You re-read every report to see if a human is needed | `tower attention` lists only `ready` / `blocked` / `failed` |
+| A retry or a double-click creates duplicate work | `tower dispatch --key <id>` returns the existing task |
 
 ## Install
 
@@ -163,11 +165,19 @@ Adding one is ~40 lines → [docs/adapters.md](docs/adapters.md).
 ## The report contract (and why the verifier exists)
 
 ```markdown
+## Status         → progress | waiting | ready | blocked | failed | dropped
 ## Summary        → 2–5 sentences
 ## Files          → - <path> — <what changed>          (must exist on disk)
 ## Checks         → - <command run> → <result seen>    (a bare command fails)
 ## Open issues    → anything unfinished, or "none"
+## Attention      → only when status is blocked/failed: one concrete question
 ```
+
+The status vocabulary is a closed set, borrowed from DeepSeek's
+[dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype) research prototype: the
+lead routes on a state, not on prose, and `tower attention` shows only the tasks that are actually
+waiting for a person. See [docs/superagent-ideas.md](docs/superagent-ideas.md) for what we borrowed
+and what we deliberately left out.
 
 `tower accept` mechanically rejects: a missing/empty section · a check line without a result · a
 listed file that does not exist · any failing entry in `verify_commands`.
@@ -185,9 +195,10 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | Command | Purpose |
 |---|---|
 | `tower init <dir>` | scaffold config + role folders |
-| `tower dispatch <role> "<brief>"` | create and run one task |
+| `tower dispatch <role> "<brief>" [--key …]` | create and run one task (idempotent with `--key`) |
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |
-| `tower inbox [--all] [--read]` | reports filed by roles |
+| `tower inbox [--all] [--read]` | reports filed by roles (the full log) |
+| `tower attention` | **only** the tasks waiting on a person |
 | `tower accept <task>` | verify, then accept (auto-rejects to rework) |
 | `tower rework <task> --note "…"` | send back with reasons and re-dispatch |
 | `tower status [--json]` | task board |
@@ -250,6 +261,7 @@ tower stops and tells you to escalate instead of looping.
 | [DSH quickstart](docs/dsh-quickstart.md) | the primary setup, end to end, plus five failure modes it prevents |
 | [Architecture](docs/architecture.md) | components, state machine, why files instead of a queue |
 | [Adapters](docs/adapters.md) | mock / cli / dsh / openai, and how to add your own |
+| [Borrowed from dsh-superagent](docs/superagent-ideas.md) | the five ideas we adopted, and what we left out |
 | [Contributing](CONTRIBUTING.md) | ground rules, PR checklist, adapter guide |
 
 ## License

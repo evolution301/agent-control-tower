@@ -15,6 +15,7 @@ from pathlib import Path
 from . import __version__
 from .board import (
     Board,
+    PERSON_STATES,
     STATUS_ACCEPTED,
     STATUS_PENDING,
     STATUS_REPORTED,
@@ -132,7 +133,18 @@ def cmd_dispatch(args) -> int:
     if not brief.strip():
         print("empty brief")
         return 2
-    task = board.create(role, brief.strip(), batch=args.batch or "")
+    key = getattr(args, "key", "") or ""
+    if key:
+        existing = board.find_by_idem(key)
+        if existing is not None:
+            print(f"idempotent hit: task {existing.id} already exists for key {key!r}")
+            return 0
+    mandate = {
+        "requester": getattr(args, "requester", "") or "operator",
+        "strength": getattr(args, "strength", "") or "explicit",
+        "policy": "tower.toml",
+    }
+    task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
     task = dispatch(cfg, board, task, dry_run=args.dry_run)
     print(f"task {task.id} role={task.role} status={task.status}")
     if task.report:
@@ -186,6 +198,22 @@ def cmd_inbox(args) -> int:
     return 0
 
 
+def cmd_attention(args) -> int:
+    """Only what needs a person — the rest can stay quiet."""
+    cfg = _cfg(args)
+    board = Board(cfg)
+    tasks = board.needs_person()
+    if not tasks:
+        print("nothing needs you — all tasks are working, idle or accepted")
+        return 0
+    for t in tasks:
+        question = (t.attention or {}).get("question", "")
+        print(f"{t.id}  {t.role:<10} {t.state or t.status:<8} {t.brief[:50]}")
+        if question:
+            print(f"      → {question}")
+    return 0
+
+
 def cmd_accept(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
@@ -229,7 +257,8 @@ def cmd_status(args) -> int:
         return 0
     width = max(len(t.id) for t in tasks)
     for t in tasks:
-        print(f"{t.id:<{width}}  {t.role:<10} {t.status:<12} rounds={t.round} {t.brief[:60]}")
+        state = f"{t.state}/{t.status}" if t.state else t.status
+        print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {t.brief[:60]}")
     return 0
 
 
@@ -308,6 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--batch", default="")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--key", default="", help="idempotency key: the same key never creates a second task")
+    s.add_argument("--requester", default="", help="who asked for this work (recorded in the mandate)")
+    s.add_argument("--strength", default="", choices=["", "explicit", "inferred"],
+                   help="explicit (a person asked) or inferred (a rule allowed it)")
     s.set_defaults(func=cmd_dispatch)
 
     s = sub.add_parser("batch", help="dispatch one brief to several roles")
@@ -321,6 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--all", action="store_true")
     s.add_argument("--read", action="store_true", help="mark all reports read")
     s.set_defaults(func=cmd_inbox)
+
+    s = sub.add_parser("attention", help="list only the tasks that need a person")
+    s.set_defaults(func=cmd_attention)
 
     s = sub.add_parser("accept", help="verify and accept a reported task")
     s.add_argument("task")

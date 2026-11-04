@@ -37,6 +37,8 @@ class MockAdapter:
         )
 
         text = (
+            "## Status\n"
+            "ready\n\n"
             "## Summary\n"
             f"[mock:{req.role}] handled task {req.task_id} and wrote a placeholder artifact.\n\n"
             "## Files\n"
@@ -45,6 +47,8 @@ class MockAdapter:
             "- `os.path.exists(artifact)` → True\n"
             "- `artifact.stat().st_size > 0` → True\n\n"
             "## Open issues\n"
-            "- none (this is a deterministic mock run)\n"
+            "- none (this is a deterministic mock run)\n\n"
+            "## Attention\n"
+            "- none\n"
         )
         return AdapterResult(text=text, exit_code=0, meta={"artifact": str(artifact)})

@@ -30,6 +30,9 @@ You are the **{role}** role inside a control-tower workflow.
 3. When you are done, write `{report_file}` with exactly these sections:
 
    ```
+   ## Status
+   ready
+
    ## Summary
    <what you did, 2-5 sentences>
 
@@ -41,11 +44,21 @@ You are the **{role}** role inside a control-tower workflow.
 
    ## Open issues
    - <anything unfinished, or "none">
+
+   ## Attention
+   <only when Status is blocked/failed: exactly one concrete question a person can answer>
    ```
 
 4. Never claim a check you did not run. The lead verifies independently.
-5. Do not ask the human anything. If something is ambiguous, pick the most
-   defensible option and record the assumption in "Open issues".
+5. Do not ask the human anything unless you are blocked. If something is
+   ambiguous, pick the most defensible option and record the assumption in
+   "Open issues". If a person genuinely must decide, use "## Status: blocked"
+   and put exactly one concrete question under "## Attention".
+6. Start the report with a status line, in this closed vocabulary:
+   `progress` (still working) · `waiting` (turn finished, waiting for a trigger)
+   · `ready` (deliverable ready for review) · `blocked` (need a human decision)
+   · `failed` (gave up) · `dropped` (nothing to do).
+   A prose status is rejected by the verifier.
 
 ## Task {task_id} ({batch})
 
@@ -118,6 +131,9 @@ def dispatch(
 
     report = parse_report(result.text)
     task.report = report
+    task.state = report.get("state", "")
+    task.attention = report.get("attention")
+    board.add_assignment(task, adapter.name, result.exit_code)
     board.transition(task, STATUS_REPORTED, note="report filed", report=report)
     board.push_report(task, report)
     return task
@@ -153,10 +169,21 @@ def parse_report(text: str) -> dict[str, Any]:
         return out
 
     summary_lines = [l.strip() for l in buckets.get("summary", []) if l.strip()]
+    status_lines = [l.strip() for l in buckets.get("status", []) if l.strip()]
+    state = (status_lines[0] if status_lines else "").strip().strip("`").lower()
+    attention_lines = []
+    for line in buckets.get("attention", []):
+        s2 = line.strip().lstrip("-*•").strip()
+        if not s2 or s2.lower() in ("none", "n/a", "no", "-"):
+            continue
+        attention_lines.append(s2)
+    question = attention_lines[0] if attention_lines else ""
     return {
+        "state": state,
         "summary": " ".join(summary_lines),
         "files": items("files"),
         "checks": items("checks"),
         "open_issues": items("open issues"),
+        "attention": {"question": question} if question else None,
         "raw": text,
     }
