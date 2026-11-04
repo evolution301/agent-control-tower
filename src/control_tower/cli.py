@@ -497,6 +497,31 @@ def cmd_bootstrap(args) -> int:
     return 0
 
 
+def cmd_plugin_install(args) -> int:
+    from .plugin_install import install
+
+    try:
+        summary = install(profile=args.profile, source=args.source or None, dry_run=args.dry_run)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        _say(args, f"error: {exc}")
+        return 2
+    if getattr(args, "json", False):
+        _print(summary, as_json=True)
+        return 0
+    print("profile  : " + summary["profile"])
+    version = summary["version"]
+    if summary.get("previous_version"):
+        version += " (was %s)" % summary["previous_version"]
+    print("version  : " + version)
+    print("bundles  : " + ("added" if summary["bundle_added"] else "already registered"))
+    if summary.get("dry_run"):
+        print("dry run  : nothing written")
+        return 0
+    print("installed: " + summary["installed_to"])
+    print("next     : restart the DSH desktop app — the tower_* tools appear in new sessions")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tower", description="Dispatch tasks to role agents and verify their reports.")
     p.add_argument("--version", action="version", version=f"agent-control-tower {__version__}")
@@ -604,6 +629,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--delete-session", default="", help="delete one session id (e.g. an accidental twin)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_bootstrap)
+    s = sub.add_parser("plugin", help="install the dsh-tower bundle into a DSH profile")
+    ps = s.add_subparsers(dest="plugin_command", required=True)
+    pl = ps.add_parser("install", help="write the bundle into <profile>/node_modules and register it")
+    pl.add_argument("--profile", default="desktop")
+    pl.add_argument("--source", default="", help="local packages/dsh-tower checkout (default: download from GitHub)")
+    pl.add_argument("--dry-run", action="store_true")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_plugin_install)
     return p
 
 

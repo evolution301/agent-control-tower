@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.6.1] - 2026-11-04
+
+### Added
+
+- **`tower plugin install`** puts the `dsh-tower` bundle into a DSH profile in one command. The
+  desktop app owns its profile, so `dsh plugin --profile desktop ...` refuses to touch it and the
+  bundle has to be written into `<profile>/node_modules/dsh-tower` and added to
+  `dsh.profile.bundles` by hand. The command does both, from a local checkout (`--source`) or from
+  the repository (`--profile` + download), is idempotent, and prints the one action left: restart the
+  app. `--dry-run` shows the plan without writing.
+
 ## [0.6.0] - 2026-11-04
 
 ### Added
