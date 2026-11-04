@@ -100,7 +100,9 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    exports.inject = ['@deepseek-ai/dsh-client-ui-slots']
+    // Deliberately no `inject`: declaring a service whose id never resolves keeps
+    // this entry pending, and the whole web boot then fails with
+    // "web boot: 1 entry did not activate". The slot service is read defensively.
     return exports
   },
 })

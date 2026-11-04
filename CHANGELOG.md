@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.1] - 2026-11-04
+
+### Fixed
+
+- **The settings section made the whole app fail to boot: `web boot: 1 entry did not activate` /
+  `dsh-tower: pending (waiting for service: @deepseek-ai/dsh-client-ui-slots)`.** The client module
+  exported `inject` with a *package* name where the loader expects a *service* id, so the entry
+  stayed pending forever and the web boot aborted. The export is gone: plugins such as
+  `dsh-claude-style` declare no inject at all, and this module already reads `ctx.slots` defensively
+  inside `apply`, so a missing slot service costs the section, not the boot. The client test now
+  asserts `inject` stays undefined, and the manifest no longer lists a client inject.
+
 ## [0.7.0] - 2026-11-04
 
 ### Added
