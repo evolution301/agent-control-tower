@@ -264,3 +264,25 @@ def test_dispatch_json_idempotent_hit_is_json_too(tower, capsys):
     assert cli.main(["dispatch", "backend", "idem", "--key", "k1", "--json"]) == 0
     out = capsys.readouterr().out
     assert json.loads(out)["id"] == "T-0001"
+
+
+def test_batch_takes_a_trailing_brief_instead_of_skipping_it(tower, capsys):
+    """`tower batch <roles...> "<brief>"` must not treat the brief as a role."""
+    from control_tower import cli
+
+    rc = cli.main(["batch", "backend", "qa", "ship the landing page"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "backend -> reported" in out
+    assert "qa -> reported" in out
+    assert "skip unknown role" not in out
+    board = Board(tower)
+    assert board.load("T-0002").brief == "ship the landing page"
+
+
+def test_batch_rejects_an_empty_brief(tower, capsys):
+    from control_tower import cli
+
+    assert cli.main(["batch", "backend", "qa"]) == 2
+    captured = capsys.readouterr()
+    assert "empty brief" in (captured.err + captured.out)

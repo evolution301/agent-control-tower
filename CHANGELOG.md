@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.2.2] - 2026-11-04
+
+### Fixed
+
+- **`tower batch <roles...> "<brief>"` skipped the brief instead of dispatching it.** `roles`
+  uses `nargs="+"`, so argparse fed the trailing brief in as one more role and every task was
+  rejected with `skip unknown role`. A trailing argument that is not a configured role is now
+  taken as the brief (and announced on stderr); an empty brief fails with a clear message instead
+  of creating report-less tasks.
+
 ## [0.2.1] - 2026-11-04
 
 ### Fixed

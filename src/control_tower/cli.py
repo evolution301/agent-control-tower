@@ -177,17 +177,28 @@ def cmd_batch(args) -> int:
     cfg = _cfg(args)
     ensure_layout(cfg)
     board = Board(cfg)
+    roles = list(args.roles)
     brief = args.brief or ""
+    # `tower batch backend qa "ship it"`: argparse cannot tell the trailing brief
+    # from another role name (roles is nargs="+"), so an unknown trailing name is
+    # taken as the brief instead of being silently skipped.
+    unknown = [role for role in roles if role not in cfg.roles]
+    if unknown and not brief:
+        brief = " ".join(unknown)
+        roles = [role for role in roles if role in cfg.roles]
+        _say(args, f"treating {brief!r} as the brief, not a role")
+    if not roles:
+        _say(args, "no known roles given")
+        return 2
+    if not brief.strip():
+        _say(args, 'empty brief — pass it as --brief "..." or as the last argument')
+        return 2
     rc = 0
-    for i, role in enumerate(args.roles):
-        if role not in cfg.roles:
-            print(f"skip unknown role {role!r}")
-            rc = 2
-            continue
+    for i, role in enumerate(roles):
         task = board.create(role, brief, batch=args.batch or "")
         task = dispatch(cfg, board, task, dry_run=args.dry_run)
         print(f"{task.id} {role} -> {task.status}")
-        if cfg.serial_requests and i < len(args.roles) - 1:
+        if cfg.serial_requests and i < len(roles) - 1:
             import time
 
             time.sleep(cfg.request_gap_s)
