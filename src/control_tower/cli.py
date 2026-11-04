@@ -23,7 +23,9 @@ from .board import (
     STATUS_REWORK,
 )
 from .config import ensure_layout, load_config
+from .board_view import render as render_board, watch as watch_board
 from .dispatch import dispatch
+from .snapshot import build_snapshot
 from .verify import verify_report
 
 ROLE_SCAFFOLD = """# {role}
@@ -221,6 +223,28 @@ def cmd_inbox(args) -> int:
     if args.read:
         n = board.mark_inbox_read()
         print(f"marked {n} read")
+    return 0
+
+
+def cmd_board(args) -> int:
+    """Terminal panel: what needs a person, what is in flight, who is doing what."""
+    cfg = _cfg(args)
+    if args.watch:
+        watch_board(cfg, interval=args.interval)
+        return 0
+    snap = build_snapshot(cfg, Board(cfg))
+    print(render_board(snap, colour=None if not args.json else False))
+    if args.json:
+        _print(snap.as_dict(), as_json=True)
+    return 0
+
+
+def cmd_panel(args) -> int:
+    """Local web panel (read-only), bound to 127.0.0.1 by default."""
+    from .panel import serve
+
+    cfg = _cfg(args)
+    serve(cfg, host=args.host, port=args.port, open_browser=args.open_browser)
     return 0
 
 
@@ -449,6 +473,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--all", action="store_true")
     s.add_argument("--read", action="store_true", help="mark all reports read")
     s.set_defaults(func=cmd_inbox)
+
+    s = sub.add_parser("board", help="terminal panel (use --watch to keep it refreshing)")
+    s.add_argument("--watch", action="store_true")
+    s.add_argument("--interval", type=float, default=2.0)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_board)
+
+    s = sub.add_parser("panel", help="local web panel on 127.0.0.1")
+    s.add_argument("--port", type=int, default=8787)
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--open-browser", action="store_true")
+    s.set_defaults(func=cmd_panel)
 
     s = sub.add_parser("attention", help="list only the tasks that need a person")
     s.set_defaults(func=cmd_attention)

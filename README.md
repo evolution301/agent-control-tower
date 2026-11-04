@@ -149,6 +149,23 @@ dsh plugin --profile <name> add ./packages/dsh-tower
 `tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
 → [packages/dsh-tower](packages/dsh-tower/README.md)
 
+## Panel: one glance, everything in flight
+
+Two renderings of the same snapshot — the terminal (`tower board`) and a local read-only web panel
+(`tower panel`). Person-states first, healthy work takes no space.
+
+![panel](docs/assets/panel.png)
+
+```bash
+tower board            # print once
+tower board --watch    # refresh in place (tmux/ssh friendly)
+tower panel            # http://127.0.0.1:8787/  (read-only, auto-refresh 2s)
+```
+
+The panel shows **needs you** (ready / blocked / failed, each with its one question), then what is in
+flight, then what every role is doing right now, then the tail of the ledger. It reads the same files
+the CLI does — no database, no daemon, no writes.
+
 ## Adapters
 
 An adapter is the only component that knows how to make an agent act. Same contract for all four:
@@ -199,6 +216,7 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |
 | `tower inbox [--all] [--read]` | reports filed by roles (the full log) |
 | `tower attention` | **only** the tasks waiting on a person |
+| `tower board [--watch]` / `tower panel` | the same picture, in a terminal or a local web page |
 | `tower accept <task>` | verify, then accept (auto-rejects to rework) |
 | `tower rework <task> --note "…"` | send back with reasons and re-dispatch |
 | `tower status [--json]` | task board |

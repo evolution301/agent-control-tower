@@ -140,6 +140,21 @@ dsh plugin --profile <name> add ./packages/dsh-tower
 `tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
 → [packages/dsh-tower](packages/dsh-tower/README.md)
 
+## 面板：一眼看清谁在干什么
+
+同一份快照的两种呈现 —— 终端 `tower board` 和本地只读网页 `tower panel`。**"等人"的排最前，健康状态不占地方。**
+
+![panel](docs/assets/panel.png)
+
+```bash
+tower board            # 打印一次
+tower board --watch    # 原地刷新（tmux/ssh 友好）
+tower panel            # http://127.0.0.1:8787/  只读，2 秒自刷新
+```
+
+顺序固定：**需要你决定**（ready/blocked/failed，每个带那一个具体问题）→ **进行中** → **各角色此刻在做什么** → ledger 尾巴。
+读的就是 CLI 读的那几个文件，没有数据库、没有守护进程、不写任何东西。
+
 ## 适配器
 
 适配器是唯一知道"怎么让 agent 动起来"的组件。四个后端同一套契约：
@@ -187,6 +202,7 @@ verify_commands:
 | `tower batch role1 role2 --brief "…"` | 同一 brief 分发给多个角色 |
 | `tower inbox [--all] [--read]` | 角色提交的全部回执（审计日志） |
 | `tower attention` | **只**列出在等人的任务 |
+| `tower board [--watch]` / `tower panel` | 同一画面：终端面板 / 本地网页 |
 | `tower accept <task>` | 校验后接受（校验不过自动转打回） |
 | `tower rework <task> --note "…"` | 带意见打回并重派 |
 | `tower status [--json]` | 任务看板 |
