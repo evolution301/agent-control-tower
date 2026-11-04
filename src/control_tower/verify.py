@@ -1,0 +1,80 @@
+"""Verification: the lead must never accept a claim it has not checked.
+
+Two layers:
+
+* structural — the report has the required sections and non-empty checks
+* command  — optional `verify.commands` from tower.toml are executed and must
+  pass before a task can be accepted
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .board import Task
+from .config import TowerConfig
+
+
+@dataclass
+class Verification:
+    ok: bool
+    problems: list[str] = field(default_factory=list)
+    ran: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "problems": self.problems, "ran": self.ran}
+
+
+def verify_report(cfg: TowerConfig, task: Task) -> Verification:
+    problems: list[str] = []
+    report = task.report or {}
+
+    requirements = {
+        "summary": lambda r: bool(r.get("summary")),
+        "files": lambda r: bool(r.get("files")),
+        "checks": lambda r: bool(r.get("checks")),
+    }
+    for need in cfg.accept_requires:
+        check = requirements.get(need)
+        if check is None:
+            continue
+        if not check(report):
+            problems.append(f"report is missing '{need}'")
+
+    # A report that lists a check but never says what happened is not a check.
+    weak = [c for c in report.get("checks", []) if "→" not in c and "->" not in c]
+    if report.get("checks") and len(weak) == len(report.get("checks", [])):
+        problems.append("every '## Checks' line lacks a '→ result' — ask for real output")
+
+    # Files must exist inside the workspace.
+    missing = []
+    for f in report.get("files", []):
+        candidate = f.split(" — ")[0].split(" - ")[0].strip().strip("`")
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = cfg.workspace / candidate
+        if not path.exists():
+            missing.append(candidate)
+    if missing:
+        problems.append("reported files do not exist: " + ", ".join(missing[:5]))
+
+    ran: list[dict[str, Any]] = []
+    commands = list(getattr(cfg, "verify_commands", []) or [])
+    for cmd in commands:
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=str(cfg.workspace), capture_output=True, text=True, timeout=900
+            )
+            ran.append({"command": cmd, "exit_code": proc.returncode, "tail": (proc.stdout or proc.stderr or "")[-800:]})
+            if proc.returncode != 0:
+                problems.append(f"verify command failed ({proc.returncode}): {cmd}")
+        except Exception as exc:  # pragma: no cover
+            ran.append({"command": cmd, "error": f"{type(exc).__name__}: {exc}"})
+            problems.append(f"verify command error: {cmd}")
+
+    return Verification(ok=not problems, problems=problems, ran=ran)

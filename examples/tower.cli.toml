@@ -1,0 +1,24 @@
+name: cli-agents
+workspace: .
+
+roles:
+  backend:
+    description: Server-side implementation.
+    adapter: cli
+    write_scopes: ["server/"]
+    max_rounds: 3
+  frontend:
+    description: Web UI implementation plus screenshots.
+    adapter: cli
+    write_scopes: ["web/"]
+    max_rounds: 3
+
+adapters:
+  cli:
+    # The agent must leave <cwd>/<task_id>-REPORT.md behind (the prompt asks for it).
+    command: ["claude", "-p", "{prompt_file}", "--permission-mode", "acceptEdits"]
+    # command: ["codex", "exec", "--cd", "{cwd}", "--full-auto"]
+    # command: ["aider", "--message-file", "{prompt_file}"]
+
+verify_commands:
+  - "pytest -q"

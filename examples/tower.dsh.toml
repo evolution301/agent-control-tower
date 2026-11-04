@@ -1,0 +1,49 @@
+# DSH-first example tower: a small product team
+# Copy to tower.toml and fill in the session ids from `session/list`.
+
+name: dsh-product-team
+workspace: .
+
+roles:
+  lead:
+    description: Routes work; never implements. Verifies role reports before accepting.
+    adapter: mock          # the lead is you (or your main session) — not dispatched
+    write_scopes: []
+  backend:
+    description: Data, APIs, integrations, deployment scripts.
+    adapter: dsh
+    write_scopes: ["server/", "scripts/"]
+    max_rounds: 3
+    timeout_s: 3600
+  frontend:
+    description: Layout, components, styling, browser verification at 1440/390.
+    adapter: dsh
+    write_scopes: ["web/"]
+    max_rounds: 3
+    timeout_s: 3600
+  qa:
+    description: Independent verification. Reproduces claims, files defects with evidence.
+    adapter: dsh
+    write_scopes: []
+    max_rounds: 2
+
+adapters:
+  dsh:
+    base_url: "http://127.0.0.1:65163"
+    sessions:
+      backend: "session-REPLACE-ME"
+      frontend: "session-REPLACE-ME"
+      qa: "session-REPLACE-ME"
+    wait_s: 1800
+    poll_s: 5
+
+# Real checks the tower runs before accepting any report.
+# Keep them fast (< 2 min) or they will be skipped in practice.
+verify_commands:
+  - "python -c \"print('replace me with real checks')\""
+
+# Fragile host? dispatch one role at a time with a gap.
+serial_requests: true
+request_gap_s: 2.0
+
+accept_requires: ["summary", "files", "checks"]

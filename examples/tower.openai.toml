@@ -1,0 +1,24 @@
+name: model-api
+workspace: .
+
+roles:
+  docs:
+    description: Update changelog and docs; small bounded tasks.
+    adapter: openai
+    write_scopes: ["docs/"]
+    max_rounds: 2
+  analyst:
+    description: Read a folder, produce a findings markdown file.
+    adapter: openai
+    write_scopes: ["reports/"]
+    max_rounds: 2
+
+adapters:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4.1-mini"
+    api_key_env: "OPENAI_API_KEY"
+    max_steps: 12
+
+verify_commands:
+  - "python -c \"import pathlib,sys; sys.exit(0 if pathlib.Path('docs').exists() else 1)\""
