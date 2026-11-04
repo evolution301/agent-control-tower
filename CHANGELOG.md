@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.6.2] - 2026-11-04
+
+### Fixed
+
+- **A provider that validates tool schemas strictly failed every turn once the bundle was
+  installed.** The tools described `parameters` with the harness' field-map shorthand
+  (`{ role: { type: 'string', required: true, description: ... } }`), which the harness accepts but an
+  OpenAI-compatible endpoint validated as JSON Schema and rejected with
+  `Invalid schema for function 'tower_role_add': {...} is not of type "string"`. Every tool now emits
+  an explicit `{ type: 'object', properties, required, additionalProperties: false }` schema, so the
+  tools load on strict and lenient providers alike.
+
 ## [0.6.1] - 2026-11-04
 
 ### Added

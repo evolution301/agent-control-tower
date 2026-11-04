@@ -164,9 +164,39 @@ function normalizeOutputSchema(node) {
   return out
 }
 
-/** Attach a tool definition, normalising its output schema for the harness. */
+/**
+ * Expand the harness' field-map shorthand into standard JSON Schema.
+ *
+ * `{ role: { type: 'string', required: true, description: ... } }` is accepted by
+ * the harness, but providers that validate tool schemas with plain JSON-Schema
+ * rules reject the property objects ("... is not of type string") and fail the
+ * whole turn. Emitting an explicit object schema keeps both happy.
+ */
+function normalizeParameters(parameters) {
+  if (parameters === null || typeof parameters !== 'object' || Array.isArray(parameters)) {
+    return parameters
+  }
+  if (parameters.type === 'object' || parameters.properties) return parameters
+  const properties = {}
+  const required = []
+  for (const [name, spec] of Object.entries(parameters)) {
+    if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) continue
+    const { required: flag, ...rest } = spec
+    properties[name] = rest
+    if (flag === true) required.push(name)
+  }
+  return {
+    type: 'object',
+    properties,
+    ...(required.length ? { required } : {}),
+    additionalProperties: false,
+  }
+}
+
+/** Attach a tool definition, normalising both schemas for the harness. */
 const tool = (def) => ({
   ...def,
+  parameters: normalizeParameters(def.parameters),
   output: { ...def.output, schema: normalizeOutputSchema(def.output?.schema) },
 })
 

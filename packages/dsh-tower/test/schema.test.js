@@ -96,3 +96,21 @@ test('parseJsonOutput skips the human report preamble printed by CLI <= 0.2.0', 
 test('parseJsonOutput returns undefined when the blob carries no JSON', () => {
   assert.equal(parseJsonOutput('usage: tower ...'), undefined)
 })
+
+test('every tool emits a standard JSON Schema for its parameters', () => {
+  for (const def of TOOLS) {
+    const p = def.parameters || {}
+    assert.equal(p.type, 'object', def.name + ': parameters.type must be object')
+    assert.ok(p.properties && typeof p.properties === 'object', def.name + ': parameters.properties missing')
+    if (p.required !== undefined) {
+      assert.ok(Array.isArray(p.required), def.name + ': parameters.required must be an array')
+      for (const name of p.required) {
+        assert.ok(name in p.properties, def.name + ': required name ' + name + ' must be declared')
+      }
+    }
+    for (const [name, spec] of Object.entries(p.properties)) {
+      assert.equal(typeof spec.type, 'string', def.name + '.' + name + ': missing type')
+      assert.equal('required' in spec, false, def.name + '.' + name + ': required belongs on the object node')
+    }
+  }
+})
