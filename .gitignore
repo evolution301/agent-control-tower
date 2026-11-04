@@ -13,3 +13,6 @@ tower.local.toml
 
 # added by hand until the token has workflow scope
 .github/workflows/tests.yml
+
+# build intermediates for README assets
+docs/assets/generated/

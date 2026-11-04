@@ -1,132 +1,89 @@
+<div align="center">
+
 # agent-control-tower
 
-**You talk to one agent. It dispatches the work to specialised role agents, collects their reports, checks the evidence, and only then calls it done.**
+**One agent to talk to. Many agents doing the work. Evidence before "done".**
 
-A local control tower for role-based AI agent teams. No SaaS, no database, no daemon — a CLI and a folder of files you can commit, diff and audit.
+A local control tower for role-based AI agent teams — dispatch, report, verify, accept or rework.
+DSH-first, adapter-portable, no SaaS, no database, no daemon.
 
-```
-                    ┌──────────────────────────────┐
-   your message ───▶│            LEAD              │
-                    │  brief → dispatch → verify   │
-                    └───────┬──────────┬───────────┘
-                            │ task     │ task
-                    ┌───────▼───┐  ┌───▼───────┐
-                    │  backend  │  │   ui      │   each role owns a directory
-                    │  agent    │  │   agent   │   and cannot write outside it
-                    └───────┬───┘  └───────┬───┘
-                            │ report   │ report
-                    ┌───────▼──────────▼───────────┐
-                    │  inbox + ledger + verifier   │  ← evidence, not vibes
-                    └──────────────────────────────┘
-```
+[![English](https://img.shields.io/badge/lang-English-blue.svg)](README.md) [![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red.svg)](README.zh.md)
 
----
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-11%20python%20%2B%205%20node-brightgreen?style=flat)](tests)
+[![Dependencies](https://img.shields.io/badge/runtime%20deps-PyYAML%20only-lightgrey?style=flat)](pyproject.toml)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-D97757?style=flat)](packages/dsh-tower)
 
-## 1. The problem this solves
+</div>
 
-You can already get one agent to write code, one to write copy, one to review. What breaks is **the handoff between them**, and it breaks in five predictable ways:
+![architecture](docs/assets/architecture.png)
+
+## The problem
+
+You can already get one agent to write code, one to write copy, one to review. What breaks is **the handoff between them** — in five predictable ways:
 
 | What actually happens | What it costs you |
 |---|---|
-| **Self-grading.** The agent that did the work also reports "done, all tests pass". It never ran the tests; it wrote a plausible summary. | You ship a bug and only find it in production. |
-| **Context rot.** A long session compacts its own history. The deliverable was "in the conversation", so after compaction it is gone. | Re-doing work, contradicting earlier decisions, circular rounds. |
-| **Silent collisions.** Two agents edit the same file in the same round. Both report success. Last write wins, nobody notices. | Lost work, regressions nobody can explain. |
-| **No audit trail.** Which role changed what, when, on which instruction? Answer: scattered chat logs across several windows. | You cannot review, reproduce, or hand the project to someone else. |
-| **Ping-pong.** "Fix it" → "fixed" → "still broken" → "fixed again". Nothing tracks rounds or forces escalation. | Hours burned, and the human becomes the message bus. |
+| **Self-grading** — the agent that did the work also reports "done, tests pass". It never ran them. | You ship a bug and find it in production. |
+| **Context rot** — a long session compacts its history, and the deliverable was "in the conversation". | Re-doing work, contradicting earlier decisions, circular rounds. |
+| **Silent collisions** — two agents edit the same file in the same round; both report success. | Lost work, regressions nobody can explain. |
+| **No audit trail** — which role changed what, on which instruction? | You cannot review, reproduce, or hand the project over. |
+| **Ping-pong** — "fix it" → "fixed" → "still broken". Nothing tracks rounds or forces escalation. | Hours burned; you become the message bus. |
 
-`agent-control-tower` is the missing middle layer: one place where work is **dispatched**, **reported**, **verified** and **recorded**.
+`agent-control-tower` is the missing middle layer.
 
----
+## The loop
 
-## 2. Who it is for
+![demo](docs/assets/demo.gif)
+
+<p align="center"><sub>Real output: <code>tower demo</code> → <code>tower dispatch</code> → <code>tower accept</code> → <code>tower status</code> / <code>tower log</code></sub></p>
+
+| Dispatch | Verify &amp; accept |
+|---|---|
+| ![dispatch](docs/assets/terminal-dispatch.png) | ![accept](docs/assets/terminal-accept.png) |
+
+| Audit trail — just files |
+|---|
+| ![status](docs/assets/terminal-status.png) |
+
+```bash
+tower dispatch frontend "Rework the home layout. Deliver before/after screenshots at 1440 and 390."
+tower inbox                      # what came back
+tower accept T-0001              # files exist? checks carry results? verify_commands pass?
+tower rework T-0001 --note "Checks list no results; re-run the suite"
+```
+
+## Who it is for
 
 **Good fit**
 
-- **You already run 2–8 agent sessions** (DSH, Claude Code, Codex, Cursor, Aider, straight API calls) and you are the one copy-pasting between them.
-- **Indie devs / small teams** building something multi-part: an app (backend + frontend + QA), a content site (research → copy → design → SEO), a data pipeline, a release checklist.
-- **Agencies / freelancers** who need to show a client *what was done and how it was verified* — the ledger and reports are that answer.
-- **Anyone who has been burned** by an agent saying "done" when it was not.
-- **CI / automation** that wants agent work to be reproducible: `tower demo` runs the whole loop offline in under a second.
+- You already run **2–8 agent sessions** (DSH, Claude Code, Codex, Cursor, Aider, plain API) and you are the one copy-pasting between them.
+- **Indie devs / small teams** building something multi-part: an app (backend + frontend + QA), a content site (research → copy → design → SEO), a data pipeline.
+- **Agencies / freelancers** who must show a client *what was done and how it was verified* — the ledger and reports are that answer.
+- **Anyone burned** by an agent saying "done" when it was not.
+- **CI / automation** that wants reproducible agent work: `tower demo` runs the loop offline in under a second.
 
 **Not a good fit**
 
 - One-shot tasks ("rename this variable") — a single prompt is faster.
-- You want agents to talk to each other freely — this design is deliberately *hub-and-spoke*; roles never message each other.
-- You want a hosted dashboard, multi-tenant auth, or a queue service — this is a local CLI by design (add adapters, not a backend).
+- You want agents to talk to each other freely — this design is deliberately hub-and-spoke.
+- You want a hosted dashboard / multi-tenant service — this is a local CLI with adapters.
 
----
-
-## 3. What you get
-
-**Before / after**
+## What you get
 
 | Without the tower | With the tower |
 |---|---|
-| You paste briefs between windows | `tower dispatch backend "…"` — the tower renders the brief, contract and write scope |
-| "Done ✅" with no evidence | Report must contain **Files** (must exist on disk) and **Checks** (must carry the result); `verify_commands` run for real |
-| Deliverables live in chat | Deliverables are files in `roles/<role>/`, reports are `<task>-REPORT.md` |
-| Nobody knows who changed what | Append-only `.tower/ledger.jsonl`: every create / dispatch / status change, timestamped |
-| Rounds loop forever | `round` counter + `max_rounds`; the tower stops and tells you to escalate |
-| Two agents overwrite each other | `write_scopes` per role; one role, one directory |
-| Work is lost after context compaction | Task JSON + reports are on disk; `tower rework T-0012` resumes with the note attached |
-| You cannot hand the project over | `git log` of reports and tasks *is* the handover document |
+| You paste briefs between windows | `tower dispatch <role> "<brief>"` — contract and write scope included |
+| "Done ✅", no evidence | Reports must list **Files** (must exist) and **Checks** (must carry a result); `verify_commands` run for real |
+| Deliverables live in chat | Deliverables in `roles/<role>/`, reports in `<task>-REPORT.md` |
+| Nobody knows who changed what | Append-only `.tower/ledger.jsonl`, timestamped |
+| Rounds loop forever | `round` counter + `max_rounds` → the tower stops and tells you to escalate |
+| Two agents overwrite each other | `write_scopes` per role, one directory per role |
+| Work lost after compaction | State on disk; `tower rework T-0012` resumes with the note attached |
+| Can't hand the project over | `git log` of reports and tasks *is* the handover doc |
 
-**Concrete benefits**
-
-1. **You stop being the message bus.** One entry point, `tower dispatch`, and one exit point, `tower inbox`.
-2. **"Done" becomes checkable.** Acceptance is a command that runs checks, not a sentence you have to trust.
-3. **Failures surface early and cheaply.** Rejected reports go back with the *reasons* attached (`max_rounds` caps the loop).
-4. **The paper trail is free.** Because state is files, git gives you history, blame and diffs without any extra tooling.
-5. **Runtime-agnostic.** Roles can be DSH sessions, local agent CLIs, hosted APIs, or a deterministic mock — same contract, switchable per role.
-6. **Small enough to read.** ~900 lines of Python, one dependency (`PyYAML`), 11 offline tests. You can audit it before you run it against your repo.
-
----
-
-## 4. How it works (30 seconds)
-
-1. **Lead** = you, or your main agent session. It is the only entry point.
-2. **Role** = an agent with a description and a write scope, defined in `tower.toml`.
-3. **Dispatch** = the tower renders a prompt containing: role identity, its workspace, its write scope, the four report sections, and the brief. Then it calls the role's adapter.
-4. **Report** = the role must return/leave:
-
-   ```markdown
-   ## Summary
-   ## Files
-   ## Checks        (every line must carry a result: `pytest -q → 41 passed`)
-   ## Open issues
-   ```
-
-5. **Verify & accept** = the tower rejects reports whose files do not exist or whose checks have no results, runs `verify_commands`, then marks the task accepted — or sends it back with reasons.
-
-That is the whole system. The discipline is the product.
-
----
-
-## 5. Built for DSH first
-
-The pattern was extracted from a real [DeepSeek Harness](https://github.com/) deployment: one lead session steering several long-lived role sessions through a multi-week build (research → copy → architecture → UI → deployment → SEO), verifying every delivery.
-
-So **DSH is the primary adapter**: roles are DSH sessions, dispatch is a queued `session/prompt`, and the report is a file the tower reads back. Session ids live in `tower.toml`; `tower doctor` refuses to start if one is missing.
-
-→ **[docs/dsh-quickstart.md](docs/dsh-quickstart.md)** — create role sessions, wire config, run the loop, plus the five failure modes the reference project hit and how the code prevents them.
-
-Other runtimes are supported by the same contract: `cli` (Claude Code / Codex / Aider), `openai` (any OpenAI-compatible endpoint), `mock` (tests and demos).
-
-### Drive it from inside DSH: `packages/dsh-tower`
-
-A companion bundle registers five tools on the harness tool registry, so a DSH session can dispatch,
-read the inbox, verify, accept and rework without leaving the conversation:
-
-```sh
-dsh plugin --profile <name> add ./packages/dsh-tower
-```
-
-`tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
-→ [packages/dsh-tower/README.md](packages/dsh-tower/README.md)
-
----
-
-## 6. Install
+## Install
 
 ```bash
 git clone https://github.com/evolution301/agent-control-tower.git
@@ -137,41 +94,35 @@ pip install -e .
 
 Python 3.10+. One runtime dependency (`PyYAML`).
 
-## 7. 60-second demo (no model, no network, no API key)
+## 60-second demo (no model, no network, no API key)
 
 ```bash
 tower demo
 ```
 
 ```
-initialised tower in /tmp/tmp9r9zysyg
 [1] dispatched T-0001 -> reported
 [2] verify: PASS
 [3] accepted T-0001
 [4] ledger lines: 5
 ```
 
-Uses the `mock` adapter, which writes a placeholder artifact plus a real report — so the full
+The `mock` adapter writes a placeholder artifact and a real report, so the entire
 dispatch → report → verify → accept loop is deterministic and CI-friendly.
 
-## 8. Real usage
+## Use it with DSH (primary)
 
-```bash
-tower init my-project && cd my-project
-```
-
-This creates `tower.toml`, `roles/{backend,frontend,qa}/AGENT.md`, and `.gitignore`.
-
-Wire a role to a real runtime (DSH shown; see [adapters](docs/adapters.md) for the rest):
+The pattern was extracted from a real [DeepSeek Harness](https://github.com/) deployment: one lead
+session steering several long-lived role sessions through a multi-week build, verifying every
+delivery.
 
 ```yaml
 # tower.toml
 roles:
   frontend:
-    description: Layout, components, styling, browser verification at 1440/390.
+    description: Layout, components, styling, browser verification.
     adapter: dsh
     write_scopes: ["web/"]
-    max_rounds: 3
 
 adapters:
   dsh:
@@ -180,20 +131,23 @@ adapters:
       frontend: "session-acc99990-..."
 ```
 
-Then the loop is five commands:
+→ Full walkthrough: **[docs/dsh-quickstart.md](docs/dsh-quickstart.md)** — create role sessions, wire
+config, run the loop, plus the five failure modes the reference project hit and how the code prevents
+them.
+
+### Drive it from inside DSH: `packages/dsh-tower`
+
+A companion bundle registers five tools on the harness tool registry, so the session never leaves the
+conversation:
 
 ```bash
-tower dispatch frontend "Rework the home layout: hero, proof band, evidence grid, FAQ, CTA.
-Deliver before/after screenshots at 1440 and 390 plus a section-by-section note."
-
-tower inbox                 # what came back
-tower accept T-0001         # verifies files + checks + verify_commands, then accepts
-tower rework T-0001 --note "Checks list no results; re-run the test suite"
+dsh plugin --profile <name> add ./packages/dsh-tower
 ```
 
----
+`tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
+→ [packages/dsh-tower](packages/dsh-tower/README.md)
 
-## 9. Adapters
+## Adapters
 
 An adapter is the only component that knows how to make an agent act. Same contract for all four:
 
@@ -201,13 +155,12 @@ An adapter is the only component that knows how to make an agent act. Same contr
 |---|---|---|
 | `dsh` | a live DeepSeek Harness session (`session/prompt`, queued) | **primary**: long-lived roles with browser + shell tools |
 | `cli` | any agent binary that takes a prompt (`claude -p`, `codex exec`, Aider, your script) | you already run agent CLIs |
-| `openai` | any OpenAI-compatible `/chat/completions` with a minimal `run_shell` loop | hosted models, vLLM, Ollama |
+| `openai` | any OpenAI-compatible `/chat/completions` with a small `run_shell` loop | hosted models, vLLM, Ollama |
 | `mock` | nothing (writes a placeholder artifact) | tests, demos, CI |
 
-Adding one is ~40 lines: implement `run(AdapterRequest) -> AdapterResult`, register the name.
-See [docs/adapters.md](docs/adapters.md).
+Adding one is ~40 lines → [docs/adapters.md](docs/adapters.md).
 
-## 10. The report contract (and why the verifier exists)
+## The report contract (and why the verifier exists)
 
 ```markdown
 ## Summary        → 2–5 sentences
@@ -216,22 +169,18 @@ See [docs/adapters.md](docs/adapters.md).
 ## Open issues    → anything unfinished, or "none"
 ```
 
-`tower accept` mechanically rejects:
+`tower accept` mechanically rejects: a missing/empty section · a check line without a result · a
+listed file that does not exist · any failing entry in `verify_commands`.
 
-- a missing/empty required section (`accept_requires` in config);
-- a check line with no result (no `→`);
-- a listed file that does not exist in the workspace;
-- any failing entry in `verify_commands`:
-
-  ```yaml
-  verify_commands:
-    - "pytest -q"
-    - "npm run build"
-  ```
+```yaml
+verify_commands:
+  - "pytest -q"
+  - "npm run build"
+```
 
 That is the difference between *"the agent said it works"* and *"the tower checked"*.
 
-## 11. Commands
+## Commands
 
 | Command | Purpose |
 |---|---|
@@ -246,7 +195,7 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower demo` | offline end-to-end demo |
 | `tower doctor` | validate config, adapter options, keys, sessions |
 
-## 12. What's on disk
+## What's on disk
 
 ```
 my-project/
@@ -263,31 +212,60 @@ my-project/
     └── inbox.jsonl         # reports + unread flag
 ```
 
-Commit `.tower/` if you want the audit trail in git; gitignore it if you only want the deliverables.
-Either way nothing lives in a database you cannot read.
+## How it compares
 
-## 13. Design notes worth stealing
+|  | single agent | agent framework (graph/DSL) | **agent-control-tower** |
+|---|---|---|---|
+| Who routes the work | the one agent, in its head | the graph you wrote | the lead, explicitly, per task |
+| Deliverable | chat text | node outputs | files + a four-section report |
+| "Done" means | the agent said so | the node finished | the tower verified it |
+| Audit trail | scrollback | framework logs | `ledger.jsonl` you can `git diff` |
+| Setup | prompt | graph + runtime + infra | `pip install` + one YAML |
+| Runs offline / in CI | no | sometimes | yes (`tower demo`) |
 
-- **Roles cannot spawn roles.** Fan-out stays a lead decision, so the task tree stays inspectable.
-- **`serial_requests` + `request_gap_s`.** For fragile hosts or rate-limited APIs: one dispatch at a time, with a gap. The reference project ran on a 1 GB VPS that fell over under parallel requests.
-- **Verification is a CLI verb, not prompt advice.** Agents optimise for "report success"; the tower removes the incentive.
-- **Reports are files, not messages.** They survive context compaction, review in PRs, and are re-parseable months later.
+## FAQ
 
-## 14. Roadmap
+**Do I need DSH to use it?** No. DSH is the primary adapter because that is where the pattern came
+from; `cli`, `openai` and `mock` follow the same contract.
 
-- [ ] `tower watch` — poll adapters and auto-file reports for long-running CLI agents
-- [ ] notification sinks (Slack / Telegram / webhook) on top of the file inbox
-- [ ] per-role `verify_commands` overrides
-- [ ] token / cost accounting per role
-- [ ] `tower report --html` — one-page audit report per batch
+**Does it run the agents itself?** No. It renders the prompt, calls your adapter, and checks what came
+back. The agent runtime stays yours.
 
-## 15. Docs
+**Can agents talk to each other?** No. Hub-and-spoke on purpose: the lead routes, so the task tree
+stays inspectable and two roles cannot silently converge on the same file.
 
-- [DSH quickstart](docs/dsh-quickstart.md) — the primary setup, end to end
-- [Architecture](docs/architecture.md) — components, state machine, why files instead of a queue
-- [Adapters](docs/adapters.md) — mock / cli / dsh / openai, and how to add your own
-- [Contributing](CONTRIBUTING.md) — ground rules and PR checklist
+**What if a role keeps failing?** `round` increments on every `rework`; when `round > max_rounds` the
+tower stops and tells you to escalate instead of looping.
+
+**Is the ledger safe to commit?** Yes — append-only JSONL; committing it puts the audit trail in
+`git log`. Add `.tower/` to `.gitignore` if you only want deliverables.
+
+**Where does it write?** Only inside the tower workspace: `roles/<role>/` for deliverables and
+`.tower/` for state.
+
+## Docs
+
+| Doc | What's inside |
+|---|---|
+| [DSH quickstart](docs/dsh-quickstart.md) | the primary setup, end to end, plus five failure modes it prevents |
+| [Architecture](docs/architecture.md) | components, state machine, why files instead of a queue |
+| [Adapters](docs/adapters.md) | mock / cli / dsh / openai, and how to add your own |
+| [Contributing](CONTRIBUTING.md) | ground rules, PR checklist, adapter guide |
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Acknowledgements
+
+- The pattern was extracted from a real long-running build on [DeepSeek Harness](https://github.com/),
+  then generalised so it works without it.
+- The `dsh-tower` bundle follows the harness bundle conventions from the
+  [DeepSeek Harness docs](https://github.com/deepseek-ai/deepseek-harness): `dsh.bundle` +
+  `cordis.patch.yml` + `ctx.tools.register`.
+- Terminal frames in this README are **real command output**, rendered by
+  [`docs/assets/build_assets.py`](docs/assets/build_assets.py) — no mock-ups.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=evolution301/agent-control-tower&type=Date)](https://star-history.com/#evolution301/agent-control-tower&Date)
