@@ -13,7 +13,9 @@
 [CmdletBinding()]
 param(
     [string]$Workspace = (Get-Location).Path,
-    [string]$Out = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'tower-env.json')
+    [string]$Out = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'tower-env.json'),
+    # Optional: write base_url + secret straight into this tower.toml.
+    [string]$ApplyTo = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -154,6 +156,22 @@ $payload = [pscustomobject]@{
     sessions      = @($matched | Sort-Object title | ForEach-Object {
         [pscustomobject]@{ title = $_.title; session_id = $_.session_id }
     })
+}
+
+if ($ApplyTo) {
+    if (-not (Test-Path $ApplyTo)) {
+        Write-Warning "ApplyTo target not found: $ApplyTo"
+    } else {
+        $text = Get-Content $ApplyTo -Raw -Encoding UTF8
+        if ($baseUrl) {
+            $text = [regex]::Replace($text, '(?m)^(\s*base_url:\s*)"[^"]*"', '${1}"' + $baseUrl + '"')
+        }
+        if ($secret) {
+            $text = [regex]::Replace($text, '(?m)^(\s*secret:\s*)"[^"]*"', '${1}"' + $secret + '"')
+        }
+        Set-Content -Path $ApplyTo -Value $text -Encoding UTF8 -NoNewline
+        Write-Host "applied base_url + secret to $ApplyTo"
+    }
 }
 
 $json = $payload | ConvertTo-Json -Depth 6

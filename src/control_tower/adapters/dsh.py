@@ -16,11 +16,23 @@ with 401. The cookie is built from `secret` (the base64 secret the harness print
 for the bridge, or one you mint yourself); without it the call is anonymous and
 only works against an auth-disabled host.
 
+Session resolution
+------------------
+A role does not need a hand-copied session id. `sessions` may map a role to an id,
+to `"auto"`, or to nothing, in which case the adapter:
+
+1. reads the cache written by the previous run (`<cwd>/.tower/dsh-sessions.json`),
+2. looks the session up by title through `session/list` (`role_titles`, falling
+   back to the role name), which reuses an existing conversation such as
+   "PRL UI前端",
+3. creates one with `session/create` in `create_cwd` and renames it
+   (`session/rename`) to the role title.
+
 The reply is read from a report file: `session/prompt` queues the turn, and the
-brief tells the role to write `<task_id>-REPORT.md` into the shared workspace.
-DSH exposes page reads (`session/page`) only through a live `session/follow`
-stream, and session transcripts are zstd-compressed on disk, so a file the role
-names itself is the stable contract - the same one the reference workflow used.
+brief tells the role to write `<task_id>-REPORT.md` into the shared workspace. DSH
+exposes page reads (`session/page`) only through a live `session/follow` stream and
+session transcripts are zstd-compressed on disk, so a file the role names itself is
+the stable contract - the same one the reference workflow used.
 
 Config
 ------
@@ -28,7 +40,9 @@ Config
     base_url = "http://127.0.0.1:52713"     # DSH desktop GUI URL
     authority = ""                          # defaults to host:port of base_url
     secret = ""                             # base64 HMAC secret; empty = anonymous
-    sessions = { backend = "session-...", ui = "session-..." }
+    sessions = { backend = "session-...", ui = "auto" }
+    role_titles = { ui = "PRL UI前端", backend = "PRL 后端" }
+    create_cwd = ""                         # creation directory for "auto" roles
     wait_s = 1800                           # max wait for the report file
     poll_s = 5
     report_file = "{task_id}-REPORT.md"
@@ -51,6 +65,7 @@ from .base import AdapterRequest, AdapterResult
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 COOKIE_LIFETIME_MS = 30 * 24 * 3600 * 1000
+SESSION_CACHE = Path(".tower") / "dsh-sessions.json"
 
 
 def b64u(raw: bytes) -> str:
@@ -90,16 +105,21 @@ class DshAdapter:
         authority: str = "",
         timezone: str = DEFAULT_TIMEZONE,
         report_file: str = "{task_id}-REPORT.md",
+        role_titles: dict[str, str] | None = None,
+        create_cwd: str = "",
         **_,
     ):
         self.base_url = base_url.rstrip("/")
         self.sessions = dict(sessions or {})
+        self.role_titles = dict(role_titles or {})
+        self.create_cwd = create_cwd
         self.wait_s = float(wait_s)
         self.poll_s = max(0.05, float(poll_s))
         self.secret = b64d(secret) if secret else b""
         self.authority = authority or self.base_url.split("://", 1)[-1].split("/", 1)[0]
         self.timezone = timezone
         self.report_file = report_file
+        self.resolution: dict[str, str] = {}
 
     # -- low level -------------------------------------------------------
     def envelope(self, method: str, args: dict) -> dict:
@@ -140,18 +160,114 @@ class DshAdapter:
         except Exception as exc:  # pragma: no cover - network dependent
             return {"error": "%s: %s" % (type(exc).__name__, exc)}
 
+    @staticmethod
+    def _result_value(reply: dict):
+        result = reply.get("result")
+        if isinstance(result, dict):
+            if "value" in result:
+                return result["value"]
+            return result
+        return None
+
+    # -- session resolution ----------------------------------------------
+    def title_for(self, role: str) -> str:
+        return self.role_titles.get(role) or role
+
+    def _cache_path(self, cwd: str | Path) -> Path:
+        return Path(cwd) / SESSION_CACHE
+
+    def _read_cache(self, cwd: str | Path) -> dict:
+        path = self._cache_path(cwd)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write_cache(self, cwd: str | Path, mapping: dict) -> None:
+        path = self._cache_path(cwd)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:  # pragma: no cover - cache is best effort
+            pass
+
+    def find_session_by_title(self, title: str, cwd: str | Path = "") -> str | None:
+        reply = self.rpc("session/list", {"_request": {}})
+        value = self._result_value(reply)
+        items = (value or {}).get("items") if isinstance(value, dict) else None
+        if not items:
+            return None
+        best = None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            projections = item.get("projections") or {}
+            values = projections.get("values") if isinstance(projections, dict) else None
+            item_title = (values or {}).get("title") if isinstance(values, dict) else None
+            if not item_title or str(item_title).strip() != title.strip():
+                continue
+            item_cwd = str(item.get("cwd") or "")
+            if cwd and item_cwd and Path(item_cwd) != Path(str(cwd)):
+                continue
+            if best is None or int(item.get("updatedAt") or 0) > int(best.get("updatedAt") or 0):
+                best = item
+        return best.get("sessionId") if best else None
+
+    def create_session(self, title: str, cwd: str | Path = "") -> str | None:
+        directory = str(cwd or self.create_cwd or "")
+        request = {}
+        if directory:
+            request["cwd"] = directory
+        reply = self.rpc("session/create", {"request": request})
+        value = self._result_value(reply)
+        sid = None
+        if isinstance(value, dict):
+            sid = value.get("sessionId") or value.get("id")
+        if not sid:
+            return None
+        if title:
+            self.rpc("session/rename", {"request": {"sessionId": sid, "title": title}})
+        return sid
+
+    def resolve_session(self, req: AdapterRequest) -> tuple[str | None, str]:
+        """Return (session id, how it was resolved)."""
+        explicit = self.sessions.get(req.role) or ""
+        if explicit and explicit != "auto":
+            return explicit, "config"
+
+        cache = self._read_cache(req.cwd)
+        cached = cache.get(req.role)
+        if cached:
+            return cached, "cache"
+
+        title = self.title_for(req.role)
+        found = self.find_session_by_title(title, req.cwd)
+        if found:
+            cache[req.role] = found
+            self._write_cache(req.cwd, cache)
+            return found, "title-match"
+
+        created = self.create_session(title, str(req.cwd) if not self.create_cwd else self.create_cwd)
+        if created:
+            cache[req.role] = created
+            self._write_cache(req.cwd, cache)
+            return created, "created"
+        return None, "unresolved"
+
     # -- adapter ---------------------------------------------------------
     def report_path(self, req: AdapterRequest) -> Path:
         name = self.report_file.format(task_id=req.task_id, role=req.role)
         return Path(req.cwd) / name
 
     def run(self, req: AdapterRequest) -> AdapterResult:
-        session_id = self.sessions.get(req.role)
+        session_id, how = self.resolve_session(req)
+        self.resolution[req.role] = how
         if not session_id:
             return AdapterResult(
-                text="[dsh] no session configured for role %r" % req.role,
+                text="[dsh] could not resolve a session for role %r (config, title match and create all failed)" % req.role,
                 exit_code=2,
-                meta={"missing_session": req.role},
+                meta={"missing_session": req.role, "resolution": how},
             )
 
         report = self.report_path(req)
@@ -182,14 +298,14 @@ class DshAdapter:
             return AdapterResult(
                 text="[dsh] prompt failed: %s" % reply["error"],
                 exit_code=3,
-                meta={"rpc": "session/prompt"},
+                meta={"rpc": "session/prompt", "resolution": how},
             )
         result = reply.get("result")
         if isinstance(result, dict) and result.get("ok") is False:
             return AdapterResult(
                 text="[dsh] prompt rejected: " + json.dumps(result, ensure_ascii=False)[:300],
                 exit_code=3,
-                meta={"rpc": "session/prompt", "result": result},
+                meta={"rpc": "session/prompt", "result": result, "resolution": how},
             )
 
         deadline = time.time() + self.wait_s
@@ -198,11 +314,11 @@ class DshAdapter:
                 return AdapterResult(
                     text=report.read_text(encoding="utf-8"),
                     exit_code=0,
-                    meta={"report_file": str(report)},
+                    meta={"report_file": str(report), "session_id": session_id, "resolution": how},
                 )
             time.sleep(self.poll_s)
         return AdapterResult(
             text="[dsh] timed out after %gs waiting for %s" % (self.wait_s, report),
             exit_code=4,
-            meta={"expected_report": str(report)},
+            meta={"expected_report": str(report), "session_id": session_id, "resolution": how},
         )

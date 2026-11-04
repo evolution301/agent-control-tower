@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.4.0] - 2026-11-04
+
+### Added
+
+- **Roles no longer need hand-copied session ids.** `sessions` may map a role to an id, to `"auto"`,
+  or to nothing at all; the adapter then resolves it in this order:
+  1. `.tower/dsh-sessions.json` from a previous run,
+  2. `session/list` matched by title (`role_titles`, falling back to the role name), which reuses an
+     existing conversation such as "PRL UI前端",
+  3. `session/create` in `create_cwd`, then `session/rename` to the role title.
+  The resolved id is cached per workspace, so only the first dispatch pays for the lookup.
+- `scripts/collect-dsh-env.ps1 -ApplyTo <tower.toml>` writes the detected `base_url` and `secret`
+  straight into a tower config, so a machine can be wired with one command and no copy-paste.
+
 ## [0.3.2] - 2026-11-04
 
 ### Added
