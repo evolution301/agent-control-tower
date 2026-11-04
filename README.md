@@ -112,6 +112,18 @@ So **DSH is the primary adapter**: roles are DSH sessions, dispatch is a queued 
 
 Other runtimes are supported by the same contract: `cli` (Claude Code / Codex / Aider), `openai` (any OpenAI-compatible endpoint), `mock` (tests and demos).
 
+### Drive it from inside DSH: `packages/dsh-tower`
+
+A companion bundle registers five tools on the harness tool registry, so a DSH session can dispatch,
+read the inbox, verify, accept and rework without leaving the conversation:
+
+```sh
+dsh plugin --profile <name> add ./packages/dsh-tower
+```
+
+`tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
+→ [packages/dsh-tower/README.md](packages/dsh-tower/README.md)
+
 ---
 
 ## 6. Install

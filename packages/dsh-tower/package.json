@@ -1,0 +1,46 @@
+{
+  "name": "dsh-tower",
+  "version": "0.1.0",
+  "description": "Control tower tools for DeepSeek Harness: dispatch a task to a role, read the inbox, verify and accept or send back a report.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agents",
+    "orchestration",
+    "control-tower",
+    "multi-agent"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evolution301/agent-control-tower.git",
+    "directory": "packages/dsh-tower"
+  },
+  "homepage": "https://github.com/evolution301/agent-control-tower/tree/main/packages/dsh-tower#readme",
+  "bugs": {
+    "url": "https://github.com/evolution301/agent-control-tower/issues"
+  }
+}
