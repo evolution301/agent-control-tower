@@ -20,3 +20,5 @@ docs/assets/generated/
 # tower workspaces created with `tower init` for local testing
 workspace/
 docs/assets/demo-tower/
+
+_resolve_conflicts.py
