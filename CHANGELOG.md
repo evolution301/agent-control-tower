@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.3.2] - 2026-11-04
+
+### Added
+
+- **`scripts/collect-dsh-env.ps1`** — one command on a DSH machine prints the three values a `dsh`
+  adapter needs: the harness `base_url`, the base64 HMAC `secret` (read from an existing bridge
+  script or `DSH_BRIDGE_SECRET`), and every session whose working directory matches a workspace,
+  with its title. Ports are found by probing the listening sockets of the running harness with an
+  authenticated `session/list` call, so a GUI behind token auth is still detected (it answers 401
+  rather than 404).
+
 ## [0.3.1] - 2026-11-04
 
 ### Fixed
