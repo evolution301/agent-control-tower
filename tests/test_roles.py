@@ -134,3 +134,49 @@ def test_role_list_json_is_machine_readable(cfg_path, capsys):
     rows = json.loads(capsys.readouterr().out)
     assert {row["name"] for row in rows} == {"backend", "copy"}
     assert next(row for row in rows if row["name"] == "copy")["session_id"] == "s-1"
+
+COMMENTED_CONFIG = """name: probe
+workspace: .
+
+roles:
+  backend:
+    description: "server"
+    adapter: mock
+    write_scopes: ["src/"]
+    max_rounds: 2
+
+adapters:
+  dsh:
+    base_url: "http://127.0.0.1:52713"      # the desktop harness
+    sessions: {}                            # fill role -> session id
+    wait_s: 1800
+  openai:
+    base_url: "http://127.0.0.1:8000/v1"
+    model: "grok-4"
+"""
+
+
+def test_session_wiring_keeps_one_adapters_block(tmp_path):
+    """A trailing comment on `sessions:` must not append a second adapters key.
+
+    Two `adapters:` keys in one YAML document make the parser keep the last one,
+    which silently dropped base_url and the sibling openai adapter.
+    """
+    path = tmp_path / "tower.toml"
+    path.write_text(COMMENTED_CONFIG, encoding="utf-8")
+    add_role(path, "qa", description="verification", session_id="session-qa")
+    text = path.read_text(encoding="utf-8")
+    assert text.count("\nadapters:") == 1
+    cfg = load_config(tmp_path)
+    assert cfg.adapter_options["dsh"]["sessions"] == {"qa": "session-qa"}
+    assert cfg.adapter_options["dsh"]["base_url"] == "http://127.0.0.1:52713"
+    assert cfg.adapter_options["openai"]["model"] == "grok-4"
+    assert "# fill role -> session id" in text
+
+
+def test_session_wiring_inserts_block_when_absent(tmp_path):
+    path = tmp_path / "tower.toml"
+    path.write_text("name: bare\nworkspace: .\nroles:\n  a:\n    description: x\n", encoding="utf-8")
+    add_role(path, "b", description="y", session_id="s-b")
+    cfg = load_config(tmp_path)
+    assert cfg.adapter_options["dsh"]["sessions"] == {"b": "s-b"}

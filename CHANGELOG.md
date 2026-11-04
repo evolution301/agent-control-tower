@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.3.1] - 2026-11-04
+
+### Fixed
+
+- **The `dsh` adapter could not talk to a real DSH host at all.** It posted to
+  `/rpc/<method>` with no authentication and a bare `{"request": ...}` body, while the
+  harness serves `/api/<method>` and requires an HMAC-signed `dsh-auth-<sha256(authority)>`
+  cookie plus a `{"type":"client-request", ..., "payload":{"args":...}}` envelope — an
+  unauthenticated bridge simply gets `401`. The adapter now builds that cookie from a
+  base64 `secret` (or runs anonymously when none is configured), sends the correct
+  envelope, and calls `session/prompt` with the `payload.args.request` shape the host's
+  strict codec expects (`sessionId`, `requestId`, `mode`, `content`, `clientTimeZone`).
+- **The reply path no longer guesses.** `session/page` needs a `throughSeq` from a live
+  `session/follow` stream, and on-disk transcripts are zstd-compressed, so the adapter
+  now has the brief itself tell the role to write `<task_id>-REPORT.md` and polls that
+  file (configurable: `report_file`, `wait_s`, `poll_s`). Stale reports from a previous
+  round are deleted before the prompt is sent, so a dead session cannot fake a result.
+
+### Added
+
+- `authority`, `secret`, `timezone` and `report_file` options on `[adapters.dsh]`.
+- Adapter tests against a local HTTP server: cookie construction and signature, the
+  client-request envelope, `/api/` routing, the prompt argument shape, the missing
+  session path, and the timeout path.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

@@ -6,4 +6,4 @@ directory, and file a report. The tower records everything in an append-only
 ledger so the lead can verify claims instead of trusting them.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

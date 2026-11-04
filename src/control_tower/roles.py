@@ -16,7 +16,9 @@ from .config import Role, TowerConfig, find_config_path, load_config
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ROLE_LINE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9._-]*):\s*$")
 TOP_KEY = re.compile(r"^\S")
-SESSIONS_LINE = re.compile(r"^    sessions:\s*(\{\s*\})?\s*$")
+ADAPTERS_LINE = re.compile(r"^adapters:\s*$")
+DSH_LINE = re.compile(r"^  dsh:\s*$")
+SESSIONS_LINE = re.compile(r"^    sessions:\s*(\{\s*\})?\s*(#.*)?$")
 
 DEFAULT_CHARTER = """# {name} · {description}
 
@@ -101,39 +103,87 @@ def _insert_point(lines: list[str], span: tuple[int, int]) -> int:
     return point
 
 
-def _set_session(lines: list[str], name: str, session_id: str) -> None:
-    index = None
+def _locate_sessions(lines: list[str]):
+    """Find the `sessions:` line inside `adapters.dsh`.
+
+    Returns (dsh_index, sessions_index, trailing_comment); indexes are None when
+    that part of the tree does not exist yet. The search is scoped to the
+    adapters block so a sibling adapter (openai, cli) never receives the entry,
+    and a trailing comment on `sessions:` is preserved instead of being treated
+    as a reason to append a second `adapters:` key.
+    """
+    adapters = None
     for i, line in enumerate(lines):
-        if SESSIONS_LINE.match(line):
-            index = i
+        if ADAPTERS_LINE.match(line):
+            adapters = i
             break
-    if index is None:
+    if adapters is None:
+        return None, None, ""
+    end = len(lines)
+    for j in range(adapters + 1, len(lines)):
+        if TOP_KEY.match(lines[j]):
+            end = j
+            break
+    dsh = None
+    for i in range(adapters + 1, end):
+        if DSH_LINE.match(lines[i]):
+            dsh = i
+            break
+    if dsh is None:
+        return None, None, ""
+    dsh_end = end
+    for j in range(dsh + 1, end):
+        if re.match(r"^  \S", lines[j]):
+            dsh_end = j
+            break
+    for i in range(dsh + 1, dsh_end):
+        match = SESSIONS_LINE.match(lines[i])
+        if match:
+            return dsh, i, (match.group(2) or "")
+    return dsh, None, ""
+
+
+def _set_session(lines: list[str], name: str, session_id: str) -> None:
+    dsh, index, comment = _locate_sessions(lines)
+    entry_text = '      %s: "%s"\n' % (name, session_id)
+    if dsh is None and index is None:
         lines.append("\n")
         lines.append("adapters:\n")
         lines.append("  dsh:\n")
         lines.append("    sessions:\n")
-        lines.append(f'      {name}: "{session_id}"\n')
+        lines.append(entry_text)
         return
-    if lines[index].rstrip("\r\n").strip().endswith("{}"):
-        lines[index] = "    sessions:\n"
-        lines.insert(index + 1, f'      {name}: "{session_id}"\n')
+    if index is None:
+        lines.insert(dsh + 1, "    sessions:\n")
+        lines.insert(dsh + 2, entry_text)
         return
-    entry = re.compile(rf"^\s{{6}}{re.escape(name)}:")
+    stripped = lines[index].rstrip("\r\n").strip()
+    if stripped.startswith("sessions:") and "{}" in stripped:
+        suffix = ("  " + comment) if comment else ""
+        lines[index] = "    sessions:" + suffix + "\n"
+        lines.insert(index + 1, entry_text)
+        return
+    entry = re.compile(r"^\s{6}%s:" % re.escape(name))
     j = index + 1
     while j < len(lines) and (lines[j].startswith("      ") or not lines[j].strip()):
         if entry.match(lines[j]):
-            lines[j] = f'      {name}: "{session_id}"\n'
+            lines[j] = entry_text
             return
         j += 1
-    lines.insert(j, f'      {name}: "{session_id}"\n')
+    lines.insert(j, entry_text)
 
 
 def _drop_session(lines: list[str], name: str) -> None:
-    entry = re.compile(rf"^\s{{6}}{re.escape(name)}:")
-    for i, line in enumerate(lines):
-        if entry.match(line):
-            del lines[i]
+    _, index, _ = _locate_sessions(lines)
+    if index is None:
+        return
+    entry = re.compile(r"^\s{6}%s:" % re.escape(name))
+    j = index + 1
+    while j < len(lines) and (lines[j].startswith("      ") or not lines[j].strip()):
+        if entry.match(lines[j]):
+            del lines[j]
             return
+        j += 1
 
 
 # ---------------------------------------------------------------- public API
