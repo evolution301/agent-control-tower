@@ -57,7 +57,7 @@ function runTower(settings, args) {
         const text = (stdout ?? '').trim()
         const errText = (stderr ?? '').trim()
         if (text) {
-          const parsed = tryParseJson(text)
+          const parsed = parseJsonOutput(text)
           if (parsed !== undefined) {
             resolvePromise({ ok: !error, code: error?.code ?? 0, data: parsed, stderr: errText })
             return
@@ -73,15 +73,25 @@ function runTower(settings, args) {
   })
 }
 
-/** Parse the first JSON object/array in a stdout blob, if any. */
-function tryParseJson(text) {
-  const start = text.search(/[[{]/)
-  if (start < 0) return undefined
-  try {
-    return JSON.parse(text.slice(start))
-  } catch {
-    return undefined
+/**
+ * Parse the JSON document in a stdout blob, if any.
+ *
+ * The CLI prints only JSON in `--json` mode, but older releases printed the
+ * human report first (`task T-0001 ... / --- report ---`). Trying every `{`/`[`
+ * start keeps the bundle working against either CLI: taking only the first one
+ * silently degraded the parsed task to a string and then failed the output
+ * schema with `"value.task" must be an object`.
+ */
+export function parseJsonOutput(text) {
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{' && text[i] !== '[') continue
+    try {
+      return JSON.parse(text.slice(i))
+    } catch {
+      // not the payload — keep looking
+    }
   }
+  return undefined
 }
 
 /** Fail early and clearly when the workspace is not a tower. */
@@ -123,7 +133,42 @@ function summarizeDispatch(data) {
 
 const textOut = (text) => [{ type: 'text', text }]
 
-const tool = (def) => def
+/**
+ * Hoist per-property `required: true` flags into the object node's `required`
+ * array, which is the only spelling DSH's `assertSupportedJsonSchema` accepts.
+ *
+ * A `required` key inside a property node (`{ type: 'string', required: true }`)
+ * makes `ctx.tools.register()` throw `JsonSchemaError: ... required is not
+ * supported on type "string"`; the bundle then fails to mount, the failure is
+ * only visible in the host log, and the tools silently never appear.
+ */
+function normalizeOutputSchema(node) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return node
+  const out = { ...node }
+  if (out.properties && typeof out.properties === 'object') {
+    const properties = {}
+    const required = new Set(Array.isArray(out.required) ? out.required : [])
+    for (const [name, property] of Object.entries(out.properties)) {
+      if (property && typeof property === 'object' && !Array.isArray(property)) {
+        const { required: flag, ...rest } = property
+        if (flag === true) required.add(name)
+        properties[name] = normalizeOutputSchema(rest)
+      } else {
+        properties[name] = property
+      }
+    }
+    out.properties = properties
+    if (required.size > 0) out.required = [...required]
+    else delete out.required
+  }
+  return out
+}
+
+/** Attach a tool definition, normalising its output schema for the harness. */
+const tool = (def) => ({
+  ...def,
+  output: { ...def.output, schema: normalizeOutputSchema(def.output?.schema) },
+})
 
 /**
  * Mount the five tower tools on `ctx.tools`.

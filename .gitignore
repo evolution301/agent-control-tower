@@ -16,3 +16,6 @@ tower.local.toml
 
 # build intermediates for README assets
 docs/assets/generated/
+
+# tower workspaces created with `tower init` for local testing
+workspace/

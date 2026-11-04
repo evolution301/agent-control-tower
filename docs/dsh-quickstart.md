@@ -10,6 +10,12 @@ This page walks through that exact setup. If you only have a model API, use the
 
 ---
 
+## 0. Install the bundle
+
+Desktop app, CLI profiles, the `tower`-on-`PATH` requirement and the silent-mount-failure gotcha are
+documented in [`packages/dsh-tower/README.md`](../packages/dsh-tower/README.md#install). Do that
+first; the rest of this page assumes the five `tower_*` tools exist in your session.
+
 ## 1. Mental model: roles are sessions
 
 In DSH a *session* is a durable agent with its own context, tools and working directory. That maps

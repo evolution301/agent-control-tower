@@ -11,7 +11,7 @@ DSH-first, adapter-portable, no SaaS, no database, no daemon.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-11%20python%20%2B%205%20node-brightgreen?style=flat)](tests)
+[![Tests](https://img.shields.io/badge/tests-21%20python%20%2B%2011%20node-brightgreen?style=flat)](tests)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-PyYAML%20only-lightgrey?style=flat)](pyproject.toml)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-D97757?style=flat)](packages/dsh-tower)
 

@@ -18,40 +18,73 @@ dependencies.**
 
 ## Install
 
-```sh
-# from npm (once published)
-dsh plugin --profile <name> add dsh-tower
+### Prerequisites
 
-# from this checkout
+- **DSH 0.2.1-rc.5 or newer**, desktop app or CLI. The bundle declares `engines.dsh`, so an
+  incompatible harness now refuses it with an explicit message instead of failing at mount time.
+- **The Python package on the `PATH` of the process that runs DSH.** Every tool shells out to
+  `tower`; installing it into a virtualenv you never activate for DSH makes every call fail with
+  `spawn tower ENOENT`.
+
+  ```sh
+  python -m pip install agent-control-tower     # or: pip install -e /path/to/agent-control-tower
+  tower init .                                  # once, in your project
+  ```
+
+### DSH desktop app
+
+The desktop app owns its profile: `dsh plugin --profile desktop ...` refuses with
+`profile "desktop" is managed exclusively by the Electron application`. Two working routes:
+
+1. **Plugins page (preferred).** Install the bundle from this checkout through the app's plugin
+   manager, then restart the app.
+2. **Hand-install into `~/.dsh/profiles/desktop`**:
+   - copy the package to `~/.dsh/profiles/desktop/node_modules/dsh-tower` as a **real directory**
+     (the loader resolves bundles through the profile's `node_modules`; do not leave a symlink),
+   - add `"dsh-tower"` to `dsh.profile.bundles` in the profile's `package.json`, plus a
+     `"dsh-tower": "file:..."` entry under `dependencies` so a later `pnpm install` keeps resolving
+     the local checkout,
+   - restart the app and check the tool list for the five `tower_*` tools.
+
+### DSH CLI profiles
+
+```sh
 dsh plugin --profile <name> add ./packages/dsh-tower
 ```
 
 The bundle row is inserted by [`cordis.patch.yml`](cordis.patch.yml) as `id: tower`.
 
-Prerequisite: the Python package must be available in the workspace where DSH runs.
+### If the tools never appear
+
+A bundle that throws inside `apply()` — for example a tool schema the harness rejects — fails to
+mount **silently**: no tools, no dialog. Boot the profile from a terminal and read stderr, which is
+where the harness prints `tower (dsh-tower): ...`:
 
 ```sh
-pip install agent-control-tower     # or: pip install -e /path/to/agent-control-tower
-tower init .                        # once, in your project
+deepseek-harness/resources/runtime/cli/bin/dsh.cmd --profile <profile>
 ```
+
+To inspect one profile in isolation, copy its `package.json` + `cordis.patch.yml` into a scratch
+`DSH_HOME`, boot it there and keep the terminal output.
 
 ## Configuration
 
 All optional; set them in the profile's `cordis.patch.yml` as a later layer targeting `id: tower`:
 
 ```yaml
-- insert:
-    - id: tower
-      name: dsh-tower
-      config:
-        workspace: /abs/path/to/project   # default: process.cwd()
-        towerBin: tower                   # default: "tower"
-        # python: python3                 # used with towerBin: "__python__" -> python -m control_tower
-        timeoutMs: 1800000                # per-call timeout (30 min)
+- id: tower
+  config:
+    workspace: C:/abs/path/to/project   # default: process.cwd()
+    towerBin: tower                     # default: "tower"
+    # python: python3                   # with towerBin: "__python__" -> python -m control_tower
+    timeoutMs: 1800000                  # per-call timeout (30 min)
 ```
 
-If `tower.toml` is not found in `workspace`, the tools fail with an actionable error instead of
-inventing results.
+The desktop app hot-reloads `cordis.patch.yml`, so configuration changes apply without a restart;
+changes to the bundle list itself (or to this package's code) need one.
+
+If no `tower.toml` / `tower.yaml` / `tower.json` is found in `workspace`, the tools fail with an
+actionable error instead of inventing results.
 
 ## Example: a lease-style loop from a DSH session
 

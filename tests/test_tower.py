@@ -230,3 +230,37 @@ def test_mandate_is_recorded(tower):
     board = Board(tower)
     task = board.create("backend", "x", mandate={"requester": "alice", "strength": "explicit"})
     assert board.load(task.id).mandate["requester"] == "alice"
+
+
+def test_dispatch_json_stdout_is_a_single_json_document(tower, capsys):
+    """--json exists for machine consumers (the DSH bundle): stdout must be one
+    JSON document, never the human report followed by JSON."""
+    from control_tower import cli
+
+    rc = cli.main(["dispatch", "backend", "json purity", "--json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    data = json.loads(out)
+    assert data["id"] == "T-0001"
+    assert data["role"] == "backend"
+    assert data["report"]["summary"]
+
+
+def test_dispatch_human_mode_still_prints_the_report(tower, capsys):
+    from control_tower import cli
+
+    rc = cli.main(["dispatch", "backend", "human mode"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.startswith("task T-0001")
+    assert "--- report ---" in out
+
+
+def test_dispatch_json_idempotent_hit_is_json_too(tower, capsys):
+    from control_tower import cli
+
+    assert cli.main(["dispatch", "backend", "idem", "--key", "k1", "--json"]) == 0
+    capsys.readouterr()
+    assert cli.main(["dispatch", "backend", "idem", "--key", "k1", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out)["id"] == "T-0001"

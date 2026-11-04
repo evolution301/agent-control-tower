@@ -84,10 +84,14 @@ def _load_yaml_or_toml(path: Path) -> dict[str, Any]:
 
 
 def load_config(start: Path | str | None = None) -> TowerConfig:
-    """Find and load tower.toml by walking up from *start*."""
+    """Find and load the tower config by walking up from *start*.
+
+    `parse_config` reads YAML and JSON alike, and the DSH bundle's workspace
+    check accepts `tower.json` as well, so the same four names are searched here.
+    """
     here = Path(start or os.getcwd()).resolve()
     for candidate in (here, *here.parents):
-        for name in (DEFAULT_CONFIG_NAME, "tower.yaml", "tower.yml"):
+        for name in (DEFAULT_CONFIG_NAME, "tower.yaml", "tower.yml", "tower.json"):
             path = candidate / name
             if path.exists():
                 return parse_config(path)

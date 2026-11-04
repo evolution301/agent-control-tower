@@ -88,6 +88,13 @@ def _cfg(args):
     return load_config(args.workspace or os.getcwd())
 
 
+def _say(args, message: str):
+    """Human-facing line: stdout normally, stderr when the caller asked for JSON
+    so that stdout stays a single parseable JSON document."""
+    stream = sys.stderr if getattr(args, "json", False) else sys.stdout
+    print(message, file=stream)
+
+
 def _print(obj, as_json: bool = False):
     if as_json:
         print(json.dumps(obj, ensure_ascii=False, indent=2))
@@ -127,17 +134,20 @@ def cmd_dispatch(args) -> int:
     board = Board(cfg)
     role = args.role
     if role not in cfg.roles:
-        print(f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
+        _say(args, f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
         return 2
     brief = args.brief or sys.stdin.read()
     if not brief.strip():
-        print("empty brief")
+        _say(args, "empty brief")
         return 2
     key = getattr(args, "key", "") or ""
     if key:
         existing = board.find_by_idem(key)
         if existing is not None:
-            print(f"idempotent hit: task {existing.id} already exists for key {key!r}")
+            if getattr(args, "json", False):
+                _print(existing.to_dict(), as_json=True)
+            else:
+                print(f"idempotent hit: task {existing.id} already exists for key {key!r}")
             return 0
     mandate = {
         "requester": getattr(args, "requester", "") or "operator",
@@ -146,6 +156,12 @@ def cmd_dispatch(args) -> int:
     }
     task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
     task = dispatch(cfg, board, task, dry_run=args.dry_run)
+    if args.json:
+        # Machine mode: stdout carries exactly one JSON document and nothing else
+        # so adapters (the DSH bundle) can parse it. The human report below must
+        # never leak into --json output.
+        _print(task.to_dict(), as_json=True)
+        return 0
     print(f"task {task.id} role={task.role} status={task.status}")
     if task.report:
         print("\n--- report ---")
@@ -153,8 +169,6 @@ def cmd_dispatch(args) -> int:
         print(f"files: {len(task.report.get('files', []))} | checks: {len(task.report.get('checks', []))}")
         v = verify_report(cfg, task)
         print(f"verify: {'PASS' if v.ok else 'FAIL'} {v.problems or ''}")
-    if args.json:
-        _print(task.to_dict(), as_json=True)
     return 0
 
 
