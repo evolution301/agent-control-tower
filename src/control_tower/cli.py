@@ -351,9 +351,32 @@ def cmd_demo(args) -> int:
     return 0
 
 
+SHELL_BUILTINS = {
+    "echo", "cd", "true", "false", ":", "dir", "copy", "type", "set",
+    "rem", "exit", "if", "for", "cat", "printf",
+}
+
+
+def _command_available(command: str) -> bool:
+    """Whether a verify command can actually run on this machine."""
+    import shutil
+
+    token = command.strip().split()[0].strip(chr(34) + chr(39)) if command.strip() else ""
+    if not token or token in SHELL_BUILTINS:
+        return True
+    if "/" in token or chr(92) in token:
+        return Path(token).exists()
+    return shutil.which(token) is not None
+
+
 def cmd_doctor(args) -> int:
     cfg = _cfg(args)
     problems = []
+    for command in cfg.verify_commands:
+        if not _command_available(command):
+            problems.append(
+                "verify command %r: %r is not on PATH" % (command, command.strip().split(" ")[0])
+            )
     for name, role in cfg.roles.items():
         if role.adapter not in ("mock", "cli", "dsh", "openai"):
             problems.append(f"role {name}: unknown adapter {role.adapter}")
@@ -542,6 +565,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A GBK console cannot encode every charter line; degrade instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

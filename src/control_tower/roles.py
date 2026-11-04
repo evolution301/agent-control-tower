@@ -20,6 +20,19 @@ ADAPTERS_LINE = re.compile(r"^adapters:\s*$")
 DSH_LINE = re.compile(r"^  dsh:\s*$")
 SESSIONS_LINE = re.compile(r"^    sessions:\s*(\{\s*\})?\s*(#.*)?$")
 
+def clean_text(value: str) -> str:
+    """Normalise operator text before it reaches the config or the console.
+
+    Charters are copied from editors that prefix a UTF-8 BOM and a markdown
+    heading; printing those on a GBK console raises UnicodeEncodeError, and the
+    BOM leaks into `description`. Strip both and collapse the whitespace.
+    """
+    text = (value or "").lstrip("\ufeff").strip()
+    while text.startswith("#"):
+        text = text[1:].lstrip()
+    return " ".join(text.split())
+
+
 DEFAULT_CHARTER = """# {name} · {description}
 
 你负责「{description}」。
@@ -38,7 +51,7 @@ def list_roles(cfg: TowerConfig) -> list[dict]:
         out.append(
             {
                 "name": name,
-                "description": role.description,
+                "description": clean_text(role.description),
                 "adapter": role.adapter,
                 "write_scopes": list(role.write_scopes),
                 "max_rounds": role.max_rounds,
@@ -213,7 +226,7 @@ def add_role(
 
     role = Role(
         name=name,
-        description=description,
+        description=clean_text(description),
         adapter=adapter,
         write_scopes=list(write_scopes or []),
         max_rounds=int(max_rounds),

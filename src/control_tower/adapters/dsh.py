@@ -107,12 +107,16 @@ class DshAdapter:
         report_file: str = "{task_id}-REPORT.md",
         role_titles: dict[str, str] | None = None,
         create_cwd: str = "",
+        projcache_dir: str = "",
         **_,
     ):
         self.base_url = base_url.rstrip("/")
         self.sessions = dict(sessions or {})
         self.role_titles = dict(role_titles or {})
         self.create_cwd = create_cwd
+        self.projcache_dir = projcache_dir or str(
+            Path.home() / ".dsh" / "storages" / "session_projcache" / "sessions"
+        )
         self.wait_s = float(wait_s)
         self.poll_s = max(0.05, float(poll_s))
         self.secret = b64d(secret) if secret else b""
@@ -212,7 +216,49 @@ class DshAdapter:
                 continue
             if best is None or int(item.get("updatedAt") or 0) > int(best.get("updatedAt") or 0):
                 best = item
-        return best.get("sessionId") if best else None
+        if best:
+            return best.get("sessionId")
+        # RPC rows can carry no title; the disk projection cache still has it.
+        wanted = title.strip()
+        for session_id, (disk_title, disk_cwd) in self.projcache_titles().items():
+            if disk_title != wanted:
+                continue
+            if cwd and disk_cwd and Path(disk_cwd) != Path(str(cwd)):
+                continue
+            return session_id
+        return None
+
+    def projcache_titles(self) -> dict:
+        """session id -> (title, cwd) read from the on-disk projection cache.
+
+        `session/list` can answer with empty `projections.rows` when a row was
+        never projected through the RPC (observed on a long-lived desktop host),
+        while the file cache still carries `record.rows.title.val`. Reading that
+        cache is how a title lookup stays working there.
+        """
+        root = Path(self.projcache_dir).expanduser()
+        found: dict = {}
+        if not root.exists():
+            return found
+        for file in root.glob("*.json"):
+            try:
+                doc = json.loads(file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            record = doc.get("record") if isinstance(doc, dict) else None
+            if not isinstance(record, dict):
+                continue
+            identity = record.get("identity") or {}
+            rows = record.get("rows") or {}
+            title = None
+            if isinstance(rows, dict):
+                title = (rows.get("title") or {}).get("val")
+            if not title:
+                continue
+            stem = file.stem
+            session_id = stem if stem.startswith("session-") else "session-" + stem
+            found[session_id] = (str(title).strip(), str(identity.get("cwd") or ""))
+        return found
 
     def create_session(self, title: str, cwd: str | Path = "") -> str | None:
         directory = str(cwd or self.create_cwd or "")
