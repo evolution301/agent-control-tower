@@ -90,7 +90,9 @@ def install(
     target = target_profile / "node_modules" / BUNDLE_NAME
     target.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
-        (target / name).write_bytes(data)
+        destination = target / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
     # tests live next to the bundle in a checkout; copy them when available
     if source:
         tests = Path(source) / "test"
