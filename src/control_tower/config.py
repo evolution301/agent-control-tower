@@ -83,21 +83,30 @@ def _load_yaml_or_toml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
-def load_config(start: Path | str | None = None) -> TowerConfig:
-    """Find and load the tower config by walking up from *start*.
+CONFIG_NAMES = (DEFAULT_CONFIG_NAME, "tower.yaml", "tower.yml", "tower.json")
 
-    `parse_config` reads YAML and JSON alike, and the DSH bundle's workspace
-    check accepts `tower.json` as well, so the same four names are searched here.
+
+def find_config_path(start: Path | str | None = None) -> Path:
+    """The tower config file for a workspace, found by walking up from *start*.
+
+    `parse_config` reads YAML and JSON alike, and the DSH bundle's workspace check
+    accepts `tower.json` as well, so the same four names are searched here.
+    Writing tools (roles) need the path itself, not the parsed config.
     """
     here = Path(start or os.getcwd()).resolve()
     for candidate in (here, *here.parents):
-        for name in (DEFAULT_CONFIG_NAME, "tower.yaml", "tower.yml", "tower.json"):
+        for name in CONFIG_NAMES:
             path = candidate / name
             if path.exists():
-                return parse_config(path)
+                return path
     raise FileNotFoundError(
         f"no {DEFAULT_CONFIG_NAME} found in {here} or any parent directory"
     )
+
+
+def load_config(start: Path | str | None = None) -> TowerConfig:
+    """Find and parse the tower config for a workspace."""
+    return parse_config(find_config_path(start))
 
 
 def parse_config(path: Path) -> TowerConfig:

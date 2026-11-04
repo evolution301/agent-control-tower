@@ -185,6 +185,9 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(acceptTool(cfg)),
     ctx.tools.register(reworkTool(cfg)),
     ctx.tools.register(statusTool(cfg)),
+    ctx.tools.register(rolesTool(cfg)),
+    ctx.tools.register(roleAddTool(cfg)),
+    ctx.tools.register(roleRemoveTool(cfg)),
   ]
   return () => {
     for (const dispose of disposers) dispose?.()
@@ -342,6 +345,109 @@ export function statusTool(cfg) {
     },
     presentCall() {
       return { card: 'generic', title: 'Control tower status', kind: 'other' }
+    },
+  })
+}
+
+/** `tower_roles`: list the configured roles (bots) and their wired sessions. */
+export function rolesTool(cfg) {
+  return tool({
+    name: 'tower_roles',
+    description:
+      'List the control tower roles (bots): adapter, write scope, round budget and the DSH session id wired to each one. Use it before dispatching to see who exists, and after creating a bot to confirm it is wired.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute() {
+      assertWorkspace(cfg)
+      const { data } = await runTower(cfg, ['role', 'list', '--json'])
+      const rows = Array.isArray(data) ? data : []
+      const text = rows.length
+        ? rows
+            .map(
+              (row) =>
+                `${row.name}	${row.adapter}	rounds=${row.max_rounds}	scope=${(row.write_scopes || []).join(',') || '-'}	${row.session_id || 'NO session id'}`,
+            )
+            .join(String.fromCharCode(10))
+        : 'no roles yet'
+      return { text }
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Control tower roles', kind: 'other' }
+    },
+  })
+}
+
+/** `tower_role_add`: create a role (bot) with its charter and session wiring. */
+export function roleAddTool(cfg) {
+  return tool({
+    name: 'tower_role_add',
+    description:
+      'Create a role (bot) in the control tower: appends it to tower.toml, writes roles/<name>/AGENT.md from the description and write scopes, and wires the DSH session id when one is given. Use it when the user asks for a new kind of worker, then dispatch to it.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Slug, e.g. keyword-research.' },
+      description: { type: 'string', required: true, description: 'One line: what this bot owns.' },
+      scopes: { type: 'string', description: 'Comma-separated write scopes, e.g. "content/,templates/".' },
+      adapter: { type: 'string', description: 'mock | cli | dsh | openai (default dsh).' },
+      session_id: { type: 'string', description: 'DSH session id of this bot, when it already exists.' },
+      max_rounds: { type: 'integer', description: 'Rework budget before escalation (default 2).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const argv = ['role', 'add', String(args.name ?? '')]
+      if (args.description) argv.push('--description', String(args.description))
+      if (args.adapter) argv.push('--adapter', String(args.adapter))
+      const scopes = String(args.scopes ?? '')
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter(Boolean)
+      for (const scope of scopes) argv.push('--scope', scope)
+      if (args.session_id) argv.push('--session', String(args.session_id))
+      if (args.max_rounds) argv.push('--max-rounds', String(args.max_rounds))
+      argv.push('--json')
+      const { data } = await runTower(cfg, argv)
+      const text =
+        typeof data === 'string'
+          ? data
+          : `role ${data.name} ready — adapter=${data.adapter}, scope=${(data.write_scopes || []).join(',') || '-'}, charter=${data.charter}`
+      return { text }
+    },
+    presentCall(args) {
+      return { card: 'generic', title: `Create bot ${args.name ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_role_remove`: unregister a role (bot). */
+export function roleRemoveTool(cfg) {
+  return tool({
+    name: 'tower_role_remove',
+    description:
+      'Remove a role (bot) from the control tower: drops it from tower.toml and from the session mapping. The charter under roles/<name>/ is kept unless purge is true.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Role to remove.' },
+      purge: { type: 'boolean', description: 'Also delete roles/<name>/ (default false).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const argv = ['role', 'remove', String(args.name ?? '')]
+      if (args.purge) argv.push('--purge')
+      argv.push('--json')
+      const { data } = await runTower(cfg, argv)
+      return { text: typeof data === 'string' ? data : `role ${data.name} removed` }
+    },
+    presentCall(args) {
+      return { card: 'generic', title: `Remove bot ${args.name ?? ''}`, kind: 'other' }
     },
   })
 }

@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+- **Conversational bot management.** The lead agent can now build and reshape the team while you
+  talk, instead of asking you to edit YAML:
+  - `tower role list` / `tower_roles` — every role with its adapter, write scope, round budget and
+    the DSH session id wired to it.
+  - `tower role add <name> --description "..." --scope content/ --session session-...` /
+    `tower_role_add` — appends the role to `tower.toml`, writes `roles/<name>/AGENT.md` from the
+    description and scopes, and records the session id under `adapters.dsh.sessions`.
+  - `tower role remove <name> [--purge]` / `tower_role_remove` — unregisters the bot (and drops
+    its session mapping); `--purge` also deletes its charter directory.
+- The edits are line-based: comments, ordering and every untouched role stay byte-identical, so a
+  hand-written `tower.toml` is safe to grow from a conversation.
+- Adding the first role works even in a config that has no `roles:` section yet (the bootstrap case
+  when the lead creates the first bot).
+
+The bundle therefore registers **eight** tools: the five from 0.2.x plus the three role tools.
+
 ## [0.2.2] - 2026-11-04
 
 ### Fixed

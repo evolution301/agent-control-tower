@@ -30,15 +30,24 @@ function fakeCtx() {
   }
 }
 
-test('apply registers the five tower tools and is unloadable', () => {
+test('apply registers every tower tool and is unloadable', () => {
   const { ctx, registered, disposed } = fakeCtx()
   const dispose = apply(ctx, { workspace: process.cwd() })
   assert.deepEqual(
     registered.map((d) => d.name).sort(),
-    ['tower_accept', 'tower_dispatch', 'tower_inbox', 'tower_rework', 'tower_status'],
+    [
+      'tower_accept',
+      'tower_dispatch',
+      'tower_inbox',
+      'tower_rework',
+      'tower_role_add',
+      'tower_role_remove',
+      'tower_roles',
+      'tower_status',
+    ],
   )
   dispose()
-  assert.equal(disposed.length, 5)
+  assert.equal(disposed.length, 8)
 })
 
 test('every tool definition carries the registry contract', () => {

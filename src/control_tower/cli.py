@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .roles import add_role, config_file, list_roles, remove_role
 from .board import (
     Board,
     PERSON_STATES,
@@ -345,6 +346,75 @@ def cmd_doctor(args) -> int:
     return 0 if not problems else 1
 
 
+def cmd_role_list(args) -> int:
+    cfg = _cfg(args)
+    rows = list_roles(cfg)
+    if getattr(args, "json", False):
+        _print(rows, as_json=True)
+        return 0
+    if not rows:
+        _say(args, 'no roles yet — add one: tower role add <name> --description "..."')
+        return 0
+    width = max(len(row["name"]) for row in rows)
+    for row in rows:
+        scope = ", ".join(row["write_scopes"]) or "-"
+        session = row["session_id"] or "NO session id"
+        print(f"{row['name']:<{width}}  {row['adapter']:<6} rounds={row['max_rounds']}  scope={scope}  {session}")
+        if row["description"]:
+            print(f"    {row['description']}")
+    return 0
+
+
+def cmd_role_add(args) -> int:
+    cfg = _cfg(args)
+    path = config_file(cfg.workspace)
+    charter = Path(args.charter).read_text(encoding="utf-8") if args.charter else ""
+    try:
+        info = add_role(
+            path,
+            args.name,
+            description=args.description,
+            adapter=args.adapter,
+            write_scopes=args.scope,
+            max_rounds=args.max_rounds,
+            timeout_s=args.timeout,
+            session_id=args.session,
+            charter=charter,
+            force=args.force,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        _say(args, f"error: {exc}")
+        return 2
+    if getattr(args, "json", False):
+        _print(info, as_json=True)
+        return 0
+    verb = "replaced" if info["replaced"] else "added"
+    scopes = ", ".join(info["write_scopes"]) or "-"
+    print(f"role {info['name']} {verb} (adapter={info['adapter']}, scope={scopes})")
+    print(f"charter: {info['charter']}")
+    if info["session_id"]:
+        print(f"session wired: {info['session_id']}")
+    else:
+        print("next: wire its bot session — tower role add %s ... --session <session-id>" % info["name"])
+    return 0
+
+
+def cmd_role_remove(args) -> int:
+    cfg = _cfg(args)
+    path = config_file(cfg.workspace)
+    try:
+        info = remove_role(path, args.name, purge=args.purge)
+    except (ValueError, FileNotFoundError) as exc:
+        _say(args, f"error: {exc}")
+        return 2
+    if getattr(args, "json", False):
+        _print(info, as_json=True)
+        return 0
+    suffix = f" (roles/{info['name']}/ deleted)" if info["purged"] else " (charter kept; --purge deletes it)"
+    print(f"role {info['name']} removed{suffix}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tower", description="Dispatch tasks to role agents and verify their reports.")
     p.add_argument("--version", action="version", version=f"agent-control-tower {__version__}")
@@ -410,6 +480,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("doctor", help="check the configuration")
     s.set_defaults(func=cmd_doctor)
+    s = sub.add_parser("role", help="list, add or remove roles (bots)")
+    rs = s.add_subparsers(dest="role_command", required=True)
+    r = rs.add_parser("list", help="list roles and their wired session ids")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(func=cmd_role_list)
+    r = rs.add_parser("add", help="add a role (bot): writes tower.toml + roles/<name>/AGENT.md")
+    r.add_argument("name")
+    r.add_argument("--description", default="")
+    r.add_argument("--adapter", default="dsh", help="mock | cli | dsh | openai")
+    r.add_argument("--scope", action="append", default=[], help="write scope, repeatable")
+    r.add_argument("--max-rounds", type=int, default=2)
+    r.add_argument("--timeout", type=int, default=1800)
+    r.add_argument("--session", default="", help="DSH session id of this bot (wires adapters.dsh.sessions)")
+    r.add_argument("--charter", default="", help="path to a markdown charter for roles/<name>/AGENT.md")
+    r.add_argument("--force", action="store_true")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(func=cmd_role_add)
+    r = rs.add_parser("remove", help="unregister a role (bot)")
+    r.add_argument("name")
+    r.add_argument("--purge", action="store_true", help="also delete roles/<name>/")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(func=cmd_role_remove)
     return p
 
 

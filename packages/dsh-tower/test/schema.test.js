@@ -17,10 +17,22 @@ import {
   inboxTool,
   parseJsonOutput,
   reworkTool,
+  roleAddTool,
+  roleRemoveTool,
+  rolesTool,
   statusTool,
 } from '../index.js'
 
-const TOOLS = [dispatchTool({}), inboxTool({}), acceptTool({}), reworkTool({}), statusTool({})]
+const TOOLS = [
+  dispatchTool({}),
+  inboxTool({}),
+  acceptTool({}),
+  reworkTool({}),
+  statusTool({}),
+  rolesTool({}),
+  roleAddTool({}),
+  roleRemoveTool({}),
+]
 
 /** The subset of the harness rules these tools are allowed to touch. */
 function assertSupportedSchema(node, path = 'schema') {

@@ -12,6 +12,9 @@ Registers five tools on the harness tool registry:
 | `tower_accept` | verify a reported task (files exist, checks carry results, `verify_commands` pass) and accept it — or get the rejection reasons |
 | `tower_rework` | send a task back with feedback and re-dispatch it (round + 1) |
 | `tower_status` | list the task board |
+| `tower_roles` | list the roles (bots) with their write scope, round budget and wired DSH session id |
+| `tower_role_add` | create a role (bot): appends `tower.toml`, writes `roles/<name>/AGENT.md`, wires the session id |
+| `tower_role_remove` | unregister a role (bot), optionally deleting its charter directory |
 
 The tools shell out to the Python CLI, so it stays the single implementation. **No runtime
 dependencies.**
