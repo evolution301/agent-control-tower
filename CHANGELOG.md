@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.0] - 2026-11-04
+
+### Added
+
+- **A `Tower` section in the DSH settings sidebar.** The bundle now ships a client module
+  (`lib/client.js`, hand-written in the harness' client module format, so no bundler is needed) that
+  registers on `settings.section` and embeds the local control panel in an iframe, with 刷新 and
+  新窗口打开 buttons.
+- **The host owns the panel process.** On mount the plugin checks `127.0.0.1:<panelPort>` and starts
+  `tower panel --port <panelPort>` detached when nothing listens; it stops that child on unload.
+  `panel: false` disables the supervision and `panelPort` (default 8787) picks the port.
+
+### Notes
+
+- Read-only: the section renders the panel, it never writes to the board. Dispatch/accept still go
+  through the `tower_*` tools.
+
 ## [0.6.2] - 2026-11-04
 
 ### Fixed

@@ -19,7 +19,8 @@
  * @module
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import net from 'node:net'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -40,6 +41,8 @@ function settings(config = {}) {
     towerBin: config.towerBin ?? 'tower',
     python: config.python ?? 'python',
     timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
+    panel: config.panel !== false,
+    panelPort: Number(config.panelPort ?? 8787),
   }
 }
 
@@ -207,8 +210,60 @@ const tool = (def) => ({
  * @param config - optional configuration (see cordis.patch.yml notes).
  * @returns disposer that unregisters the tools.
  */
+/**
+ * Whether something already listens on 127.0.0.1:<port>.
+ *
+ * A connection attempt is the cheapest liveness check and avoids depending on a
+ * platform-specific tool; a closed port answers with ECONNREFUSED immediately.
+ */
+export function portOpen(port, timeoutMs = 500) {
+  return new Promise((resolvePromise) => {
+    const socket = net.connect({ host: '127.0.0.1', port })
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolvePromise(ok)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+    socket.once('timeout', () => finish(false))
+  })
+}
+
+/**
+ * Start `tower panel` unless this machine already serves it.
+ *
+ * The settings section embeds that URL, so the plugin owns the process: it is
+ * spawned detached (the harness must not tie it to a turn) and stopped on unload.
+ */
+export async function ensurePanel(cfg) {
+  if (cfg.panel === false) return null
+  if (await portOpen(cfg.panelPort)) return null
+  try {
+    const child = spawn(cfg.towerBin, ['panel', '--port', String(cfg.panelPort)], {
+      cwd: cfg.workspace,
+      windowsHide: true,
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref?.()
+    return child
+  } catch {
+    return null
+  }
+}
+
 export function apply(ctx, config = {}) {
   const cfg = settings(config)
+  let panelChild = null
+  ensurePanel(cfg)
+    .then((child) => {
+      panelChild = child
+    })
+    .catch(() => {})
   const disposers = [
     ctx.tools.register(dispatchTool(cfg)),
     ctx.tools.register(inboxTool(cfg)),
@@ -221,6 +276,13 @@ export function apply(ctx, config = {}) {
   ]
   return () => {
     for (const dispose of disposers) dispose?.()
+    if (panelChild) {
+      try {
+        panelChild.kill()
+      } catch {
+        // the panel is detached; killing it is best effort
+      }
+    }
   }
 }
 

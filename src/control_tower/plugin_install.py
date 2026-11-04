@@ -15,7 +15,7 @@ from pathlib import Path
 
 BUNDLE_NAME = "dsh-tower"
 REPO_RAW = "https://raw.githubusercontent.com/evolution301/agent-control-tower/main/packages/dsh-tower"
-BUNDLE_FILES = ("index.js", "package.json", "cordis.patch.yml", "README.md")
+BUNDLE_FILES = ("index.js", "package.json", "cordis.patch.yml", "README.md", "lib/client.js")
 
 
 def dsh_home() -> Path:
