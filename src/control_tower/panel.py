@@ -167,6 +167,76 @@ tick(); setInterval(tick, 2000);
 """
 
 
+ZH = {
+    ">Needs you<": ">需要你处理<",
+    ">In flight<": ">进行中<",
+    ">Roles — who is doing what<": ">角色 — 谁在干什么<",
+    ">Ledger<": ">操作日志<",
+    "<th>Role</th>": "<th>角色</th>",
+    "<th>State</th>": "<th>状态</th>",
+    "<th>Current task</th>": "<th>当前任务</th>",
+    "<th>Since</th>": "<th>开始于</th>",
+    "<th>Task</th>": "<th>任务</th>",
+    "<th>Brief</th>": "<th>任务描述</th>",
+    "<th>Age</th>": "<th>距今</th>",
+    "loading…": "加载中…",
+    "Nothing needs you. Every task is working, idle or accepted.": "没有需要你处理的事：任务都在进行、闲置或已验收。",
+    "Nothing in flight.": "没有进行中的任务。",
+    "Read-only view of <code>.tower/</code> · auto-refresh every 2s · ": "只读视图 <code>.tower/</code> · 每 2 秒自动刷新 · ",
+    '"generated "': '"生成于 "',
+    '" ago · round "': '" 前 · 轮次 "',
+    "panel disconnected — is `tower panel` still running?": "面板断开 —— `tower panel` 还在运行吗？",
+    "— control tower": "— 控制塔",
+    ">Refresh<": ">刷新<",
+}
+STATS_JS = {
+    "en": [
+        '["needs you", c.attention ?? 0]',
+        '["in flight", c.in_flight ?? 0]',
+        '["tasks", c.total ?? 0]',
+        '["ready", c.ready ?? 0]',
+        '["working", c.progress ?? 0]',
+    ],
+    "zh": [
+        '["需要你", c.attention ?? 0]',
+        '["进行中", c.in_flight ?? 0]',
+        '["任务", c.total ?? 0]',
+        '["就绪", c.ready ?? 0]',
+        '["处理中", c.progress ?? 0]',
+    ],
+}
+STATS_BLOCK = """      ["needs you", c.attention ?? 0],
+      ["in flight", c.in_flight ?? 0],
+      ["tasks", c.total ?? 0],
+      ["ready", c.ready ?? 0],
+      ["working", c.progress ?? 0],"""
+LANG_BAR = """<span class="lang"><a href="?lang=zh">中文</a> / <a href="?lang=en">EN</a></span>"""
+
+
+def pick_lang(query: str, accept_language: str) -> str:
+    """`?lang=` wins; otherwise Chinese when the client asks for it."""
+    for pair in query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == "lang" and value in ("zh", "en"):
+            return value
+    lowered = (accept_language or "").lower()
+    return "zh" if "zh" in lowered else "en"
+
+
+def render_page(cfg, lang: str = "en") -> str:
+    page = PAGE.replace("__NAME__", cfg.name).replace("__WS__", str(cfg.workspace))
+    block = "\n".join("      " + line + "," for line in STATS_JS.get(lang, STATS_JS["en"]))
+    page = page.replace(STATS_BLOCK, block)
+    if lang == "zh":
+        for english, chinese in ZH.items():
+            page = page.replace(english, chinese)
+    page = page.replace(
+        '<span class="clock" id="clock">—</span>',
+        '<span class="clock" id="clock">—</span> ' + LANG_BAR,
+    )
+    return page
+
+
 def make_handler(cfg: TowerConfig):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -185,7 +255,9 @@ def make_handler(cfg: TowerConfig):
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
-                page = PAGE.replace("__NAME__", cfg.name).replace("__WS__", str(cfg.workspace))
+                query = self.path.split("?", 1)[1] if "?" in self.path else ""
+                lang = pick_lang(query, self.headers.get("Accept-Language", ""))
+                page = render_page(cfg, lang)
                 self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if path == "/api/snapshot":

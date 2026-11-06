@@ -266,6 +266,10 @@ class DshAdapter:
         if directory:
             request["cwd"] = directory
         reply = self.rpc("session/create", {"request": request})
+        if reply.get("error") and request:
+            # Some hosts reject an explicit cwd (unknown path, workspace rules);
+            # fall back to letting the host choose the directory.
+            reply = self.rpc("session/create", {"request": {}})
         value = self._result_value(reply)
         sid = None
         if isinstance(value, dict):
