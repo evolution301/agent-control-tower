@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .analytics import build_report as build_bi_report, render_text as render_bi_text
 from .roles import add_role, config_file, list_roles, remove_role
 from .board import (
     Board,
@@ -94,7 +95,49 @@ request_gap_s: 1.5
 
 
 def _cfg(args):
-    return load_config(args.workspace or os.getcwd())
+    """Which tower this command talks to — and it must never change by accident.
+
+    1. `--workspace` on the command line;
+    2. a `tower.toml` found by walking up from cwd;
+    3. the bound tower (`~/.tower/binding.json`) — the seamless reconnection after
+       a plugin update that lost the aim;
+    4. the project selected with `tower projects use`.
+
+    Whichever tower is used gets recorded as the binding, so the next update can
+    reconnect to it instead of guessing.
+    """
+    from . import registry
+
+    explicit = getattr(args, "workspace", None)
+    if explicit:
+        return load_config(explicit)
+    try:
+        return load_config(os.getcwd())
+    except FileNotFoundError:
+        pass
+    target = registry.effective_workspace(None)
+    if target is not None:
+        return load_config(target)
+    raise FileNotFoundError(
+        "no tower.toml here (or in any parent) and no bound/active project — "
+        "run `tower init .`, or `tower projects use <name>`"
+    )
+
+
+def _bind(cfg):
+    """Record the tower that did real work — never on read-only commands.
+
+    Binding is what a later plugin update reconnects to. It is written on the
+    commands that *act*, not on `doctor`/`status`, so `doctor` can still report a
+    mismatch between the configured aim and the last tower that actually worked.
+    """
+    try:
+        from . import registry
+
+        registry.record_binding(cfg.workspace, source="cli")
+    except Exception:
+        pass
+    return cfg
 
 
 def _say(args, message: str):
@@ -139,6 +182,7 @@ def cmd_init(args) -> int:
 
 def cmd_dispatch(args) -> int:
     cfg = _cfg(args)
+    _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     role = args.role
@@ -209,6 +253,7 @@ def cmd_dispatch(args) -> int:
 def cmd_batch(args) -> int:
     """Dispatch the same brief to several roles."""
     cfg = _cfg(args)
+    _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     roles = list(args.roles)
@@ -348,6 +393,7 @@ def cmd_restate(args) -> int:
     restatement as `## Confirmed understanding`.
     """
     cfg = _cfg(args)
+    _bind(cfg)
     board = Board(cfg)
     task = board.load(args.task)
     if task.status != STATUS_RESTATING:
@@ -377,6 +423,7 @@ def cmd_restate(args) -> int:
 def cmd_say(args) -> int:
     """Relay one bot-to-bot message. Both halves are filed, never whispered."""
     cfg = _cfg(args)
+    _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     message = args.message or sys.stdin.read()
@@ -405,6 +452,7 @@ def cmd_say(args) -> int:
 def cmd_huddle(args) -> int:
     """Open a room for up to six roles, two rounds, then everyone works."""
     cfg = _cfg(args)
+    _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     try:
@@ -426,9 +474,119 @@ def cmd_huddle(args) -> int:
     return 0
 
 
+def cmd_projects(args) -> int:
+    """Many towers, one switcher: list, register, forget, or make one active."""
+    from . import registry
+
+    action = args.projects_command
+    if action == "list" or action is None:
+        projects = registry.load_projects()
+        active = registry.get_active()
+        active_name = active["name"] if active else ""
+        if getattr(args, "json", False):
+            _print({"active": active_name, "projects": projects}, as_json=True)
+            return 0
+        if not projects:
+            print("no projects registered — `tower projects add <path>` or `tower projects scan`")
+            return 0
+        width = max(len(p["name"]) for p in projects)
+        for item in projects:
+            mark = "●" if item["name"] == active_name else " "
+            row = registry.summarise(item)
+            print(f"{mark} {item['name']:<{width}}  {item['path']}")
+            if row["ok"]:
+                print(f"    bots {row['bots']} · tasks {row['tasks']} · open {row['open']}"
+                      f" · needs you {row['needs_you']} · overdue {row['overdue']}")
+            else:
+                print(f"    broken: {row['error']}")
+        return 0
+
+    if action == "scan":
+        found = registry.discover([args.root] if args.root else None)
+        added = []
+        for path in found:
+            if any(Path(p["path"]).resolve() == path for p in registry.load_projects()):
+                continue
+            added.append(registry.add_project(path))
+        if getattr(args, "json", False):
+            _print({"found": [str(p) for p in found], "added": added}, as_json=True)
+            return 0
+        print(f"scanned {args.root or '~'} · found {len(found)} tower(s) · added {len(added)}")
+        for item in added:
+            print(f"  + {item['name']}  {item['path']}")
+        return 0
+
+    if action == "add":
+        try:
+            entry = registry.add_project(args.path, name=args.name or "", color=args.color or "")
+        except ValueError as exc:
+            _say(args, str(exc))
+            return 2
+        print(f"registered {entry['name']}  {entry['path']}")
+        return 0
+
+    if action == "remove":
+        try:
+            entry = registry.remove_project(args.name)
+        except KeyError as exc:
+            _say(args, str(exc))
+            return 2
+        print(f"forgot {entry['name']}")
+        return 0
+
+    if action == "use":
+        try:
+            entry = registry.set_active(args.name)
+        except KeyError as exc:
+            _say(args, str(exc))
+            return 2
+        print(f"active project: {entry['name']}  {entry['path']}")
+        return 0
+
+    _say(args, f"unknown projects subcommand {action!r}")
+    return 2
+
+
+def cmd_stats(args) -> int:
+    """BI view: throughput, verified rate, lead time, per-role and supervision."""
+    if getattr(args, "all", False):
+        from . import registry
+
+        data = registry.overview()
+        if getattr(args, "json", False):
+            _print(data, as_json=True)
+            return 0
+        totals = data["totals"]
+        print(f"all projects · generated {data['generated_at']}")
+        print(f"projects {totals['projects']}  bots {totals['bots']}  tasks {totals['tasks']}  "
+              f"accepted {totals['accepted']}  open {totals['open']}  "
+              f"needs you {totals['needs_you']}  overdue {totals['overdue']}"
+              + (f"  broken {totals['broken']}" if totals["broken"] else ""))
+        width = max((len(row["name"]) for row in data["projects"]), default=4)
+        print("")
+        print(f"{'project':<{width}}  bots  tasks  acc  open  need  late")
+        for row in data["projects"]:
+            if not row["ok"]:
+                print(f"{row['name']:<{width}}  BROKEN: {row['error']}")
+                continue
+            print(f"{row['name']:<{width}}  {row['bots']:>4}  {row['tasks']:>5}  "
+                  f"{row['accepted']:>3}  {row['open']:>4}  {row['needs_you']:>4}  {row['overdue']:>4}")
+        return 0
+
+    cfg = _cfg(args)
+    board = Board(cfg)
+    report = build_bi_report(cfg, board, days=args.days)
+    if getattr(args, "json", False):
+        _print(report, as_json=True)
+        return 0
+    print(render_bi_text(report))
+    return 0
+
+
 def cmd_supervise(args) -> int:
     """Pull up every open task past its deadline, in its own session."""
     cfg = _cfg(args)
+    _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     result = supervise(cfg, board)
@@ -451,6 +609,7 @@ def cmd_supervise(args) -> int:
 def cmd_skill(args) -> int:
     """Save an accepted task as a reusable skill, or list what a role knows."""
     cfg = _cfg(args)
+    _bind(cfg)
     board = Board(cfg)
     if args.skill_command == "save":
         try:
@@ -610,6 +769,24 @@ def cmd_doctor(args) -> int:
                 f"role {name}: carries env vars but has no roles/{name}/.env — credentials "
                 "resolve from the global environment; give the role its own .env"
             )
+    # the aim check: a plugin update must not leave the tools pointed at another tower
+    try:
+        from . import registry
+
+        configured = Path(cfg.workspace).resolve()
+        bound = registry.read_binding()
+        if bound and Path(bound["path"]).resolve() != configured:
+            warnings.append(
+                f"aim: this workspace is {configured} but this machine last used "
+                f"{bound['path']} ({bound.get('recorded_at', 'unknown time')}) — "
+                "check which tower you mean before dispatching, or `tower projects use`"
+            )
+        elif bound is None:
+            warnings.append(
+                "aim: no bound tower recorded yet — the first dispatch will bind this one"
+            )
+    except Exception:
+        pass
     for name, role in cfg.roles.items():
         if role.adapter not in ("mock", "cli", "dsh", "openai"):
             problems.append(f"role {name}: unknown adapter {role.adapter}")
@@ -802,6 +979,35 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("stats", help="business view: throughput, verified rate, lead time, roles")
+    s.add_argument("--days", type=int, default=14, help="throughput window in days (default 14)")
+    s.add_argument("--all", action="store_true", help="aggregate every registered project")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_stats)
+
+    s = sub.add_parser("projects", help="many towers, one switcher: list, scan, add, forget, use")
+    ps = s.add_subparsers(dest="projects_command")
+    plist = ps.add_parser("list", help="registered projects with their numbers")
+    plist.add_argument("--json", action="store_true")
+    plist.set_defaults(func=cmd_projects)
+    sc = ps.add_parser("scan", help="find tower.toml under a root and register them")
+    sc.add_argument("--root", default="")
+    sc.add_argument("--json", action="store_true")
+    sc.set_defaults(func=cmd_projects)
+    pa = ps.add_parser("add", help="register one project directory")
+    pa.add_argument("path")
+    pa.add_argument("--name", default="")
+    pa.add_argument("--color", default="")
+    pa.set_defaults(func=cmd_projects)
+    pr = ps.add_parser("remove", help="forget a project (files are untouched)")
+    pr.add_argument("name")
+    pr.set_defaults(func=cmd_projects)
+    pu = ps.add_parser("use", help="make one project active (what tools and the panel follow)")
+    pu.add_argument("name")
+    pu.set_defaults(func=cmd_projects)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_projects)
 
     s = sub.add_parser("skill", help="distil accepted work into reusable skills")
     sk = s.add_subparsers(dest="skill_command", required=True)
