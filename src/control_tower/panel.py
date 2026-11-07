@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 from .board import Board
 from .config import TowerConfig
@@ -66,6 +68,16 @@ PAGE = r"""<!doctype html>
   .log { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#3f3a34; }
   .log .ev { color:var(--ember); }
   .log .t { color:#a8a29a; }
+  .kpis { display:flex; gap:26px; flex-wrap:wrap; padding:6px 0 16px; }
+  .kpi b { display:block; font-size:22px; letter-spacing:-.02em; }
+  .kpi span { font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
+  .bars { margin-top:14px; }
+  .bar { display:grid; grid-template-columns:52px 1fr; gap:10px; align-items:center; margin:3px 0; }
+  .bar .tick { color:#a8a29a; }
+  .track { position:relative; height:14px; }
+  .track i { position:absolute; top:0; height:6px; border-radius:3px; display:block; }
+  .track i.c { background:#c7c1b8; }
+  .track i.a { top:8px; background:var(--ember); }
   footer { margin-top:40px; color:var(--dim); font-size:12px; }
 </style></head>
 <body><div class="wrap">
@@ -93,7 +105,15 @@ PAGE = r"""<!doctype html>
   </section>
 
   <section>
-    <h2><span class="n">04</span>Ledger</h2>
+    <h2><span class="n">04</span>Business — is this team working well?</h2>
+    <div class="kpis" id="kpis"></div>
+    <table><thead><tr><th>Role</th><th>Tasks</th><th>Accepted</th><th>Open</th><th>Late</th><th>Skills</th><th>Avg lead</th></tr></thead>
+    <tbody id="bi-roles"></tbody></table>
+    <div class="log bars" id="bars"></div>
+  </section>
+
+  <section>
+    <h2><span class="n">05</span>Ledger</h2>
     <div class="log" id="log"></div>
   </section>
 
@@ -120,6 +140,54 @@ function row(t) {
     <td>${esc(t.state)}</td>
     <td class="brief">${esc(t.brief)}</td>
     <td class="age">${esc(t.age)}</td></tr>`;
+}
+
+const pct = (v) => (v === null || v === undefined) ? "—" : Math.round(v * 100) + "%";
+const dur = (s) => {
+  if (s === null || s === undefined) return "—";
+  s = Math.round(s);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+};
+
+async function bi() {
+  try {
+    const r = await fetch("/api/stats", {cache: "no-store"});
+    const s = await r.json();
+    const t = s.totals || {}, rates = s.rates || {}, lead = s.lead_time || {};
+    const collab = s.collaboration || {}, sup = s.supervision || {};
+    const skills = Object.values(s.roles || {}).reduce((n, r) => n + (r.skills || 0), 0);
+    document.getElementById("kpis").innerHTML = [
+      ["verified", pct(rates.verified)],
+      ["lead p50", dur(lead.p50_s)],
+      ["lead p90", dur(lead.p90_s)],
+      ["tasks", t.tasks ?? 0],
+      ["accepted", t.accepted ?? 0],
+      ["overdue", sup.overdue_now ?? 0],
+      ["nudges", sup.nudges ?? 0],
+      ["messages", collab.messages ?? 0],
+      ["huddles", collab.huddles ?? 0],
+      ["skills", skills],
+    ].map(([label, value]) => `<div class="kpi"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join("");
+
+    document.getElementById("bi-roles").innerHTML = Object.entries(s.roles || {}).map(([name, r]) => `
+      <tr><td><b>${esc(name)}</b></td><td>${r.tasks}</td><td>${r.accepted}</td>
+        <td>${r.open}</td><td>${r.overdue}</td><td>${r.skills}</td>
+        <td class="age">${esc(dur(r.avg_lead_s))}</td></tr>`).join("");
+
+    const days = (s.throughput || []).slice(-14);
+    const peak = Math.max(1, ...days.map(d => Math.max(d.created, d.accepted)));
+    document.getElementById("bars").innerHTML = days.map(d => `
+      <div class="bar"><span class="tick">${esc(d.date.slice(5))}</span>
+        <span class="track">
+          <i class="c" style="width:${Math.round(100 * d.created / peak)}%"></i>
+          <i class="a" style="width:${Math.round(100 * d.accepted / peak)}%"></i>
+        </span></div>`).join("") || '<div class="empty">no work in the last 14 days</div>';
+  } catch (err) {
+    document.getElementById("kpis").textContent = "stats unavailable";
+  }
 }
 
 async function tick() {
@@ -162,6 +230,7 @@ async function tick() {
   }
 }
 tick(); setInterval(tick, 2000);
+bi(); setInterval(bi, 5000);
 </script>
 </body></html>
 """
@@ -172,6 +241,14 @@ ZH = {
     ">In flight<": ">进行中<",
     ">Roles — who is doing what<": ">角色 — 谁在干什么<",
     ">Ledger<": ">操作日志<",
+    ">Business — is this team working well?<": ">业务 — 这个团队干得好不好？<",
+    "<th>Tasks</th>": "<th>任务</th>",
+    "<th>Accepted</th>": "<th>已验收</th>",
+    "<th>Open</th>": "<th>未完成</th>",
+    "<th>Late</th>": "<th>逾期</th>",
+    "<th>Skills</th>": "<th>技能</th>",
+    "<th>Avg lead</th>": "<th>平均周期</th>",
+    "no work in the last 14 days": "最近 14 天没有工作记录",
     "<th>Role</th>": "<th>角色</th>",
     "<th>State</th>": "<th>状态</th>",
     "<th>Current task</th>": "<th>当前任务</th>",
@@ -224,17 +301,34 @@ def pick_lang(query: str, accept_language: str) -> str:
 
 
 def render_page(cfg, lang: str = "en") -> str:
-    page = PAGE.replace("__NAME__", cfg.name).replace("__WS__", str(cfg.workspace))
-    block = "\n".join("      " + line + "," for line in STATS_JS.get(lang, STATS_JS["en"]))
-    page = page.replace(STATS_BLOCK, block)
-    if lang == "zh":
-        for english, chinese in ZH.items():
-            page = page.replace(english, chinese)
-    page = page.replace(
-        '<span class="clock" id="clock">—</span>',
-        '<span class="clock" id="clock">—</span> ' + LANG_BAR,
-    )
-    return page
+    """The HQ page (see `panel_hq`): one page, many projects, read-only."""
+    from .panel_hq import render as render_hq
+
+    return render_hq(cfg, lang)
+
+
+def _project_configs(cfg: TowerConfig):
+    """Every project the panel knows: the registry, plus the one it was started in.
+
+    A user who never touched the registry keeps the single-project behaviour: the
+    panel shows the workspace it was started in.
+    """
+    from . import registry
+    from .config import load_config
+
+    entries = registry.load_projects()
+    started = str(Path(cfg.workspace).resolve())
+    if not any(str(Path(e["path"]).resolve()) == started for e in entries):
+        entries = [{"name": cfg.name, "path": started, "color": registry.PALETTE[0]}] + entries
+    active = registry.get_active()
+    active_name = active["name"] if active else cfg.name
+    configs = {}
+    for entry in entries:
+        try:
+            configs[entry["name"]] = (entry, load_config(Path(entry["path"])))
+        except Exception:
+            configs[entry["name"]] = (entry, cfg if str(Path(entry["path"]).resolve()) == started else None)
+    return entries, configs, active_name
 
 
 def make_handler(cfg: TowerConfig):
@@ -254,21 +348,61 @@ def make_handler(cfg: TowerConfig):
 
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
-            if path in ("/", "/index.html"):
-                query = self.path.split("?", 1)[1] if "?" in self.path else ""
-                lang = pick_lang(query, self.headers.get("Accept-Language", ""))
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            if path in ("/", "/index.html", "/hq"):
+                lang = pick_lang(self.path.split("?", 1)[1] if "?" in self.path else "",
+                                 self.headers.get("Accept-Language", ""))
                 page = render_page(cfg, lang)
                 self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                 return
+            if path == "/api/projects":
+                from . import registry
+
+                entries, _configs, active_name = _project_configs(cfg)
+                data = registry.overview(entries)
+                data["active"] = active_name
+                self._send(200, json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             if path == "/api/snapshot":
-                snap = build_snapshot(cfg, Board(cfg)).as_dict()
+                target = self._cfg_for(query, cfg)
+                if target is None:
+                    self._send(404, b'{"error":"unknown project"}', "application/json")
+                    return
+                snap = build_snapshot(target, Board(target)).as_dict()
                 self._send(200, json.dumps(snap, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
+            if path == "/api/stats":
+                from .analytics import build_report
+
+                target = self._cfg_for(query, cfg)
+                if target is None:
+                    self._send(404, b'{"error":"unknown project"}', "application/json")
+                    return
+                report = build_report(target, Board(target), days=14)
+                self._send(200, json.dumps(report, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8")
                 return
             if path == "/healthz":
                 self._send(200, b'{"ok":true}', "application/json")
                 return
             self._send(404, b"not found", "text/plain; charset=utf-8")
+
+        def _cfg_for(self, query: dict, fallback: TowerConfig):
+            """Project from `?project=`, else the workspace the panel was started in.
+
+            The started workspace wins over the registry's active project: a panel
+            launched in project A must never silently answer with project B. An
+            unknown name (a stale bookmark after a rename) falls back instead of
+            404-ing the whole board.
+            """
+            name = (query.get("project") or [""])[0]
+            if not name or name == "__all__":
+                return fallback
+            _entries, configs, _active = _project_configs(fallback)
+            chosen = configs.get(name)
+            return chosen[1] if chosen and chosen[1] is not None else fallback
 
     return Handler
 
