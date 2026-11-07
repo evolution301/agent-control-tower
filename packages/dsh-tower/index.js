@@ -19,10 +19,10 @@
  * @module
  */
 
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import net from 'node:net'
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdirSync, openSync, writeSync, closeSync, readFileSync, unlinkSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 
 /** Cordis plugin name (reader-facing label in diagnostics). */
 export const name = 'dsh-tower'
@@ -30,8 +30,8 @@ export const name = 'dsh-tower'
 /** Services this plugin requires to be mounted before `apply`. */
 export const inject = ['tools']
 
-/** Plugin version, mirroring package.json. */
-export const VERSION = '0.2.0'
+/** Plugin version, mirroring package.json (a test keeps the two in step). */
+export const VERSION = '0.7.3'
 
 /** Resolved runtime settings. */
 function settings(config = {}) {
@@ -233,35 +233,171 @@ export function portOpen(port, timeoutMs = 500) {
   })
 }
 
+/** Wait `ms` milliseconds (injectable so tests do not pay real time). */
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
 /**
- * Start `tower panel` unless this machine already serves it.
+ * Path of the per-port lock file that serialises panel starts.
  *
- * The settings section embeds that URL, so the plugin owns the process: it is
- * spawned detached (the harness must not tie it to a turn) and stopped on unload.
+ * Two DSH windows (or two profiles) mount this bundle at once; both see a closed
+ * port and both spawn `tower panel`, so one loses the bind race and stays behind
+ * as an orphan. The lock makes the start exclusive across processes.
  */
-export async function ensurePanel(cfg) {
-  if (cfg.panel === false) return null
-  if (await portOpen(cfg.panelPort)) return null
+export function panelLockPath(cfg) {
+  return join(cfg.workspace, '.tower', `panel-${cfg.panelPort}.lock`)
+}
+
+/** Whether a pid is still running (signal 0 never reaches the target). */
+function pidAlive(pid) {
+  const n = Number(pid)
+  if (!Number.isInteger(n) || n <= 0) return false
   try {
-    const child = spawn(cfg.towerBin, ['panel', '--port', String(cfg.panelPort)], {
-      cwd: cfg.workspace,
-      windowsHide: true,
-      detached: true,
-      stdio: 'ignore',
-    })
-    child.unref?.()
-    return child
+    process.kill(n, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+/**
+ * Take the panel lock, or return null when another live process holds it.
+ *
+ * A lock whose pid is gone is stale (a crashed host, a reboot) and is replaced:
+ * refusing to start forever would leave the settings section permanently empty.
+ */
+export function acquirePanelLock(cfg) {
+  const path = panelLockPath(cfg)
+  try {
+    mkdirSync(dirname(path), { recursive: true })
   } catch {
     return null
   }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(path, 'wx')
+      writeSync(fd, String(process.pid))
+      closeSync(fd)
+      return { path, pid: process.pid }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') return null
+      let holder = null
+      try {
+        holder = Number(readFileSync(path, 'utf8').trim())
+      } catch {
+        holder = null
+      }
+      if (holder && pidAlive(holder)) return null
+      try {
+        unlinkSync(path)
+      } catch {
+        return null
+      }
+    }
+  }
+  return null
+}
+
+/** Drop a lock this process owns; a foreign holder is never touched. */
+export function releasePanelLock(lock) {
+  if (!lock?.path || lock.pid !== process.pid) return
+  try {
+    unlinkSync(lock.path)
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Kill a detached panel and the interpreter it started.
+ *
+ * `tower` on Windows is a launcher exe in front of `python.exe`, so a bare
+ * `child.kill()` leaves the real server running — that half-kill is the other
+ * half of the duplicate-panel bug. `/T` takes the whole tree.
+ */
+export function killPanel(child, deps = {}) {
+  if (!child) return
+  const run = deps.spawnSync ?? spawnSync
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      run('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      return
+    }
+    child.kill?.('SIGTERM')
+  } catch {
+    // best effort: a panel that already exited is not an error
+  }
+}
+
+/** Spawn `tower panel` detached, in this workspace. */
+function defaultSpawnPanel(cfg) {
+  const child = spawn(cfg.towerBin, ['panel', '--port', String(cfg.panelPort)], {
+    cwd: cfg.workspace,
+    windowsHide: true,
+    detached: true,
+    stdio: 'ignore',
+  })
+  child.unref?.()
+  return child
+}
+
+/**
+ * Start `tower panel` unless this machine already serves it.
+ *
+ * The settings section embeds that URL, so the plugin owns the process: the start
+ * is exclusive (lock file), the child is spawned detached (the harness must not
+ * tie it to a turn), and it is only kept once the port actually answers. A child
+ * that never comes up — it lost the bind race, the CLI is missing, the port is
+ * held by something else — is killed instead of being left as an orphan.
+ *
+ * `deps` is an injection seam for the tests (`portOpen`, `spawnPanel`, `killPanel`,
+ * `sleep`); production always uses the real ones.
+ *
+ * @returns `{ child, lock }` when this call started the panel, else `null`.
+ */
+export async function ensurePanel(cfg, deps = {}) {
+  if (cfg.panel === false) return null
+  const checkPort = deps.portOpen ?? portOpen
+  const wait = deps.sleep ?? sleep
+  const kill = deps.killPanel ?? killPanel
+  if (await checkPort(cfg.panelPort)) return null
+
+  const lock = acquirePanelLock(cfg)
+  if (!lock) return null
+
+  let child = null
+  try {
+    const spawnPanel = deps.spawnPanel ?? defaultSpawnPanel
+    child = spawnPanel(cfg)
+  } catch {
+    child = null
+  }
+  if (!child) {
+    releasePanelLock(lock)
+    return null
+  }
+
+  const budgetMs = Number(cfg.panelStartTimeoutMs ?? 6000)
+  const pollMs = Math.max(50, Number(cfg.panelPollMs ?? 150))
+  const attempts = Math.max(1, Math.ceil(budgetMs / pollMs))
+  for (let i = 0; i < attempts; i += 1) {
+    await wait(pollMs)
+    if (await checkPort(cfg.panelPort)) return { child, lock }
+    if (child.exitCode !== null && child.exitCode !== undefined) break
+  }
+
+  kill(child)
+  releasePanelLock(lock)
+  return null
 }
 
 export function apply(ctx, config = {}) {
   const cfg = settings(config)
-  let panelChild = null
+  let panel = null
   ensurePanel(cfg)
-    .then((child) => {
-      panelChild = child
+    .then((started) => {
+      panel = started
     })
     .catch(() => {})
   const disposers = [
@@ -276,12 +412,9 @@ export function apply(ctx, config = {}) {
   ]
   return () => {
     for (const dispose of disposers) dispose?.()
-    if (panelChild) {
-      try {
-        panelChild.kill()
-      } catch {
-        // the panel is detached; killing it is best effort
-      }
+    if (panel) {
+      killPanel(panel.child)
+      releasePanelLock(panel.lock)
     }
   }
 }
