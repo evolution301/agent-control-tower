@@ -5,6 +5,39 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.3] - 2026-11-07
+
+### Fixed
+
+- **A machine ended up with two `tower panel` processes.** Every mount of the bundle checked the
+  port, then spawned; two DSH windows (or two profiles) mounted at the same time both saw a closed
+  port and both started a panel. The one that lost the bind race never exited, so `python.exe`
+  processes accumulated, and the disposer made it worse: `tower` on Windows is a launcher exe in
+  front of `python.exe`, so `child.kill()` killed the launcher and left the server running.
+  Starting is now exclusive through `.tower/panel-<port>.lock` (a stale lock whose pid is gone is
+  replaced, so a crash cannot block the section forever), the child is only kept once the port
+  actually answers, a child that never comes up is killed with its whole process tree, and unload
+  releases the lock it owns.
+- **`VERSION` in the bundle had drifted from `package.json`** (`0.2.0` since the 0.2 line). It now
+  follows the shared version, and a test fails if the two ever disagree.
+
+## [0.7.2] - 2026-11-06
+
+### Added
+
+- **The panel speaks Chinese.** `tower panel` now carries a ZH string table covering every
+  user-visible label — headings, stat chips, table headers, empty states and the panel-disconnected
+  notice — plus bilingual stat labels (`en` / `zh`), so the Tower section in DSH reads
+  需要你处理 / 进行中 / 角色 instead of half-translated English. `tests/test_i18n.py` walks the
+  rendered page and fails on any English literal that has no ZH counterpart, so a new label can no
+  longer ship untranslated.
+
+### Fixed
+
+- **`session/create` retries without `cwd` when the host rejects it.** A dispatch from a DSH session
+  whose working directory the host would not accept died at session creation, before the role agent
+  ever saw the brief; `DshAdapter` now falls back to letting the host choose the directory.
+
 ## [0.7.1] - 2026-11-04
 
 ### Fixed
