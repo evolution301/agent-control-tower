@@ -28,6 +28,8 @@ from .board_view import render as render_board, watch as watch_board
 from .dispatch import dispatch, dispatch_restate
 from .converse import load_conversation, parse_messages, relay_report_messages, say
 from .huddle import huddle as run_huddle
+from .onboard import onboard as run_onboard
+from .skills import rebuild_index, save_skill, skill_index_lines
 from .supervise import due_human, overdue_tasks, parse_due, supervise
 from .snapshot import build_snapshot
 from .verify import verify_report
@@ -446,6 +448,61 @@ def cmd_supervise(args) -> int:
     return 0
 
 
+def cmd_skill(args) -> int:
+    """Save an accepted task as a reusable skill, or list what a role knows."""
+    cfg = _cfg(args)
+    board = Board(cfg)
+    if args.skill_command == "save":
+        try:
+            info = save_skill(cfg, board, args.task)
+        except (KeyError, ValueError) as exc:
+            _say(args, str(exc))
+            return 2
+        if getattr(args, "json", False):
+            _print(info, as_json=True)
+            return 0
+        print(f"skill saved: {info['path']}")
+        for line in info["index_lines"]:
+            print(f"  {line}")
+        return 0
+    # list
+    roles = list(cfg.roles) if not getattr(args, "role", "") else [args.role]
+    for role in roles:
+        lines = skill_index_lines(cfg, role)
+        if not lines:
+            continue
+        print(f"{role}:")
+        for line in lines:
+            print(f"  {line}")
+    if not any(skill_index_lines(cfg, r) for r in roles):
+        _say(args, "no skills yet — finish a job, accept it, then: "
+                   "tower skill save <task>")
+    return 0
+
+
+def cmd_onboard(args) -> int:
+    """Interview the operator (or read notes.md) and grow the team."""
+    cfg = _cfg(args)
+    path = config_file(cfg.workspace)
+    try:
+        result = run_onboard(
+            path,
+            notes_path=Path(args.source) if getattr(args, "source", "") else None,
+            adapter=args.adapter or "dsh",
+            force=getattr(args, "force", False),
+        )
+    except (KeyError, ValueError) as exc:
+        _say(args, str(exc))
+        return 2
+    if getattr(args, "json", False):
+        _print(result, as_json=True)
+        return 0
+    print(f"team grown: {', '.join(result['roles'])}")
+    print(f"plan: {result['plan']}")
+    print("next: tower role list   # then wire sessions: tower bootstrap")
+    return 0
+
+
 def cmd_status(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
@@ -525,10 +582,33 @@ def _command_available(command: str) -> bool:
 def cmd_doctor(args) -> int:
     cfg = _cfg(args)
     problems = []
+    warnings = []
     for command in cfg.verify_commands:
         if not _command_available(command):
             problems.append(
                 "verify command %r: %r is not on PATH" % (command, command.strip().split(" ")[0])
+            )
+    # playbook point 2: few, well-trained bots — size and overlap are smell.
+    if len(cfg.roles) > 5:
+        warnings.append(
+            f"{len(cfg.roles)} roles — a few well-trained bots beat a crowd; consider merging"
+        )
+    seen: dict[str, str] = {}
+    for name, role in sorted(cfg.roles.items()):
+        for scope in role.write_scopes:
+            if scope in seen:
+                warnings.append(
+                    f"roles {seen[scope]!r} and {name!r} both write {scope!r} — split the scope "
+                    "or merge the roles"
+                )
+            else:
+                seen[scope] = name
+    # playbook point 4: credentials belong to the role, not the global environment.
+    for name, role in cfg.roles.items():
+        if role.env and not (cfg.role_dir(name) / ".env").exists():
+            warnings.append(
+                f"role {name}: carries env vars but has no roles/{name}/.env — credentials "
+                "resolve from the global environment; give the role its own .env"
             )
     for name, role in cfg.roles.items():
         if role.adapter not in ("mock", "cli", "dsh", "openai"):
@@ -542,6 +622,8 @@ def cmd_doctor(args) -> int:
             problems.append(f"role {name}: dsh adapter has no session id")
     print("workspace:", cfg.workspace)
     print("roles:", ", ".join(sorted(cfg.roles)))
+    for warning in warnings:
+        print("warning:", warning)
     print("problems:", problems or "none")
     return 0 if not problems else 1
 
@@ -720,6 +802,23 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("skill", help="distil accepted work into reusable skills")
+    sk = s.add_subparsers(dest="skill_command", required=True)
+    sks = sk.add_parser("save", help="turn one accepted task into roles/<role>/skills/<slug>.md")
+    sks.add_argument("task")
+    sks.add_argument("--json", action="store_true")
+    sks.set_defaults(func=cmd_skill)
+    skl = sk.add_parser("list", help="show each role's skill index (what dispatch injects)")
+    skl.add_argument("--role", default="")
+    skl.set_defaults(func=cmd_skill)
+
+    s = sub.add_parser("onboard", help="interview the operator and grow the team from the answers")
+    s.add_argument("--from", dest="source", default="", help="notes file: '## <role>' sections + 'scope:' lines")
+    s.add_argument("--adapter", default="dsh", help="adapter for the new roles (default dsh)")
+    s.add_argument("--force", action="store_true", help="replace roles that already exist")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_onboard)
 
     s = sub.add_parser("restate", help="accept a restatement so the work may start")
     rss = s.add_subparsers(dest="restate_command", required=True)

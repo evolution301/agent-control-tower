@@ -126,7 +126,7 @@ def render_prompt(cfg: TowerConfig, task: Task) -> str:
     role = cfg.roles[task.role]
     role_dir = cfg.role_dir(task.role)
     scopes = ", ".join(f"`{s}`" for s in task.write_scopes) or "(the whole workspace)"
-    return CONTRACT.format(
+    prompt = CONTRACT.format(
         role=task.role,
         workspace=cfg.workspace,
         role_dir=role_dir,
@@ -137,6 +137,21 @@ def render_prompt(cfg: TowerConfig, task: Task) -> str:
         confirmed=_confirmed_block(task),
         brief=task.brief,
     )
+    # Playbook point 3: the role inherits what its past accepted jobs taught —
+    # as a one-line-per-skill index, never the bodies (context window guard).
+    from .skills import skill_index_lines
+
+    index = skill_index_lines(cfg, task.role)
+    if index:
+        prompt += (
+            "\n## Skills from jobs you already did well\n\n"
+            + "\n".join(index)
+            + "\nEach line names a skill under `"
+            + str(role_dir / "skills")
+            + "/` — open one for the full steps. Follow them as the default way of "
+            "working; deviate only with the reason recorded in the report.\n"
+        )
+    return prompt
 
 
 def render_restate_prompt(cfg: TowerConfig, task: Task) -> str:
