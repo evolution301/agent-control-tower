@@ -67,7 +67,18 @@ def write(path: Path, text: str) -> None:
 
 def run(command: list[str], cwd: Path | None = None) -> tuple[int, str]:
     try:
-        proc = subprocess.run(command, cwd=str(cwd or ROOT), capture_output=True, text=True, timeout=900)
+        # encoding is mandatory: a GBK console cannot decode the suites' UTF-8
+        # output (node --test prints the tool names' arrows and CJK), and the
+        # reader thread would die mid-release.
+        proc = subprocess.run(
+            command,
+            cwd=str(cwd or ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=900,
+        )
     except FileNotFoundError as error:
         raise Stop(f"找不到命令 {command[0]}: {error}") from error
     except subprocess.TimeoutExpired as error:
