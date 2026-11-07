@@ -338,6 +338,10 @@ function defaultSpawnPanel(cfg) {
     detached: true,
     stdio: 'ignore',
   })
+  // A missing CLI reports ENOENT asynchronously; with no listener that becomes an
+  // uncaught exception inside the host harness. ensurePanel already notices the
+  // failure (the port never answers) and kills the child, so swallow it here.
+  child.on?.('error', () => {})
   child.unref?.()
   return child
 }
