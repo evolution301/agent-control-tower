@@ -50,9 +50,11 @@ Five of the 24 principles are already load-bearing here, or become load-bearing 
 Each item lands as one small commit and one offline test, because the whole point of the repo is that
 a claim without a check is not done.
 
-1. **`tower dispatch --restate`** (+ `tower restate ok <task>`) — point 7. The adapter's first answer is
-   only `## Restatement`; nothing else runs until a person (or the lead) accepts it. Cheapest gate in
-   the list, and it reuses the report parser we already have.
+1. **`tower dispatch --restate`** (+ `tower restate ok <task>`) — point 7. **Landed.** The adapter's
+   first answer is only `## Restatement`; nothing else runs until a person (or the lead) accepts it.
+   Cheapest gate in the list, and it reuses the report parser we already have. It fails closed: a
+   non-zero exit or a missing section leaves the task `failed`, never `restating`, and a `restating`
+   task cannot be accepted because no report exists.
 2. **`tower skill save <task-id>`** — point 3. From an accepted task, write
    `roles/<role>/skills/<slug>.md` with three required sections: steps, output format, checks. Dispatch
    then injects *only the index* of that role's skills, one line each.

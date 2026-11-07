@@ -201,6 +201,8 @@ verify_commands:
 |---|---|
 | `tower init <dir>` | 生成配置和角色目录 |
 | `tower dispatch <role> "<brief>"` | 建任务并执行 |
+| `tower dispatch <role> "<brief>" --restate` | 复述确认：角色先用自己的话复述 brief，不派活 |
+| `tower restate ok <task>` | 接受复述，这时才真正派活 |
 | `tower batch role1 role2 --brief "…"` | 同一 brief 分发给多个角色 |
 | `tower inbox [--all] [--read]` | 角色提交的全部回执（审计日志） |
 | `tower attention` | **只**列出在等人的任务 |
@@ -211,6 +213,11 @@ verify_commands:
 | `tower show <task>` / `tower log` | 看单个任务 / 跟 ledger |
 | `tower demo` | 离线全链路演示 |
 | `tower doctor` | 检查配置、适配器、Key、会话 |
+
+`--restate` 是用一次便宜的调用换掉一次昂贵的调用。角色只回 `## Restatement` / `## Assumptions` /
+`## Done looks like` 三段，任务停在 `restating`、出现在 **needs you** 里、而且**不能**被 accept
+（此时还没有回执）。`tower restate ok <task>` 把这段复述以 `## Confirmed understanding` 写进正式派活的
+提示词，然后才派活。这个关口是失败关闭的：适配器报错或缺这段，任务进 `failed`，绝不会进 `restating`。
 
 ## 磁盘上有什么
 

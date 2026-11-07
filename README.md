@@ -215,6 +215,8 @@ That is the difference between *"the agent said it works"* and *"the tower check
 |---|---|
 | `tower init <dir>` | scaffold config + role folders |
 | `tower dispatch <role> "<brief>" [--key …]` | create and run one task (idempotent with `--key`) |
+| `tower dispatch <role> "<brief>" --restate` | restatement gate: the role first says back what the brief means; no work runs |
+| `tower restate ok <task>` | accept that restatement, then dispatch the work |
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |
 | `tower inbox [--all] [--read]` | reports filed by roles (the full log) |
 | `tower attention` | **only** the tasks waiting on a person |
@@ -225,6 +227,12 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower show <task>` / `tower log` | inspect one task / tail the ledger |
 | `tower demo` | offline end-to-end demo |
 | `tower doctor` | validate config, adapter options, keys, sessions |
+
+`--restate` buys one cheap turn before an expensive one. The role answers with only
+`## Restatement` / `## Assumptions` / `## Done looks like`; the task waits in `restating`, shows up under
+**needs you**, and cannot be accepted — no report exists yet. `tower restate ok <task>` copies the
+accepted text into the work prompt as `## Confirmed understanding`, then dispatches. The gate fails
+closed: a non-zero exit or a missing section leaves the task `failed`, never `restating`.
 
 ## What's on disk
 

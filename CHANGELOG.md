@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [Unreleased]
+
+### Added
+
+- **`tower dispatch --restate` and `tower restate ok <task>`** — playbook point 7: make the role restate
+  the brief in its own words before any work runs. The first turn is a restatement only
+  (`## Restatement` / `## Assumptions` / `## Done looks like`); the task waits in `restating`, appears
+  in `tower attention` and the board's **needs you**, and cannot be accepted because no report exists.
+  `tower restate ok` copies the accepted text into the work prompt as `## Confirmed understanding`,
+  then dispatches. The gate fails closed: a non-zero adapter exit or a missing section leaves the task
+  `failed`, never `restating`. `tower accept` on a restating task is refused with the one command that
+  opens the gate.
+
 ## [0.7.3] - 2026-11-07
 
 ### Fixed
