@@ -72,6 +72,49 @@ fix(verify): reject checks without a result
 docs(readme): clarify DSH-first setup
 ```
 
+Keep every commit small enough to revert on its own:
+
+1. **One intention per commit.** If the subject needs "and", split it.
+2. **Split by layer** — `test(...)` first, then the implementation, then `docs(...)` for README and
+   CHANGELOG.
+3. **Stage hunks, not whole files**, when one file carries two intentions: `git add -p` (for a new
+   file run `git add -N <file>` first, otherwise there is nothing to split).
+4. **Fold a fix into the commit it belongs to**: `git commit --fixup=<sha>`, then
+   `git rebase -i --autosquash origin/main` before pushing.
+5. **Before pushing**, `git log --oneline origin/main..HEAD` must read as a coherent list — if one
+   line is a mystery, squash it into the line it explains.
+
+## Releasing
+
+The version lives in three places and they must agree: `pyproject.toml`,
+`src/control_tower/__init__.py` and `packages/dsh-tower/package.json`.
+`node scripts/check-release-consistency.mjs` enforces that in CI, together with a matching
+`CHANGELOG.md` section.
+
+1. Write the changelog section first — release notes are copied from it, never invented:
+
+   ```
+   ## [0.7.4] - 2026-11-07
+
+   ### Fixed
+   - ...
+   ```
+
+2. Run the release script. It bumps the three version fields, re-runs both suites, rewrites the README
+   test-count badges with the real numbers, checks consistency, commits, tags and pushes:
+
+   ```powershell
+   scripts\release.cmd -Version 0.7.4          # Windows (execution policy is Restricted here)
+   pwsh ./scripts/release.ps1 -Version 0.7.4   # pwsh 7 / Linux / macOS
+   ```
+
+   Switches: `-DryRun` prints the plan and touches nothing, `-BadgesOnly` refreshes the README badges
+   to the current counts, `-NoPush` commits and tags locally.
+
+3. The `release` workflow takes over from the tag: it re-runs the tests, builds sdist + wheel, creates
+   the GitHub Release with the changelog section as the body and both artifacts attached. PyPI
+   publishing is skipped unless a `PYPI_API_TOKEN` repository secret exists.
+
 ## Reporting a security issue
 
 Open a private security advisory on GitHub rather than a public issue. The tower runs local agent
