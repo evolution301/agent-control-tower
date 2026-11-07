@@ -47,6 +47,7 @@ TRACKED = [
     "README.zh.md",
     "src/control_tower/__init__.py",
     "packages/dsh-tower/package.json",
+    "packages/dsh-tower/index.js",
 ]
 
 
