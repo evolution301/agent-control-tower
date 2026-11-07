@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.5] - 2026-11-08
+
+### Fixed
+
+- **The Tower settings section never rendered.** The client entry read `ctx.slots` without declaring
+  the service, so the host threw `cannot get property "slots" without inject` on every boot and the
+  section stayed blank (the host caught the error, so it never failed the boot — it just never
+  appeared). The entry now declares `exports.inject = ['slots']`, the same contract the sidebar
+  plugin uses, and `package.json` carries the manifest-level `dsh.client.inject` too.
+- **`tower_dispatch` and friends were not reachable from the bundle registry.** Five tools were added
+  in 0.7.4 (`tower_say`, `tower_huddle`, `tower_supervise`, `tower_skill_save`,
+  `tower_restate_ok`) plus `due`/`restate` on `tower_dispatch`; the bundle test now pins all thirteen
+  tools so a missing registration cannot ship again.
+
 ## [0.7.4] - 2026-11-08
 
 ### Added

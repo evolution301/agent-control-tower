@@ -31,7 +31,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.7.4'
+export const VERSION = '0.7.5'
 
 /** Resolved runtime settings. */
 function settings(config = {}) {
