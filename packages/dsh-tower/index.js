@@ -406,10 +406,15 @@ export function apply(ctx, config = {}) {
     .catch(() => {})
   const disposers = [
     ctx.tools.register(dispatchTool(cfg)),
+    ctx.tools.register(restateOkTool(cfg)),
     ctx.tools.register(inboxTool(cfg)),
     ctx.tools.register(acceptTool(cfg)),
     ctx.tools.register(reworkTool(cfg)),
     ctx.tools.register(statusTool(cfg)),
+    ctx.tools.register(sayTool(cfg)),
+    ctx.tools.register(huddleTool(cfg)),
+    ctx.tools.register(superviseTool(cfg)),
+    ctx.tools.register(skillSaveTool(cfg)),
     ctx.tools.register(rolesTool(cfg)),
     ctx.tools.register(roleAddTool(cfg)),
     ctx.tools.register(roleRemoveTool(cfg)),
@@ -433,6 +438,8 @@ export function dispatchTool(cfg) {
       role: { type: 'string', required: true, description: 'Role name from tower.toml (e.g. backend, frontend, qa).' },
       brief: { type: 'string', required: true, description: 'The task brief. Be explicit about deliverable and acceptance.' },
       batch: { type: 'string', description: 'Optional batch label to group related tasks.' },
+      due: { type: 'string', description: 'Deadline: 90m / 2h / 3d or "2026-11-09 18:00". An overdue task with no report is chased by tower_supervise.' },
+      restate: { type: 'boolean', description: 'Restatement gate: the role first restates the brief in its own words; no work runs until tower_restate_ok confirms it.' },
     },
     output: {
       schema: {
@@ -450,6 +457,8 @@ export function dispatchTool(cfg) {
       assertWorkspace(cfg)
       const argv = ['dispatch', String(args.role ?? ''), String(args.brief ?? ''), '--json']
       if (args.batch) argv.push('--batch', String(args.batch))
+      if (args.due) argv.push('--due', String(args.due))
+      if (args.restate) argv.push('--restate')
       const { data } = await runTower(cfg, argv)
       const text = summarizeDispatch(data)
       return { ok: true, task: data?.task ?? data, text }
@@ -649,6 +658,163 @@ export function roleAddTool(cfg) {
     },
     presentCall(args) {
       return { card: 'generic', title: `Create bot ${args.name ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_restate_ok`: accept a restatement, then dispatch the work. */
+export function restateOkTool(cfg) {
+  return tool({
+    name: 'tower_restate_ok',
+    description:
+      'Accept a task\'s restatement (playbook point 7) and dispatch the work. Only valid on a task created with tower_dispatch restate=true; the accepted text is carried into the work prompt as "Confirmed understanding".',
+    parameters: {
+      task: { type: 'string', required: true, description: 'Task id waiting in restating, e.g. T-0001.' },
+      note: { type: 'string', description: 'Optional note recorded with the acceptance.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const argv = ['restate', 'ok', String(args.task ?? '')]
+      if (args.note) argv.push('--note', String(args.note))
+      const { data } = await runTower(cfg, argv)
+      const text =
+        typeof data === 'string'
+          ? data
+          : `${data?.id ?? args.task} restatement accepted — work dispatched, status=${data?.status ?? '?'}`
+      return { text }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower restate ok ${args.task ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_say`: a bot-to-bot note — queued into the peer's session + filed for the lead. */
+export function sayTool(cfg) {
+  return tool({
+    name: 'tower_say',
+    description:
+      'Send a note from one role (bot) to another. Two parallel sends: the note is queued straight into the peer\'s own session, and the same text is filed with the lead (the conversations archive). Fire-and-forget: it never waits for a reply. The peer answers in its own time the same way, or via a "## Message to <role>" block in its next report.',
+    parameters: {
+      sender: { type: 'string', required: true, description: 'Role the message is from.' },
+      to: { type: 'string', required: true, description: 'Role the message is for.' },
+      message: { type: 'string', required: true, description: 'The note text.' },
+      task: { type: 'string', description: 'Link the exchange to a task id.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          delivered: { type: 'boolean' },
+          text: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const argv = ['say', String(args.sender ?? ''), String(args.to ?? ''), String(args.message ?? ''), '--json']
+      if (args.task) argv.push('--task', String(args.task))
+      const { data } = await runTower(cfg, argv)
+      const delivered = data?.delivered === true
+      const text = `conversation ${data?.conversation ?? '?'}: ${args.sender} → ${args.to} [${delivered ? 'delivered' : 'NOT delivered — recorded on the message'}]`
+      return { ok: true, delivered, text }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower say ${args.sender ?? ''} → ${args.to ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_huddle`: up to six roles in one room, two bounded rounds. */
+export function huddleTool(cfg) {
+  return tool({
+    name: 'tower_huddle',
+    description:
+      'Open a huddle: the lead puts up to six roles in one room to settle a question, two bounded rounds (position + questions, then decision + commitments), then everybody goes back to work. Minutes are written under .tower/huddles/.',
+    parameters: {
+      roles: { type: 'array', items: { type: 'string' }, required: true, description: '2-6 role names.' },
+      topic: { type: 'string', required: true, description: 'The question to settle.' },
+      rounds: { type: 'integer', description: '1 or 2 (default 2).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const roles = Array.isArray(args.roles) ? args.roles.map(String).filter(Boolean) : []
+      const argv = ['huddle', ...roles, '--topic', String(args.topic ?? '')]
+      if (args.rounds) argv.push('--rounds', String(args.rounds))
+      const { data } = await runTower(cfg, argv)
+      const text =
+        typeof data === 'string'
+          ? data
+          : `huddle ${data?.id}: ${data?.topic}\nroles: ${(data?.roles ?? []).join(', ')} · rounds: ${data?.rounds}\nminutes: ${data?.path ?? ''}`
+      return { text }
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Open a role huddle', kind: 'other' }
+    },
+  })
+}
+
+/** `tower_supervise`: chase every open task past its deadline. */
+export function superviseTool(cfg) {
+  return tool({
+    name: 'tower_supervise',
+    description:
+      'Deadline supervision: for every open task past its due time, the lead pulls the role up in its own session. A late-but-real report is recovered and verified; a status-only answer keeps the task open marked overdue; an unreachable role accumulates nudges. Run it periodically — e.g. after dispatching with a due time.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute() {
+      assertWorkspace(cfg)
+      const { data } = await runTower(cfg, ['supervise', '--json'])
+      const touched = data?.touched ?? 0
+      const rows = Array.isArray(data?.results) ? data.results : []
+      const text = touched
+        ? `supervised ${touched} overdue task(s):\n` +
+          rows.map((r) => `${r.task}  ${r.role}  ${r.outcome}  nudges=${r.nudges}`).join('\n')
+        : 'nothing overdue'
+      return { text }
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Supervise overdue tasks', kind: 'other' }
+    },
+  })
+}
+
+/** `tower_skill_save`: distil an accepted task into a reusable skill. */
+export function skillSaveTool(cfg) {
+  return tool({
+    name: 'tower_skill_save',
+    description:
+      'Save an accepted task as a skill (playbook point 3): writes roles/<role>/skills/<slug>.md with steps, output format and checks, and updates the role\'s skill index. Only accepted (verified) tasks qualify — a skill is what the tower checked, not what a role claimed. Future dispatches to that role inject the index automatically.',
+    parameters: {
+      task: { type: 'string', required: true, description: 'Accepted task id, e.g. T-0001.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const { data } = await runTower(cfg, ['skill', 'save', String(args.task ?? ''), '--json'])
+      if (typeof data === 'string') return { text: data }
+      const index = Array.isArray(data?.index_lines) ? data.index_lines : []
+      return { text: `skill saved: ${data?.path}\n${index.join('\n')}` }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower skill save ${args.task ?? ''}`, kind: 'other' }
     },
   })
 }
