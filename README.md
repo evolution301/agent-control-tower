@@ -151,7 +151,24 @@ dsh plugin --profile <name> add ./packages/dsh-tower
 `tower_dispatch` · `tower_inbox` · `tower_accept` · `tower_rework` · `tower_status`
 → [packages/dsh-tower](packages/dsh-tower/README.md)
 
-## Panel: one glance, everything in flight
+## Panel: what needs me, and is this team working well
+
+`tower panel` serves one read-only page on `127.0.0.1` (default 8787, `--port` to
+move it). It answers three questions in the order a person asks them:
+
+1. **now** — what needs you (only person-states get red), what is in flight;
+2. **who** — one robot per role, its face *is* its state (blinking = idle, hopping =
+   working, X eyes shaking = failed);
+3. **history** — the ledger, plus a business strip: verified rate, lead time p50/p90,
+   throughput, per-role numbers, overdue and nudges.
+
+**Several projects, one switcher.** Each project keeps its own `tower.toml` and
+`.tower/`; `tower projects add <path>` (or `scan`) registers them and the page grows
+project pills plus an **all projects** view. `tower projects use <name>` marks the
+active one — the panel defaults to it, and the DSH bundle's `tower_*` tools follow it
+(`tower_use` switches it from inside a session, no restart).
+
+Deep links: `?lang=zh`, `?theme=dark`, `?project=<name>`, `?project=__all__`.
 
 Two renderings of the same snapshot — the terminal (`tower board`) and a local read-only web panel
 (`tower panel`). Person-states first, healthy work takes no space.
@@ -219,6 +236,8 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower restate ok <task>` | accept that restatement, then dispatch the work |
 | `tower say <from> <to> "…"` | bot-to-bot note: queued into the peer's session + filed for the lead, fire-and-forget |
 | `tower huddle role1 role2 … --topic "…"` | up to six roles, two bounded rounds; minutes land in `.tower/huddles/` |
+| `tower stats [--all] [--days 14]` | business view: verified rate, lead time, throughput, per-role stats |
+| `tower projects list` / `scan` / `add` / `remove` / `use` | many towers, one switcher: what the panel and `tower_*` tools follow |
 | `tower supervise` | chase every open task past its deadline in its own session |
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |
 | `tower inbox [--all] [--read]` | reports filed by roles (the full log) |

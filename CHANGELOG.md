@@ -5,6 +5,41 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.6] - 2026-11-08
+
+### Added
+
+- **`tower stats` / `tower stats --all`** — a business view over files the tower already writes:
+  verified rate (accepted ÷ decided), rework and restate rates, lead time p50/p90, 14-day throughput,
+  per-role totals plus skills, overdue/nudges, conversation and huddle counts, adapter runs. No
+  database, no telemetry; an empty tower reports `—`, never a fake 0 %.
+- **Multi-project registry: `tower projects list|scan|add|remove|use`** — each project keeps its own
+  `tower.toml` and `.tower/`; the registry (`~/.tower/projects.json`) only remembers where they are and
+  which one is active (`~/.tower/active`). `stats --all` and the panel aggregate them; a broken
+  registered project is reported as broken instead of taking the board down.
+- **The panel is now a board for many projects** — project pills and an *all projects* view, a
+  now/next bar, per-role robot faces that carry the state (idle / working / failed / stopped), a dark
+  theme (`?theme=dark`, remembered in `localStorage`), a task drawer, and deep links
+  (`?project=`, `?lang=`, `?theme=`). Layout follows the 值守台HQ rules: three tenses apart, collapsed
+  by default, red only for "needs you", read-only.
+- **`tower_projects` and `tower_use` in the DSH bundle** — list the registered projects and switch the
+  active one from inside a session; the bundle's `tower_*` tools read the same pointer, so a switch
+  takes effect without restarting DSH.
+
+### Fixed
+
+- **A plugin update could silently re-aim the remote at another tower.** The bundle
+  resolved `workspace` from the profile config with no memory of what it had been using, so a lost
+  or reset config line dropped the tools into `cwd` (in practice: a demo tower) — tasks appeared to
+  vanish. The aim now has an explicit precedence — configured workspace, then
+  `~/.tower/binding.json` (the last tower that really did work, written by the bundle on mount, by
+  `tower projects use`, and by the CLI when it dispatches), then the active project — and
+  `tower doctor` prints the aim so a mismatch is visible before anything is dispatched. Tower data
+  was never touched by an update; only the aim was lost, and that is now impossible to lose silently.
+- **The panel could show another project's data.** A panel started in project A answered
+  `/api/snapshot` with the registry's active project; with the switcher in place the started workspace
+  is authoritative and `?project=` selects the rest.
+
 ## [0.7.5] - 2026-11-08
 
 ### Fixed

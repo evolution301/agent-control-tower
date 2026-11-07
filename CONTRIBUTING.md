@@ -60,6 +60,26 @@ tower --version                              # follows the checkout (editable in
 `pip show agent-control-tower` can lag the checkout: an editable install keeps the `dist-info` folder
 of the version you first installed. Trust `tower --version` and the source, not that metadata.
 
+### Updating the plugin must never re-aim the tower
+
+The bundle is a remote control; the tower is data (`tower.toml` + `.tower/`) in the
+project. An update replaces the remote, never the tower — but it used to lose the
+*aim*: a missing or reset `workspace:` line sent `tower_*` to whatever demo tower was
+handy, which looks exactly like "my tower is gone".
+
+The aim now has a precedence and a memory, and both sides read the same files:
+
+1. `cordis.patch.yml → tower.workspace` — an explicit aim always wins, so an update
+   cannot re-point a working installation;
+2. `~/.tower/binding.json` — the last tower that actually did work. When an update
+   loses the config line, this is what the tools reconnect to, with no human step;
+3. `~/.tower/active` — the `tower projects use` pointer, for a machine that has a
+   binding but wants to switch projects.
+
+`tower doctor` reports the aim (`aim: …`) so a mismatch is visible *before* a
+dispatch. After any plugin update, run `tower doctor` in the project: no `aim:`
+warning means the remote is still pointed where it was.
+
 ### One phrase to ask for all of it
 
 "pull 一下", "push 一下吧" and "更新一下" should all mean *make the local install match the remote*.
