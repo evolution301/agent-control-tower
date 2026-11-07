@@ -1,0 +1,86 @@
+name: release
+
+# 推一个 v* tag 就发布：
+#   测试 → 校验 tag/版本/CHANGELOG → 构建 sdist+wheel → 建 GitHub Release（正文抄 CHANGELOG）→ 有 PyPI token 就发 PyPI。
+# 不做的事情：改版本号、写 CHANGELOG。那两件在本地由 scripts/release.ps1 干完再打 tag。
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+jobs:
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  bundle:
+    name: dsh-tower bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/dsh-tower
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test test/*.test.js
+
+  publish:
+    name: github release
+    needs: [python, bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check tag, versions and changelog
+        run: node scripts/check-release-consistency.mjs --tag "$GITHUB_REF_NAME"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Extract release notes from CHANGELOG
+        run: node scripts/release-notes.mjs --tag "$GITHUB_REF_NAME" --out .release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file .release-notes.md
+
+      - name: Publish to PyPI (skipped unless PYPI_API_TOKEN exists)
+        if: env.PYPI_API_TOKEN != ''
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine upload --skip-existing dist/*
