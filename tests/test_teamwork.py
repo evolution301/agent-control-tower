@@ -60,16 +60,20 @@ def tower(tmp_path, monkeypatch):
 class _StubAdapter:
     name = "stub"
 
-    def __init__(self, text="", exit_code=0):
+    def __init__(self, text="", exit_code=0, deliver_exit_code=None):
         self.text = text
         self.exit_code = exit_code
+        self.deliver_exit_code = exit_code if deliver_exit_code is None else deliver_exit_code
 
     def run(self, req):
         return AdapterResult(text=self.text, exit_code=self.exit_code, meta={})
 
+    def deliver(self, req):
+        return AdapterResult(text=self.text or "queued", exit_code=self.deliver_exit_code, meta={})
 
-def _use_stub(monkeypatch, text="", exit_code=0):
-    stub = _StubAdapter(text=text, exit_code=exit_code)
+
+def _use_stub(monkeypatch, text="", exit_code=0, deliver_exit_code=None):
+    stub = _StubAdapter(text=text, exit_code=exit_code, deliver_exit_code=deliver_exit_code)
     monkeypatch.setattr("control_tower.converse.get_adapter", lambda *a, **k: stub)
     return stub
 
@@ -77,17 +81,20 @@ def _use_stub(monkeypatch, text="", exit_code=0):
 # ------------------------------------------------------------- bot-to-bot say
 
 
-def test_say_files_both_halves_and_the_reply(tower):
+def test_say_is_two_parallel_sends_and_never_blocks_on_a_reply(tower):
+    """The archive (the lead's copy) exists before delivery runs; no reply is awaited."""
     board = Board(tower)
     entry = say(tower, board, "backend", "frontend", "which keys go into the shared config?")
     assert entry["conversation"] == "C-0001"
-    assert entry["reply"], "the mock must answer a peer turn"
+    assert entry["delivered"] is True
+
     record = load_conversation(tower, "C-0001")
-    assert record["messages"][0]["from"] == "backend"
-    assert record["messages"][0]["to"] == "frontend"
+    message = record["messages"][0]
+    assert message["from"] == "backend" and message["to"] == "frontend"
+    assert message["delivered"] is True
     events = [json.loads(l)["event"] for l in tower.ledger_path.read_text(encoding="utf-8").splitlines()]
     assert "peer_message" in events
-    # a conversation turn writes no work artifact
+    # fire-and-forget: a peer note writes no work artifact and awaits no report
     assert not list((tower.workspace / "roles" / "frontend").glob("*-MOCK-ARTIFACT.md"))
 
 
@@ -108,14 +115,19 @@ def test_say_threads_messages_under_one_conversation(tower):
     assert second["conversation"] == first["conversation"]
 
 
-def test_say_fails_closed_when_the_peer_is_silent(tower, monkeypatch):
-    _use_stub(monkeypatch, text="", exit_code=1)
+def test_a_failed_delivery_is_recorded_on_the_message(tower, monkeypatch):
+    """An unreachable peer must not fail the sender: the record carries the bad news."""
+    _use_stub(monkeypatch, deliver_exit_code=2)
     board = Board(tower)
     entry = say(tower, board, "backend", "qa", "anyone there?")
-    assert entry["reply"] == ""
-    assert entry["exit_code"] == 1
+    assert entry["delivered"] is False
     record = load_conversation(tower, entry["conversation"])
-    assert record["messages"][0]["reply"] == "", "the failed exchange is still on the record"
+    message = record["messages"][0]
+    assert message["delivered"] is False
+    assert message["detail"], "the failure detail is on the record"
+    events = [json.loads(l) for l in tower.ledger_path.read_text(encoding="utf-8").splitlines()]
+    pm = [e for e in events if e["event"] == "peer_message"][-1]
+    assert pm["delivered"] is False
 
 
 # ------------------------------------------------- report-carried relaying

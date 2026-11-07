@@ -392,13 +392,11 @@ def cmd_say(args) -> int:
     if getattr(args, "json", False):
         _print(entry, as_json=True)
         return 0
-    print(f"conversation {entry['conversation']}: {args.sender} → {args.to}")
-    if entry["reply"]:
-        print(f"reply: {entry['reply'][:400]}")
-    else:
-        print("reply: (none — the exchange is filed with the failure)")
-    if entry["escalate"]:
-        print(f"escalate: {entry['escalate']}")
+    print(f"conversation {entry['conversation']}: {args.sender} → {args.to}"
+          f"  [{'delivered' if entry['delivered'] else 'NOT delivered — recorded on the message'}]")
+    print(f"archived for the lead: {entry['conversation']}")
+    if not entry["delivered"]:
+        print(f"detail: {entry['detail']}")
     return 0
 
 

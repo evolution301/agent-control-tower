@@ -35,6 +35,16 @@ class Adapter(Protocol):
 
     def run(self, req: AdapterRequest) -> AdapterResult: ...
 
+    def deliver(self, req: AdapterRequest) -> AdapterResult:
+        """Queue a peer note into the role's session without waiting for a turn.
+
+        Fire-and-forget by contract: exit_code 0 means the message is in the
+        role's queue (or an equivalent inbox), not that it was read or answered.
+        Adapters that cannot queue may return a non-zero exit code; the caller
+        records the failure and moves on.
+        """
+        ...
+
 
 def get_adapter(name: str, options: dict[str, Any] | None = None) -> Adapter:
     """Resolve an adapter by name from config/adapters options."""

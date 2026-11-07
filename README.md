@@ -217,7 +217,7 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower dispatch <role> "<brief>" [--due 90m]` | create and run one task (idempotent with `--key`, deadline with `--due`) |
 | `tower dispatch <role> "<brief>" --restate` | restatement gate: the role first says back what the brief means; no work runs |
 | `tower restate ok <task>` | accept that restatement, then dispatch the work |
-| `tower say <from> <to> "…"` | relay one bot-to-bot message; both halves are filed in `.tower/conversations/` |
+| `tower say <from> <to> "…"` | bot-to-bot note: queued into the peer's session + filed for the lead, fire-and-forget |
 | `tower huddle role1 role2 … --topic "…"` | up to six roles, two bounded rounds; minutes land in `.tower/huddles/` |
 | `tower supervise` | chase every open task past its deadline in its own session |
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |

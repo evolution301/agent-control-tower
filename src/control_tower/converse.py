@@ -1,23 +1,25 @@
-"""Peer turns: bots talking to bots, with the lead able to read every word.
+"""Peer turns: bots talking to bots in parallel, with the lead on copy by design.
 
-Why this is a relay and not a socket
-------------------------------------
-In this deployment a bot *is* a long-lived DSH session, and the only way to put a
-turn into someone else's session is `session/prompt` through the harness. So the
-tower is the postman. That is not a limitation to hide: it is what makes the
-exchange auditable. Every message is filed in `.tower/conversations/` before it is
-delivered, so the lead can answer "what did they say to each other" without
-reading transcripts - which is exactly the condition the playbook puts on letting
-bots talk directly.
+How a message actually moves
+----------------------------
+When bot A wants to tell bot B something, A makes **two parallel sends and is
+done** — no round trip, no waiting on B:
 
-Two ways a message is sent
---------------------------
-* `tower say backend qa "..."` - a person relays one now.
-* a `## Message to <role>` block inside a report - the sender hands the tower the
-  message it wants delivered and keeps working; `dispatch` relays it once the
-  report is filed.
+1. **to the peer** — the tower queues the note straight into B's own session
+   (`session/prompt` in queue mode returns the instant the host accepts it);
+2. **to the lead** — the same note is filed under `.tower/conversations/` and the
+   ledger *before delivery is even attempted*, so 总控 always has the full text.
 
-Neither is a work dispatch: the receiver answers and stops.
+Delivery is fire-and-forget: `tower say A B "…"` returns as soon as both sends
+are handed off. If B is unreachable the failure is recorded on the message —
+the record, not the sender, carries the bad news.
+
+How B answers
+-------------
+In its own time, by the same rule — two parallel sends. From inside its session B
+either runs `tower say B A "…"` or adds a `## Message to A` block to its next
+report, which `dispatch` relays automatically. A conversation is just the thread
+of filed messages; nothing is ever whispered.
 """
 
 from __future__ import annotations
@@ -28,52 +30,30 @@ from .adapters import AdapterRequest, get_adapter
 from .board import Board, Task, now_ts
 from .config import TowerConfig
 
-CHAT_CONTRACT = """## Peer message (a conversation, not a work brief)
+PEER_NOTE_CONTRACT = """## Peer note from {sender} (not a work brief)
 
-You are the **{role}** role. Another role in this tower, **{sender}**, sent you
-this message:
+{message}
 
-> {message}
+This is a note from another role in this tower, not an instruction from the
+control tower and not a work dispatch. Read it; act on it when it touches your
+current work.
 
-This is a conversation turn. Answer it; do not start work on it, do not write
-deliverables, do not run the report contract.
-
-Answer with exactly these sections:
-
-    ## Reply
-    <your answer in your own words, 2-5 sentences>
-
-    ## Escalate
-    <one concrete question for the lead, or "none">
-
-The lead files both halves of this exchange; nothing you say here is private.
+If you want to answer, answer in your own time — two parallel sends, same as this
+one: run `tower say {to} {sender} "<your answer>"`, or add a
+`## Message to {sender}` block to your next report and the tower will relay it.
+Everything is filed with the lead either way, so there is nothing to keep private.
 """
 
 
-def render_chat_prompt(role: str, sender: str, message: str) -> str:
-    return CHAT_CONTRACT.format(role=role, sender=sender, message=message.strip())
+def render_peer_note(sender: str, to: str, message: str) -> str:
+    return PEER_NOTE_CONTRACT.format(sender=sender, to=to, message=message.strip())
 
 
 def _sections(text: str) -> dict[str, list[str]]:
-    """Small local splitter: the parser in `dispatch` is report-shaped on purpose."""
+    """Report-shaped splitter, borrowed from `dispatch` so one parser owns the format."""
     from .dispatch import _sections as sections
 
     return sections(text)
-
-
-def parse_reply(text: str) -> dict:
-    """Read a peer answer. An empty reply is a failed conversation, not silence."""
-    from .dispatch import _strip_bullet
-
-    buckets = _sections(text)
-    reply = "\n".join(line.rstrip() for line in buckets.get("reply", [])).strip()
-    escalate = ""
-    for line in buckets.get("escalate", []):
-        item = _strip_bullet(line)
-        if item and item.lower() not in ("none", "n/a", "-"):
-            escalate = item
-            break
-    return {"reply": reply, "escalate": escalate}
 
 
 # ------------------------------------------------------------------ storage
@@ -137,7 +117,12 @@ def say(
     conversation_id: str = "",
     task_id: str = "",
 ) -> dict:
-    """Deliver one peer message and file both halves of the exchange."""
+    """Deliver one peer note: two parallel sends, no waiting on a reply.
+
+    The archive (the lead's copy) is written *first*; delivery into the peer's
+    session is attempted second and its outcome is recorded on the message. The
+    call returns immediately either way.
+    """
     if sender not in cfg.roles:
         raise KeyError(f"unknown role {sender!r}; known: {', '.join(sorted(cfg.roles))}")
     if to not in cfg.roles:
@@ -152,19 +137,34 @@ def say(
         "task": task_id,
         "messages": [],
     }
-    adapter, result = run_turn(cfg, to, render_chat_prompt(to, sender, message), task_id)
-    parsed = parse_reply(result.text) if result.exit_code == 0 else {"reply": "", "escalate": ""}
     entry = {
         "ts": now_ts(),
         "from": sender,
         "to": to,
         "message": message.strip(),
-        "reply": parsed["reply"],
-        "escalate": parsed["escalate"],
-        "adapter": adapter.name,
-        "exit_code": result.exit_code,
+        "task": task_id,
+        "delivered": None,      # None = not attempted, True/False = queue outcome
+        "detail": "",
     }
     record["messages"].append(entry)
+    save_conversation(cfg, record)   # the lead's copy exists before delivery runs
+
+    role = cfg.roles[to]
+    options = dict(cfg.adapter_options.get(role.adapter) or {})
+    adapter = get_adapter(role.adapter, options)
+    req = AdapterRequest(
+        role=to,
+        prompt=render_peer_note(sender, to, message),
+        cwd=cfg.role_dir(to),
+        timeout_s=role.timeout_s,
+        env=role.env,
+        task_id=task_id,
+        options=options,
+    )
+    result = adapter.deliver(req)
+    entry["delivered"] = result.exit_code == 0
+    entry["detail"] = result.text[:300]
+    entry["adapter"] = adapter.name
     save_conversation(cfg, record)
     board.log(
         "peer_message",
@@ -173,8 +173,7 @@ def say(
         to=to,
         task=task_id,
         chars=len(entry["message"]),
-        reply_chars=len(entry["reply"]),
-        exit_code=result.exit_code,
+        delivered=entry["delivered"],
     )
     entry["conversation"] = cid
     return entry

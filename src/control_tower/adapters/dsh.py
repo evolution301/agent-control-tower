@@ -310,6 +310,45 @@ class DshAdapter:
         name = self.report_file.format(task_id=req.task_id, role=req.role)
         return Path(req.cwd) / name
 
+    def deliver(self, req: AdapterRequest) -> AdapterResult:
+        """Queue a peer note into the role's session; never wait for a turn.
+
+        `session/prompt` in `queue` mode returns as soon as the host accepts the
+        turn, which is what makes bot-to-bot mail parallel: the sender is done
+        the instant both sends (peer + archive) are handed off.
+        """
+        session_id, how = self.resolve_session(req)
+        if not session_id:
+            return AdapterResult(
+                text="[dsh] no session for role %r — peer note not delivered" % req.role,
+                exit_code=2,
+                meta={"missing_session": req.role, "resolution": how},
+            )
+        reply = self.rpc(
+            "session/prompt",
+            {
+                "request": {
+                    "sessionId": session_id,
+                    "requestId": str(uuid.uuid4()),
+                    "mode": "queue",
+                    "content": [{"type": "text", "text": req.prompt}],
+                    "clientTimeZone": self.timezone,
+                }
+            },
+            timeout=90,
+        )
+        if reply.get("error"):
+            return AdapterResult(
+                text="[dsh] queue failed: %s" % reply["error"],
+                exit_code=3,
+                meta={"rpc": "session/prompt", "session_id": session_id, "resolution": how},
+            )
+        return AdapterResult(
+            text="[dsh] queued into %s" % session_id,
+            exit_code=0,
+            meta={"session_id": session_id, "resolution": how},
+        )
+
     def run(self, req: AdapterRequest) -> AdapterResult:
         session_id, how = self.resolve_session(req)
         self.resolution[req.role] = how

@@ -126,3 +126,9 @@ class MockAdapter:
             "- none\n"
         )
         return AdapterResult(text=text, exit_code=0, meta={"artifact": str(artifact)})
+
+    def deliver(self, req: AdapterRequest) -> AdapterResult:
+        """The mock always accepts a peer note instantly (nothing to queue into)."""
+        return AdapterResult(
+            text=f"[mock:{req.role}] peer note queued", exit_code=0, meta={"mode": "deliver"}
+        )

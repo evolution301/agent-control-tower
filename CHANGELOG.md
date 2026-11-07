@@ -9,12 +9,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- **Bot-to-bot conversation: `tower say <from> <to> "…"`** — bots can talk to each other without a
-  human pasting text, but never off the record. A bot *is* a long-lived session, so the tower relays
-  the turn and files both halves under `.tower/conversations/C-*.json` before anyone reads the answer.
-  A role can also hand the tower mail inside its report (`## Message to <role>` blocks); `dispatch`
-  relays those automatically and rejects self-addressed or unknown targets on the ledger. A failed or
-  silent peer turn is recorded as a failed exchange, never as agreement.
+- **Bot-to-bot conversation: `tower say <from> <to> "…"`** — bots talk to each other in parallel, the
+  way the playbook means it: when A tells B something, two sends go out at once and A is done — the
+  note is queued straight into B's own session (`session/prompt` in queue mode), and the same text is
+  filed under `.tower/conversations/` plus the ledger *before delivery runs*, which is the lead's copy.
+  No round trip, no waiting on a reply. B answers in its own time the same way (`tower say B A "…"`, or
+  a `## Message to A` block in its next report, which `dispatch` relays automatically). A failed or
+  unreachable delivery is recorded on the message — the record carries the bad news, not the sender.
 - **Huddles: `tower huddle <roles…> --topic "…"`** — the lead opens a room for at most six roles, two
   bounded rounds (position + questions, then decision + commitments), minutes written to
   `.tower/huddles/H-*.md`. Bounded rounds are the feature: after round 2 every participant has a
