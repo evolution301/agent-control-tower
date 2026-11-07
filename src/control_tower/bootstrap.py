@@ -62,8 +62,12 @@ def listening_ports() -> list[int]:
     return sorted(ports)
 
 
-def probe(base_url: str, secret: str, timeout: float = 3) -> tuple[str | None, dict]:
-    """Probe one base_url. Returns ('harness'|'needs-secret'|None, reply)."""
+def probe(base_url: str, secret: str, timeout: float = 20) -> tuple[str | None, dict]:
+    """Probe one base_url. Returns ('harness'|'needs-secret'|None, reply).
+
+    20s, not 3: a long-lived desktop host answers session/list with hundreds of
+    rows, and a 3s socket timeout looked exactly like a wrong secret.
+    """
     adapter = DshAdapter(base_url=base_url, secret=secret, wait_s=0.1, poll_s=0.1)
     reply = adapter.rpc("session/list", {"_request": {}}, timeout=timeout)
     error = str(reply.get("error") or "")

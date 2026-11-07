@@ -159,7 +159,13 @@ class DshAdapter:
                 raw = response.read().decode("utf-8") or "{}"
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:  # pragma: no cover - network dependent
-            detail = exc.read()[:300]
+            # The error body may never arrive (kept-alive socket); a wrong
+            # secret must fail fast, not hang for the full timeout.
+            try:
+                exc.fp.sock.settimeout(5)
+                detail = exc.read()[:300]
+            except Exception:
+                detail = b"<no error body>"
             return {"error": "http %s: %r" % (exc.code, detail)}
         except Exception as exc:  # pragma: no cover - network dependent
             return {"error": "%s: %s" % (type(exc).__name__, exc)}
