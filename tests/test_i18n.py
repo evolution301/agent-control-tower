@@ -1,4 +1,9 @@
-"""The panel speaks Chinese and English (`?lang=zh|en`, default from Accept-Language)."""
+"""The panel speaks Chinese and English (`?lang=zh|en`, default from Accept-Language).
+
+The layout is Chinese-primary (it is the 值守台HQ look the user asked for); the
+*labels* — the words the JS writes at runtime — come from the server, so the
+language switch can never rewrite code.
+"""
 
 from types import SimpleNamespace
 
@@ -24,14 +29,16 @@ def test_chinese_page_has_chinese_labels():
     page = render_page(cfg(), "zh")
     for word in ("需要你处理", "进行中", "角色 — 谁在干什么", "操作日志", "加载中…", "需要你"):
         assert word in page, word
-    assert "Needs you" not in page
+    assert '"needs_you": "需要你"' in page, "runtime labels are Chinese"
+    assert "nothing in flight" not in page
 
 
-def test_english_page_has_english_labels():
+def test_english_page_switch_carries_english_runtime_labels():
     page = render_page(cfg(), "en")
-    for word in ("Needs you", "In flight", "Ledger", "loading…"):
-        assert word in page, word
-    assert "需要你处理" not in page
+    for word in ("Needs you", "In flight"):   # present in the L labels and headings
+        assert word.lower() in page.lower(), word
+    assert '"needs_you": "needs you"' in page
+    assert "正在跑" not in page
 
 
 def test_page_offers_the_language_toggle():
