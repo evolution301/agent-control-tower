@@ -100,11 +100,12 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    // The slot service is declared in package.json (`dsh.client.inject`), not
-    // here: without that declaration `ctx.slots` throws
-    // "cannot get property 'slots' without inject" and the settings section never
-    // renders. Declaring it in the manifest keeps the entry activating (the
-    // failure it guards against was a *host* service id that no bundle provides).
+    // The slot service must be declared here: a client entry that reads
+    // `ctx.slots` without it throws "cannot get property 'slots' without inject"
+    // and the Tower section silently never renders. Same shape the sidebar
+    // plugin uses (`exports.inject = [...ids]`). "slots" always resolves — it is
+    // a host core service, not another bundle's optional one.
+    exports.inject = ['slots']
     return exports
   },
 })
