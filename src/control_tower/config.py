@@ -70,6 +70,15 @@ class TowerConfig:
     def task_dir(self, task_id: str) -> Path:
         return self.tasks_dir / task_id
 
+    @property
+    def conversations_dir(self) -> Path:
+        """Bot-to-bot threads. Every peer message is filed here, not whispered."""
+        return self.state_dir / "conversations"
+
+    @property
+    def huddles_dir(self) -> Path:
+        return self.state_dir / "huddles"
+
 
 def _load_yaml_or_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
@@ -147,7 +156,7 @@ def parse_config(path: Path) -> TowerConfig:
 
 
 def ensure_layout(cfg: TowerConfig) -> None:
-    for d in (cfg.state_dir, cfg.tasks_dir, cfg.roles_dir):
+    for d in (cfg.state_dir, cfg.tasks_dir, cfg.roles_dir, cfg.conversations_dir, cfg.huddles_dir):
         d.mkdir(parents=True, exist_ok=True)
     for role in cfg.roles:
         cfg.role_dir(role).mkdir(parents=True, exist_ok=True)

@@ -78,6 +78,11 @@ class Task:
     restatement: str = ""
     restate_ok: bool = False
     restated_at: str = ""
+    # v0.8 — supervision: a task is a job with a due date, and a role that misses
+    # it gets pulled up by the lead instead of quietly rotting.
+    due_at: str = ""
+    overdue: bool = False
+    nudges: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

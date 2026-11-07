@@ -41,6 +41,63 @@ class MockAdapter:
             )
             return AdapterResult(text=text, exit_code=0, meta={"mode": "restate"})
 
+        # v0.8 — peer conversation: answer, file nothing, write no artifact.
+        if "## Peer message" in req.prompt:
+            text = (
+                "## Reply\n"
+                f"[mock:{req.role}] here. I read the message and this is my answer: the point "
+                "stands, and I will fold it into my next work turn rather than acting on it now.\n\n"
+                "## Escalate\n"
+                "- none\n"
+            )
+            return AdapterResult(text=text, exit_code=0, meta={"mode": "peer"})
+
+        # v0.8 — huddle rounds: position + questions, then decision + commitments.
+        if "## Huddle round 1" in req.prompt:
+            text = (
+                "## Position\n"
+                f"[mock:{req.role}] I would split the work by file ownership: my scope stays "
+                "mine, the shared interface is settled here in the room, and nobody edits "
+                "across scopes.\n\n"
+                "## Questions\n"
+                f"- which role owns the shared interface after this huddle\n"
+            )
+            return AdapterResult(text=text, exit_code=0, meta={"mode": "huddle-r1"})
+
+        if "## Huddle round 2" in req.prompt:
+            text = (
+                "## Decision\n"
+                f"[mock:{req.role}] I back the split-by-scope option read from the round 1 "
+                "positions; it needs no new code and no handoff.\n\n"
+                "## Commitments\n"
+                f"- {req.role}: draft my part first once the room closes\n"
+                "- none\n"
+            )
+            return AdapterResult(text=text, exit_code=0, meta={"mode": "huddle-r2"})
+
+        # v0.8 — deadline check: the mock reports the work as already done, so a
+        # nudged task recovers with a verifiable report.
+        if "## Deadline check" in req.prompt:
+            artifact = Path(req.cwd) / f"{req.task_id or 'task'}-{self.artifact_name}"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text("# Mock artifact\n\nlate but real.\n", encoding="utf-8")
+            text = (
+                "## Status\n"
+                "ready\n\n"
+                "## Summary\n"
+                f"[mock:{req.role}] the work for {req.task_id} is finished; the report simply "
+                "missed its deadline.\n\n"
+                "## Files\n"
+                f"- {artifact} — the deliverable, written now\n\n"
+                "## Checks\n"
+                "- `os.path.exists(artifact)` → True\n\n"
+                "## Open issues\n"
+                "- none\n\n"
+                "## Attention\n"
+                "- none\n"
+            )
+            return AdapterResult(text=text, exit_code=0, meta={"mode": "supervise"})
+
         role_dir = Path(req.cwd)
         role_dir.mkdir(parents=True, exist_ok=True)
         artifact = role_dir / f"{req.task_id or 'task'}-{self.artifact_name}"

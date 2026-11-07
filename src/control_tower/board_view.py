@@ -65,9 +65,12 @@ def render(snap: Snapshot, colour: bool | None = None, width: int | None = None)
     out.append(_c("IN FLIGHT", BOLD, colour))
     if snap.in_flight:
         for t in snap.in_flight:
+            due = t.get("due") or ""
+            flag = " ⚠" if t.get("overdue") else ""
+            suffix = f"  {_c(t['age'], DIM, colour)}" + (f"  {_c(due + flag, RED if t.get('overdue') else DIM, colour)}" if due else "")
             out.append(
                 f"  {t['id']}  {t['role']:<10} {t['state']:<10} {t['brief'][: width - 46]}"
-                f"  {_c(t['age'], DIM, colour)}"
+                f"{suffix}"
             )
     else:
         out.append(f"  {_c('none', DIM, colour)}")

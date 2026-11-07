@@ -26,6 +26,9 @@ from .board import (
 from .config import ensure_layout, load_config
 from .board_view import render as render_board, watch as watch_board
 from .dispatch import dispatch, dispatch_restate
+from .converse import load_conversation, parse_messages, relay_report_messages, say
+from .huddle import huddle as run_huddle
+from .supervise import due_human, overdue_tasks, parse_due, supervise
 from .snapshot import build_snapshot
 from .verify import verify_report
 
@@ -158,7 +161,14 @@ def cmd_dispatch(args) -> int:
         "strength": getattr(args, "strength", "") or "explicit",
         "policy": "tower.toml",
     }
+    try:
+        due_at = parse_due(getattr(args, "due", "") or "")
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
     task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
+    task.due_at = due_at
+    board.save(task)
     if getattr(args, "restate", False):
         task = dispatch_restate(cfg, board, task, dry_run=args.dry_run)
         if args.json:
@@ -171,13 +181,20 @@ def cmd_dispatch(args) -> int:
             print(f"\nnext: tower restate ok {task.id}   # work is dispatched only after this")
         return 0
     task = dispatch(cfg, board, task, dry_run=args.dry_run)
+    relayed = [] if args.dry_run else relay_report_messages(cfg, board, task)
     if args.json:
         # Machine mode: stdout carries exactly one JSON document and nothing else
         # so adapters (the DSH bundle) can parse it. The human report below must
         # never leak into --json output.
-        _print(task.to_dict(), as_json=True)
+        doc = task.to_dict()
+        doc["relayed"] = relayed
+        _print(doc, as_json=True)
         return 0
     print(f"task {task.id} role={task.role} status={task.status}")
+    if due_at:
+        print(f"due: {due_at}  ({due_human(task)})")
+    for entry in relayed:
+        print(f"relayed to {entry['to']}: conversation {entry['conversation']}")
     if task.report:
         print("\n--- report ---")
         print(f"summary: {task.report.get('summary', '')[:400]}")
@@ -209,9 +226,17 @@ def cmd_batch(args) -> int:
         _say(args, 'empty brief — pass it as --brief "..." or as the last argument')
         return 2
     rc = 0
+    try:
+        due_at = parse_due(getattr(args, "due", "") or "")
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
     for i, role in enumerate(roles):
         task = board.create(role, brief, batch=args.batch or "")
+        task.due_at = due_at
+        board.save(task)
         task = dispatch(cfg, board, task, dry_run=args.dry_run)
+        relay_report_messages(cfg, board, task)
         print(f"{task.id} {role} -> {task.status}")
         if cfg.serial_requests and i < len(roles) - 1:
             import time
@@ -347,6 +372,82 @@ def cmd_restate(args) -> int:
     return 0
 
 
+def cmd_say(args) -> int:
+    """Relay one bot-to-bot message. Both halves are filed, never whispered."""
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    message = args.message or sys.stdin.read()
+    if not message.strip():
+        _say(args, "empty message")
+        return 2
+    try:
+        entry = say(cfg, board, args.sender, args.to, message.strip(), task_id=args.task)
+    except KeyError as exc:
+        _say(args, str(exc))
+        return 2
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
+    if getattr(args, "json", False):
+        _print(entry, as_json=True)
+        return 0
+    print(f"conversation {entry['conversation']}: {args.sender} → {args.to}")
+    if entry["reply"]:
+        print(f"reply: {entry['reply'][:400]}")
+    else:
+        print("reply: (none — the exchange is filed with the failure)")
+    if entry["escalate"]:
+        print(f"escalate: {entry['escalate']}")
+    return 0
+
+
+def cmd_huddle(args) -> int:
+    """Open a room for up to six roles, two rounds, then everyone works."""
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    try:
+        record = run_huddle(cfg, board, list(args.roles), args.topic, rounds=args.rounds)
+    except (KeyError, ValueError) as exc:
+        _say(args, str(exc))
+        return 2
+    if getattr(args, "json", False):
+        _print(record, as_json=True)
+        return 0
+    print(f"huddle {record['id']}: {record['topic']}")
+    print(f"roles: {', '.join(record['roles'])} · rounds: {record['rounds']}")
+    print(f"minutes: {record['path']}")
+    for turn in record["turns"]:
+        if turn["round"] == 2 and turn.get("commitments"):
+            for c in turn["commitments"]:
+                if c != "none":
+                    print(f"  commitment · {turn['role']}: {c[:100]}")
+    return 0
+
+
+def cmd_supervise(args) -> int:
+    """Pull up every open task past its deadline, in its own session."""
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    result = supervise(cfg, board)
+    if getattr(args, "json", False):
+        _print(result, as_json=True)
+        return 0
+    if not result["touched"]:
+        overdue = overdue_tasks(board, cfg)
+        if not overdue:
+            print("nothing overdue")
+        return 0
+    print(f"supervised {result['touched']} overdue task(s):")
+    for r in result["results"]:
+        print(f"  {r['task']}  {r['role']:<10} {r['outcome']:<18} nudges={r['nudges']}")
+        if r.get("summary"):
+            print(f"      {r['summary'][:160]}")
+    return 0
+
+
 def cmd_status(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
@@ -360,7 +461,9 @@ def cmd_status(args) -> int:
     width = max(len(t.id) for t in tasks)
     for t in tasks:
         state = f"{t.state}/{t.status}" if t.state else t.status
-        print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {t.brief[:60]}")
+        due = due_human(t)
+        flag = " ⚠" if t.overdue else ""
+        print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {due:<14}{flag} {t.brief[:60]}")
     return 0
 
 
@@ -597,7 +700,28 @@ def build_parser() -> argparse.ArgumentParser:
                    help="explicit (a person asked) or inferred (a rule allowed it)")
     s.add_argument("--restate", action="store_true",
                    help="ask the role to restate the brief first; no work runs until `tower restate ok`")
+    s.add_argument("--due", default="",
+                   help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; a silent overrun gets chased by `tower supervise`")
     s.set_defaults(func=cmd_dispatch)
+
+    s = sub.add_parser("say", help="relay one bot-to-bot message; both halves are filed")
+    s.add_argument("sender")
+    s.add_argument("to")
+    s.add_argument("message", nargs="?")
+    s.add_argument("--task", default="", help="link the exchange to a task id")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_say)
+
+    s = sub.add_parser("huddle", help="put up to six roles in one room for a bounded discussion")
+    s.add_argument("roles", nargs="+")
+    s.add_argument("--topic", default="")
+    s.add_argument("--rounds", type=int, default=2, choices=[1, 2])
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_huddle)
+
+    s = sub.add_parser("supervise", help="chase every open task past its deadline")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_supervise)
 
     s = sub.add_parser("restate", help="accept a restatement so the work may start")
     rss = s.add_subparsers(dest="restate_command", required=True)
@@ -612,6 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--brief", default="")
     s.add_argument("--batch", default="")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--due", default="", help="deadline for every task in the batch")
     s.set_defaults(func=cmd_batch)
 
     s = sub.add_parser("inbox", help="show reports filed by roles")

@@ -13,6 +13,7 @@ from typing import Any
 
 from .board import PERSON_STATES, Board, Task
 from .config import TowerConfig
+from .supervise import due_human
 
 
 def age_s(ts: str) -> int | None:
@@ -111,6 +112,8 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
             "question": question,
             "updated_at": t.updated_at,
             "age": _human_age(age_s(t.updated_at)),
+            "due": due_human(t),
+            "overdue": bool(t.overdue) or due_human(t).startswith("overdue"),
         }
         if state in PERSON_STATES or (question and state != "dropped"):
             attention.append(item)
