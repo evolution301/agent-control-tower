@@ -200,9 +200,12 @@ verify_commands:
 | 命令 | 作用 |
 |---|---|
 | `tower init <dir>` | 生成配置和角色目录 |
-| `tower dispatch <role> "<brief>"` | 建任务并执行 |
+| `tower dispatch <role> "<brief>" [--due 90m]` | 建任务并执行（`--key` 幂等，`--due` 给期限） |
 | `tower dispatch <role> "<brief>" --restate` | 复述确认：角色先用自己的话复述 brief，不派活 |
 | `tower restate ok <task>` | 接受复述，这时才真正派活 |
+| `tower say <谁> <对谁> "…"` | 转交一条 bot 对 bot 的消息；来回全文都归档在 `.tower/conversations/` |
+| `tower huddle 角色1 角色2 … --topic "…"` | 最多六个角色进房讨论，两轮为限；纪要落在 `.tower/huddles/` |
+| `tower supervise` | 到期未交的任务，总控进它的会话逐个催办 |
 | `tower batch role1 role2 --brief "…"` | 同一 brief 分发给多个角色 |
 | `tower inbox [--all] [--read]` | 角色提交的全部回执（审计日志） |
 | `tower attention` | **只**列出在等人的任务 |

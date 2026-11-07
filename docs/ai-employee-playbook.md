@@ -23,7 +23,7 @@ were missing: staffing and memory.
 | 2 | **Few, well-trained bots** beat a large team of half-baked ones | roles are explicit, `tower doctor` validates the obvious | no size or overlap check: nothing warns you when two roles own the same scope or a ninth role appears |
 | 3 | **Save experience as Skills** — "tell your bots to create skills for itself as you give it instructions" | every task already records brief, report sections, checks and verdicts in the ledger | nothing writes those back out as a reusable skill, and nothing feeds an old skill into a new dispatch |
 | 4 | **Real tools and accounts** — connectors, vault, and a bot with its own email/accounts for separation | each adapter run is one role's process, with the role's own prompt | no per-role credential scope: every role inherits the same environment |
-| 5 | **Kill the copy-paste** — every time you move information between tools by hand, ask the bot to do it | `tower batch` fans one brief out to several roles | no chain: research output cannot become the writer's input without a person pasting it |
+| 5 | **Kill the copy-paste** — every time you move information between tools by hand, ask the bot to do it | `tower batch` fans one brief out to several roles; **landed:** `tower say` relays bot-to-bot messages, `## Message to <role>` blocks in reports are delivered by `dispatch`, and `tower huddle` gives up to six roles a room | no chain runner yet: `tower route` (a declared chain in `tower.toml`) is still open |
 | 6 | **Onboard like an intern** — introduce your work, your pain, your material, then ask where to start | `dispatch` requires a brief, and the report contract is enforced | no onboarding shape, so briefs are as good as the moment you wrote them |
 | 7 | **Voice brain-dump, then "restate this in your own words"** so a misread is caught before work starts | `verify` checks the *result* against the brief (evidence before done) | nothing checks *understanding*: an agent that misread the brief still runs, and we pay for it twice |
 
@@ -62,10 +62,14 @@ a claim without a check is not done.
    reviews, where the material lives, what "done" looks like), then it writes the roles and their
    `AGENT.md` files. `--from <notes.md>` for the voice-transcript case.
 4. **`tower route <from> <to> …`** — point 5. A declared chain in `tower.toml`; the accepted report body
-   becomes the next role's brief, so no human moves text between roles.
+   becomes the next role's brief, so no human moves text between roles. (`tower say` and `tower huddle`
+   already remove the pasting for conversations and discussions; `route` is the pipelined case.)
 5. **Small: point 2 and 4 hardening** — `doctor` warns on more than five roles, on two roles whose
    `write_scopes` overlap, and on a role that resolves a credential from the global environment
    instead of `roles/<name>/.env`.
+6. **Deadline supervision — landed.** `tower dispatch --due` stamps a deadline; `tower supervise`
+   pulls up every overdue task in its own session, recovers late-but-real reports, and records
+   still-open and unreachable answers instead of letting work rot quietly.
 
 ## What we deliberately do not adopt
 

@@ -214,9 +214,12 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | Command | Purpose |
 |---|---|
 | `tower init <dir>` | scaffold config + role folders |
-| `tower dispatch <role> "<brief>" [--key …]` | create and run one task (idempotent with `--key`) |
+| `tower dispatch <role> "<brief>" [--due 90m]` | create and run one task (idempotent with `--key`, deadline with `--due`) |
 | `tower dispatch <role> "<brief>" --restate` | restatement gate: the role first says back what the brief means; no work runs |
 | `tower restate ok <task>` | accept that restatement, then dispatch the work |
+| `tower say <from> <to> "…"` | relay one bot-to-bot message; both halves are filed in `.tower/conversations/` |
+| `tower huddle role1 role2 … --topic "…"` | up to six roles, two bounded rounds; minutes land in `.tower/huddles/` |
+| `tower supervise` | chase every open task past its deadline in its own session |
 | `tower batch role1 role2 --brief "…"` | fan one brief out to several roles |
 | `tower inbox [--all] [--read]` | reports filed by roles (the full log) |
 | `tower attention` | **only** the tasks waiting on a person |

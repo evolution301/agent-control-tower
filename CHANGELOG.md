@@ -9,6 +9,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Bot-to-bot conversation: `tower say <from> <to> "…"`** — bots can talk to each other without a
+  human pasting text, but never off the record. A bot *is* a long-lived session, so the tower relays
+  the turn and files both halves under `.tower/conversations/C-*.json` before anyone reads the answer.
+  A role can also hand the tower mail inside its report (`## Message to <role>` blocks); `dispatch`
+  relays those automatically and rejects self-addressed or unknown targets on the ledger. A failed or
+  silent peer turn is recorded as a failed exchange, never as agreement.
+- **Huddles: `tower huddle <roles…> --topic "…"`** — the lead opens a room for at most six roles, two
+  bounded rounds (position + questions, then decision + commitments), minutes written to
+  `.tower/huddles/H-*.md`. Bounded rounds are the feature: after round 2 every participant has a
+  commitment on the record and everybody goes back to work.
+- **Deadline supervision: `tower dispatch --due 90m` (or `3d`, or `2026-11-09 18:00`) and
+  `tower supervise`** — a task is a job with a due time. When it passes without a report the lead
+  pulls the role up in its own session. Three recorded outcomes: a late but real report is recovered
+  and verified like any other; a status-only answer leaves the task open, marked overdue, with the
+  answer attached; an unreachable role accumulates nudges. `tower status` and the board show
+  `due in …` / `overdue …` with a warning flag.
 - **`tower dispatch --restate` and `tower restate ok <task>`** — playbook point 7: make the role restate
   the brief in its own words before any work runs. The first turn is a restatement only
   (`## Restatement` / `## Assumptions` / `## Done looks like`); the task waits in `restating`, appears
