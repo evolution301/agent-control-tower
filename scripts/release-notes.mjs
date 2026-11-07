@@ -7,7 +7,7 @@
 //
 // 只取 "## [0.7.3] - 日期" 到下一个 "## [" 之前的内容；找不到就 exit 1。
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -59,8 +59,9 @@ if (body.length === 0) {
 }
 
 if (outPath) {
-  writeFileSync(join(root, outPath), `${body}\n`, 'utf8')
-  console.log(`已写入 ${outPath}（${body.split('\n').length} 行）`)
+  const target = isAbsolute(outPath) ? outPath : join(root, outPath)
+  writeFileSync(target, `${body}\n`, 'utf8')
+  console.log(`已写入 ${target}（${body.split('\n').length} 行）`)
 } else {
   console.log(body)
 }
