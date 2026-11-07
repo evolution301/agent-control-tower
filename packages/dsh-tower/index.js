@@ -21,7 +21,8 @@
 
 import { execFile, spawn, spawnSync } from 'node:child_process'
 import net from 'node:net'
-import { existsSync, mkdirSync, openSync, writeSync, closeSync, readFileSync, unlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { existsSync, mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 /** Cordis plugin name (reader-facing label in diagnostics). */
@@ -33,11 +34,100 @@ export const inject = ['tools']
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
 export const VERSION = '0.7.5'
 
+/**
+ * Path of the active-project pointer written by `tower projects use`.
+ *
+ * The pointer wins over the configured workspace so one DSH profile can follow
+ * whichever project the user is in — the same file the panel reads. It is a JSON
+ * object `{"name", "path"}`; anything unreadable simply falls through.
+ */
+export function activeProject(config = {}) {
+  const home = process.env.TOWER_HOME || join(homedir(), '.tower')
+  try {
+    const data = JSON.parse(readFileSync(join(home, 'active'), 'utf8'))
+    const path = typeof data?.path === 'string' ? data.path : ''
+    return path && existsSync(path) ? path : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Path of the tower this machine last really used (`~/.tower/binding.json`).
+ *
+ * This is the answer to "a plugin update must not lose my tower": the profile
+ * config line is the primary aim, and this record is what we reconnect to when
+ * that line is missing or no longer points at a tower.
+ */
+export function boundWorkspace() {
+  const home = process.env.TOWER_HOME || join(homedir(), '.tower')
+  try {
+    const data = JSON.parse(readFileSync(join(home, 'binding.json'), 'utf8'))
+    const path = typeof data?.path === 'string' ? data.path : ''
+    return path && hasTowerConfig(path) ? path : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Does this directory really hold a tower config? */
+export function hasTowerConfig(directory) {
+  if (!directory) return false
+  return ['tower.toml', 'tower.yaml', 'tower.yml', 'tower.json']
+    .some((name) => existsSync(join(String(directory), name)))
+}
+
+/** Remember the tower actually in use, so a later update can find it again. */
+export function recordBinding(directory, source = 'bundle') {
+  if (!hasTowerConfig(directory)) return ''
+  const home = process.env.TOWER_HOME || join(homedir(), '.tower')
+  const target = resolve(String(directory))
+  try {
+    const current = JSON.parse(readFileSync(join(home, 'binding.json'), 'utf8'))
+    if (current && String(current.path) === target) return target
+  } catch {
+    // no readable binding yet: write one
+  }
+  try {
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, 'binding.json'), JSON.stringify({
+      path: target,
+      source,
+      recorded_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    }, null, 2))
+    return target
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Which tower should the tools point at?
+ *
+ * 1. the workspace in the profile config — an explicit aim always wins, so an
+ *    update can never silently re-point a working installation;
+ * 2. the bound tower — the seamless reconnection when that line is missing;
+ * 3. the active project (`tower projects use` / `tower_use`);
+ * 4. cwd, for a first run that has not been configured yet.
+ */
+export function targetWorkspace(config = {}) {
+  const configured = config.workspace
+  if (hasTowerConfig(configured)) return resolve(configured)
+  const bound = boundWorkspace()
+  if (bound) return bound
+  const pointer = activeProject(config)
+  if (pointer) return pointer
+  return resolve(configured || process.cwd())
+}
+
 /** Resolved runtime settings. */
 function settings(config = {}) {
-  const workspace = resolve(config.workspace ?? process.cwd())
+  // resolved on every access: `tower_use` must take effect without a restart,
+  // while the configured workspace stays the primary aim
   return {
-    workspace,
+    get workspace() {
+      return targetWorkspace(config)
+    },
     towerBin: config.towerBin ?? 'tower',
     python: config.python ?? 'python',
     timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
@@ -398,6 +488,13 @@ export async function ensurePanel(cfg, deps = {}) {
 
 export function apply(ctx, config = {}) {
   const cfg = settings(config)
+  // Bind the tower this mount actually points at, before anything else runs: a
+  // later update that loses the config line reconnects here instead of guessing.
+  try {
+    recordBinding(cfg.workspace, 'bundle-mount')
+  } catch {
+    // binding is best effort; never block mounting on it
+  }
   let panel = null
   ensurePanel(cfg)
     .then((started) => {
@@ -415,6 +512,8 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(huddleTool(cfg)),
     ctx.tools.register(superviseTool(cfg)),
     ctx.tools.register(skillSaveTool(cfg)),
+    ctx.tools.register(projectsTool(cfg)),
+    ctx.tools.register(useTool(cfg)),
     ctx.tools.register(rolesTool(cfg)),
     ctx.tools.register(roleAddTool(cfg)),
     ctx.tools.register(roleRemoveTool(cfg)),
@@ -815,6 +914,63 @@ export function skillSaveTool(cfg) {
     },
     presentCall(args) {
       return { card: 'command', title: `tower skill save ${args.task ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_projects`: every registered project, one line each. */
+export function projectsTool(cfg) {
+  return tool({
+    name: 'tower_projects',
+    description:
+      'List the registered control-tower projects (one tower per workspace), with task counts and which one is active. Use it before tower_use when the user works in several projects.',
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute() {
+      const { data } = await runTower(cfg, ['projects', 'list', '--json'])
+      const rows = Array.isArray(data?.projects) ? data.projects : []
+      if (!rows.length) return { text: 'no projects registered — `tower projects scan` in a shell' }
+      const active = data.active || ''
+      const text = rows
+        .map((row) => `${row.name === active ? '●' : ' '} ${row.name}\t${row.path}`)
+        .join('\n')
+      return { text }
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Control tower projects', kind: 'other' }
+    },
+  })
+}
+
+/** `tower_use`: switch the project every later tool call follows. */
+export function useTool(cfg) {
+  return tool({
+    name: 'tower_use',
+    description:
+      'Switch the active control-tower project. Writes the active-project pointer that tower_* tools and the panel read, so the next dispatch lands in that workspace without restarting DSH. Use tower_projects first to see the names.',
+    parameters: {
+      project: { type: 'string', required: true, description: 'Registered project name (or a path to a workspace with tower.toml).' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      const name = String(args.project ?? '')
+      if (!name) return { text: 'project name is required' }
+      try {
+        const { data } = await runTower(cfg, ['projects', 'use', name])
+        const text = typeof data === 'string' ? data : `active project → ${name}`
+        return { text }
+      } catch (error) {
+        return { text: `switch failed: ${error?.message ?? error}` }
+      }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower use ${args.project ?? ''}`, kind: 'other' }
     },
   })
 }

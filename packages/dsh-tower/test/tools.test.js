@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import {
+  activeProject,
   apply,
+  boundWorkspace,
+  hasTowerConfig,
+  recordBinding,
+  targetWorkspace,
   dispatchTool,
   ensurePanel,
   inboxTool,
@@ -43,6 +48,7 @@ test('apply registers every tower tool and is unloadable', () => {
       'tower_dispatch',
       'tower_huddle',
       'tower_inbox',
+      'tower_projects',
       'tower_restate_ok',
       'tower_rework',
       'tower_role_add',
@@ -52,10 +58,11 @@ test('apply registers every tower tool and is unloadable', () => {
       'tower_skill_save',
       'tower_status',
       'tower_supervise',
+      'tower_use',
     ],
   )
   dispose()
-  assert.equal(disposed.length, 13)
+  assert.equal(disposed.length, 15)
 })
 
 test('a missing tower CLI cannot crash the host with an unhandled spawn error', async () => {
@@ -126,5 +133,64 @@ test('status renders an empty board without throwing', async () => {
     ).catch(() => {})
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the active-project pointer decides the workspace, and degrades safely', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tower-home-'))
+  const workspace = join(home, 'project')
+  mkdirSync(workspace, { recursive: true })
+  writeFileSync(join(workspace, 'tower.toml'), 'roles:\n  backend:\n    adapter: mock\n')
+  writeFileSync(join(home, 'active'), JSON.stringify({ name: 'p', path: workspace }))
+  const previous = process.env.TOWER_HOME
+  try {
+    process.env.TOWER_HOME = home
+    assert.equal(activeProject(), workspace)
+    writeFileSync(join(home, 'active'), '{ broken')
+    assert.equal(activeProject(), '', 'an unreadable pointer falls through to the config')
+    writeFileSync(join(home, 'active'), JSON.stringify({ name: 'p', path: join(home, 'gone') }))
+    assert.equal(activeProject(), '', 'a pointer to a deleted project falls through')
+  } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an update cannot re-aim the tools: config wins, binding reconnects', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tower-aim-'))
+  const configured = join(home, 'configured')
+  const bound = join(home, 'bound')
+  const active = join(home, 'active-project')
+  for (const dir of [configured, bound, active]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  backend:\n    adapter: mock\n')
+  }
+  const pointer = { name: 'active', path: active }
+  writeFileSync(join(home, 'active'), JSON.stringify(pointer))
+  const previous = process.env.TOWER_HOME
+  try {
+    process.env.TOWER_HOME = home
+
+    // 1. the configured workspace is the aim, whatever the pointer says
+    assert.equal(targetWorkspace({ workspace: configured }), configured)
+
+    // 2. no configured workspace (the line an update can lose): the bound tower returns
+    assert.equal(recordBinding(bound, 'test'), bound)
+    assert.equal(boundWorkspace(), bound)
+    assert.equal(targetWorkspace({}), bound)
+
+    // 3. no binding either: fall back to the switcher's active project
+    rmSync(join(home, 'binding.json'))
+    assert.equal(targetWorkspace({}), active)
+
+    // 4. a configured path that is not a tower must not win over the binding
+    recordBinding(bound, 'test')
+    assert.equal(hasTowerConfig(configured), true)
+    assert.equal(targetWorkspace({ workspace: join(home, 'not-a-tower') }), bound)
+  } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(home, { recursive: true, force: true })
   }
 })
