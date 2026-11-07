@@ -103,13 +103,14 @@ The version lives in three places and they must agree: `pyproject.toml`,
 2. Run the release script. It bumps the three version fields, re-runs both suites, rewrites the README
    test-count badges with the real numbers, checks consistency, commits, tags and pushes:
 
-   ```powershell
-   scripts\release.cmd -Version 0.7.4          # Windows (execution policy is Restricted here)
-   pwsh ./scripts/release.ps1 -Version 0.7.4   # pwsh 7 / Linux / macOS
+   ```bash
+   python scripts/release.py --version 0.7.4
    ```
 
-   Switches: `-DryRun` prints the plan and touches nothing, `-BadgesOnly` refreshes the README badges
-   to the current counts, `-NoPush` commits and tags locally.
+   Pure Python, no dependencies, same command on Windows, macOS and Linux.
+
+   Switches: `--dry-run` prints the plan and touches nothing, `--badges-only` refreshes the README
+   badges to the current counts, `--no-push` commits and tags locally.
 
 3. The `release` workflow takes over from the tag: it re-runs the tests, builds sdist + wheel, creates
    the GitHub Release with the changelog section as the body and both artifacts attached. PyPI

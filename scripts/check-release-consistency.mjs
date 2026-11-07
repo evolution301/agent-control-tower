@@ -4,7 +4,7 @@
 //   node scripts/check-release-consistency.mjs
 //   node scripts/check-release-consistency.mjs --tag v0.7.4
 //
-// CI 每个 push 都跑一次，release.ps1 在打 tag 之前跑一次。任何一条不满足就 exit 1。
+// CI 每个 push 都跑一次，scripts/release.py 在打 tag 之前跑一次。任何一条不满足就 exit 1。
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'

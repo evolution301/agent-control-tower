@@ -2,7 +2,7 @@ name: release
 
 # 推一个 v* tag 就发布：
 #   测试 → 校验 tag/版本/CHANGELOG → 构建 sdist+wheel → 建 GitHub Release（正文抄 CHANGELOG）→ 有 PyPI token 就发 PyPI。
-# 不做的事情：改版本号、写 CHANGELOG。那两件在本地由 scripts/release.ps1 干完再打 tag。
+# 不做的事情：改版本号、写 CHANGELOG。那两件在本地由 scripts/release.py 干完再打 tag。
 
 on:
   push:
