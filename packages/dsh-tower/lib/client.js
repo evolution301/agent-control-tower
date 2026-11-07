@@ -100,9 +100,11 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    // Deliberately no `inject`: declaring a service whose id never resolves keeps
-    // this entry pending, and the whole web boot then fails with
-    // "web boot: 1 entry did not activate". The slot service is read defensively.
+    // The slot service is declared in package.json (`dsh.client.inject`), not
+    // here: without that declaration `ctx.slots` throws
+    // "cannot get property 'slots' without inject" and the settings section never
+    // renders. Declaring it in the manifest keeps the entry activating (the
+    // failure it guards against was a *host* service id that no bundle provides).
     return exports
   },
 })
