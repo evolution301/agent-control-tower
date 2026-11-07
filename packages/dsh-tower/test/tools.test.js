@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import {
   apply,
   dispatchTool,
+  ensurePanel,
   inboxTool,
   acceptTool,
   reworkTool,
@@ -32,7 +33,9 @@ function fakeCtx() {
 
 test('apply registers every tower tool and is unloadable', () => {
   const { ctx, registered, disposed } = fakeCtx()
-  const dispose = apply(ctx, { workspace: process.cwd() })
+  // panel: false keeps this test about the tool registry: starting a panel would spawn
+  // `tower` in the repository root and leave a lock file there.
+  const dispose = apply(ctx, { workspace: process.cwd(), panel: false })
   assert.deepEqual(
     registered.map((d) => d.name).sort(),
     [
@@ -48,6 +51,26 @@ test('apply registers every tower tool and is unloadable', () => {
   )
   dispose()
   assert.equal(disposed.length, 8)
+})
+
+test('a missing tower CLI cannot crash the host with an unhandled spawn error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  try {
+    const started = await ensurePanel(
+      {
+        workspace: dir,
+        panel: true,
+        panelPort: 30000 + (process.pid % 2000),
+        towerBin: 'definitely-not-a-real-tower-binary',
+        panelStartTimeoutMs: 300,
+        panelPollMs: 100,
+      },
+      { sleep: async () => {} },
+    )
+    assert.equal(started, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('every tool definition carries the registry contract', () => {
