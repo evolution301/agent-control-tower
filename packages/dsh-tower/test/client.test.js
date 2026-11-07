@@ -43,9 +43,10 @@ test('the client bundle registers a settings section named Tower', async () => {
     assert.equal(name, 'react')
     return reactStub()
   })
-  // No `inject` export: an unresolvable service id keeps the entry pending and
-  // makes the harness web boot fail ("1 entry did not activate").
-  assert.equal(exports.inject, undefined)
+  // The client entry must declare `slots` itself: reading `ctx.slots` without it
+  // throws "cannot get property 'slots' without inject" and the Tower section
+  // never renders. This is the contract the sidebar plugin follows too.
+  assert.deepEqual(exports.inject, ['slots'])
   assert.equal(typeof exports.apply, 'function')
 
   const calls = []
