@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
 INIT_PY = ROOT / "src" / "control_tower" / "__init__.py"
 BUNDLE_PKG = ROOT / "packages" / "dsh-tower" / "package.json"
+BUNDLE_INDEX = ROOT / "packages" / "dsh-tower" / "index.js"
 CHANGELOG = ROOT / "CHANGELOG.md"
 READMES = [ROOT / "README.md", ROOT / "README.zh.md"]
 README_BADGE = re.compile(r"tests-\d+%20python%20%2B%20\d+%20node")
@@ -175,6 +176,8 @@ def set_version(from_version: str, to_version: str, dry_run: bool) -> None:
         (PYPROJECT, re.compile(r'(?m)^version = "[^"]+"'), f'version = "{to_version}"'),
         (INIT_PY, re.compile(r'__version__ = "[^"]+"'), f'__version__ = "{to_version}"'),
         (BUNDLE_PKG, re.compile(r'("version"\s*:\s*")[^"]+(")'), rf'\g<1>{to_version}\g<2>'),
+        # the bundle's VERSION constant is pinned to package.json by a test
+        (BUNDLE_INDEX, re.compile(r"(export const VERSION = ')([^']+)(')"), rf"\g<1>{to_version}\g<3>"),
     ]
     for path, pattern, replacement in edits:
         text = read(path)
