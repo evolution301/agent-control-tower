@@ -21,8 +21,19 @@ STATUS_REPORTED = "reported"
 STATUS_ACCEPTED = "accepted"
 STATUS_REWORK = "rework"
 STATUS_FAILED = "failed"
+# v0.8 — point 7 of the AI-employee playbook: a task can sit between "created"
+# and "work started" while a person confirms the role understood the brief.
+# Nothing but a restatement has run in this state, so no report can exist yet.
+STATUS_RESTATING = "restating"
 
-OPEN_STATES = {STATUS_PENDING, STATUS_CLAIMED, STATUS_IN_PROGRESS, STATUS_REPORTED, STATUS_REWORK}
+OPEN_STATES = {
+    STATUS_PENDING,
+    STATUS_CLAIMED,
+    STATUS_IN_PROGRESS,
+    STATUS_REPORTED,
+    STATUS_REWORK,
+    STATUS_RESTATING,
+}
 
 # Report states borrowed from dsh-superagent's domain model: a role says what it is
 # waiting for, in a closed vocabulary, instead of burying it in prose. "person" states
@@ -62,6 +73,11 @@ class Task:
     mandate: dict[str, Any] = field(default_factory=dict)  # why/how far the work may go
     assignments: list[dict[str, Any]] = field(default_factory=list)  # one per adapter run
     idem_key: str = ""
+    # v0.8 — the restatement gate: what the role said it understood, and whether
+    # a person confirmed it. Work is only dispatched once restate_ok is true.
+    restatement: str = ""
+    restate_ok: bool = False
+    restated_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

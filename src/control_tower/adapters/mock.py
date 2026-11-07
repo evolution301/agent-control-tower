@@ -24,6 +24,23 @@ class MockAdapter:
         if self.sleep_s:
             time.sleep(self.sleep_s)
 
+        # v0.8 — the restate gate. The prompt decides what is being asked for, so
+        # the mock answers the question that was asked and writes no artifact:
+        # that absence is what proves `dispatch --restate` ran no work.
+        if "## Restatement gate" in req.prompt:
+            text = (
+                "## Restatement\n"
+                f"I am the {req.role} role and this is a restatement-only turn for task "
+                f"{req.task_id}: before doing anything I must say back what the brief asks "
+                "for, in my own words, so a misread is caught now instead of after a full run.\n\n"
+                "## Assumptions\n"
+                "- none: the brief was unambiguous as written\n\n"
+                "## Done looks like\n"
+                f"The brief for {req.task_id} is delivered and the report cites a check that was "
+                "actually run.\n"
+            )
+            return AdapterResult(text=text, exit_code=0, meta={"mode": "restate"})
+
         role_dir = Path(req.cwd)
         role_dir.mkdir(parents=True, exist_ok=True)
         artifact = role_dir / f"{req.task_id or 'task'}-{self.artifact_name}"

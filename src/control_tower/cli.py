@@ -20,11 +20,12 @@ from .board import (
     STATUS_ACCEPTED,
     STATUS_PENDING,
     STATUS_REPORTED,
+    STATUS_RESTATING,
     STATUS_REWORK,
 )
 from .config import ensure_layout, load_config
 from .board_view import render as render_board, watch as watch_board
-from .dispatch import dispatch
+from .dispatch import dispatch, dispatch_restate
 from .snapshot import build_snapshot
 from .verify import verify_report
 
@@ -158,6 +159,17 @@ def cmd_dispatch(args) -> int:
         "policy": "tower.toml",
     }
     task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
+    if getattr(args, "restate", False):
+        task = dispatch_restate(cfg, board, task, dry_run=args.dry_run)
+        if args.json:
+            _print(task.to_dict(), as_json=True)
+            return 0
+        print(f"task {task.id} role={task.role} status={task.status}")
+        if task.restatement:
+            print("\n--- restatement (no work has run yet) ---")
+            print(task.restatement[:1200])
+            print(f"\nnext: tower restate ok {task.id}   # work is dispatched only after this")
+        return 0
     task = dispatch(cfg, board, task, dry_run=args.dry_run)
     if args.json:
         # Machine mode: stdout carries exactly one JSON document and nothing else
@@ -268,6 +280,12 @@ def cmd_accept(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
     task = board.load(args.task)
+    # A restating task has no report by construction; accepting it would accept
+    # a claim that was never made. The gate has exactly one exit: `restate ok`.
+    if task.status == STATUS_RESTATING:
+        _say(args, f"{task.id} is still restating — no work has run. "
+                   f"Accept the restatement first: tower restate ok {task.id}")
+        return 2
     v = verify_report(cfg, task)
     if not v.ok:
         board.transition(task, STATUS_REWORK, note="verification failed: " + "; ".join(v.problems))
@@ -292,6 +310,40 @@ def cmd_rework(args) -> int:
         return 1
     task = dispatch(cfg, board, task)
     print(f"{task.id} round {task.round} -> {task.status}")
+    return 0
+
+
+def cmd_restate(args) -> int:
+    """Accept a task's restatement, then dispatch the work (playbook point 7).
+
+    This is the only transition out of `restating`: no report exists yet, so the
+    task cannot be accepted, and the work prompt carries the accepted
+    restatement as `## Confirmed understanding`.
+    """
+    cfg = _cfg(args)
+    board = Board(cfg)
+    task = board.load(args.task)
+    if task.status != STATUS_RESTATING:
+        _say(args, f"{task.id} is not waiting for a restatement (status={task.status})")
+        return 2
+    if not (task.restatement or "").strip():
+        _say(args, f"{task.id} has no restatement recorded — re-run dispatch with --restate")
+        return 2
+    task.restate_ok = True
+    task.attention = None
+    board.transition(task, STATUS_PENDING, note=args.note or "restatement accepted by a person")
+    board.log("restatement_accepted", task=task.id, role=task.role)
+    task = dispatch(cfg, board, task)
+    if getattr(args, "json", False):
+        _print(task.to_dict(), as_json=True)
+        return 0
+    print(f"{task.id} restatement accepted — work dispatched")
+    print(f"status={task.status}")
+    if task.report:
+        print("\n--- report ---")
+        print(f"summary: {task.report.get('summary', '')[:400]}")
+        v = verify_report(cfg, task)
+        print(f"verify: {'PASS' if v.ok else 'FAIL'} {v.problems or ''}")
     return 0
 
 
@@ -543,7 +595,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--requester", default="", help="who asked for this work (recorded in the mandate)")
     s.add_argument("--strength", default="", choices=["", "explicit", "inferred"],
                    help="explicit (a person asked) or inferred (a rule allowed it)")
+    s.add_argument("--restate", action="store_true",
+                   help="ask the role to restate the brief first; no work runs until `tower restate ok`")
     s.set_defaults(func=cmd_dispatch)
+
+    s = sub.add_parser("restate", help="accept a restatement so the work may start")
+    rss = s.add_subparsers(dest="restate_command", required=True)
+    rs = rss.add_parser("ok", help="confirm the role understood the brief, then dispatch the work")
+    rs.add_argument("task")
+    rs.add_argument("--note", default="")
+    rs.add_argument("--json", action="store_true")
+    rs.set_defaults(func=cmd_restate)
 
     s = sub.add_parser("batch", help="dispatch one brief to several roles")
     s.add_argument("roles", nargs="+")
