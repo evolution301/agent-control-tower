@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
-## [Unreleased]
+## [0.7.4] - 2026-11-08
 
 ### Added
 
@@ -26,6 +26,14 @@ All notable changes to this project are documented here. The format follows
   and verified like any other; a status-only answer leaves the task open, marked overdue, with the
   answer attached; an unreachable role accumulates nudges. `tower status` and the board show
   `due in …` / `overdue …` with a warning flag.
+- **Skills: `tower skill save <task>`** — an accepted (verified) task is distilled into
+  `roles/<role>/skills/<slug>.md` with steps, output format and checks, plus a one-line index entry.
+  Dispatch injects **only the index**, never the bodies — one page of rules we enforce beats a dump
+  that bloats the context window. `tower skill list` shows what each role knows.
+- **Onboarding: `tower onboard --from notes.md`** — playbook points 1 and 6. The notes' `## <role>`
+  sections (free text = description, `scope:` lines = write scopes) grow the team and write a PLAN.md
+  with the operator's answers; more than six roles is refused, because a few well-trained bots beat a
+  crowd.
 - **`tower dispatch --restate` and `tower restate ok <task>`** — playbook point 7: make the role restate
   the brief in its own words before any work runs. The first turn is a restatement only
   (`## Restatement` / `## Assumptions` / `## Done looks like`); the task waits in `restating`, appears
@@ -34,6 +42,20 @@ All notable changes to this project are documented here. The format follows
   then dispatches. The gate fails closed: a non-zero adapter exit or a missing section leaves the task
   `failed`, never `restating`. `tower accept` on a restating task is refused with the one command that
   opens the gate.
+- **Doctor hardening** — warnings (non-fatal) for more than five roles, for two roles whose
+  `write_scopes` overlap, and for a role that carries env vars without its own `roles/<name>/.env`.
+- **DSH bundle: five new tools** — `tower_say`, `tower_huddle`, `tower_supervise`, `tower_skill_save`
+  and `tower_restate_ok`, plus `due` and `restate` parameters on `tower_dispatch`. Everything the CLI
+  can do is now reachable from a DSH session.
+
+### Fixed
+
+- **The DSH adapter hung for the full timeout on a 401.** The error path read the response body of a
+  kept-alive socket that never sent one; wrong-secret probes now fail in seconds with `<no error
+  body>` instead of blocking for 90.
+- **`tower bootstrap` mistook a slow host for a wrong secret.** The probe allowed 3 seconds for
+  `session/list`, but a long-lived desktop host answers with hundreds of rows; the probe now allows
+  20 and states why.
 
 ## [0.7.3] - 2026-11-07
 
