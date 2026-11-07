@@ -54,6 +54,12 @@ class Stop(Exception):
 
 
 def say(message: str = "") -> None:
+    # A GBK console cannot encode the suites' output (✔, →); degrade, never crash.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     print(message, flush=True)
 
 
