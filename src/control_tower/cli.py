@@ -638,6 +638,22 @@ def cmd_relay(args) -> int:
     return 0
 
 
+def cmd_reflect(args) -> int:
+    """Distil a finished task's rework history into a draft skill (pstack reflect)."""
+    from .worker import reflect_skill_draft
+
+    cfg = _cfg(args)
+    board = Board(cfg)
+    task = board.load(args.task)
+    path = reflect_skill_draft(cfg, board, task)
+    if path:
+        print(f"draft skill written: {path}")
+        print("review it, then move it to roles/<role>/skills/ and run `tower skill save`")
+        return 0
+    _say(args, "fewer than 2 rework rounds — nothing structural to distil yet")
+    return 1
+
+
 def cmd_review(args) -> int:
     """Trigger one adversarial review pass over a task (default: automatic)."""
     from .worker import enqueue, ensure_worker
@@ -849,11 +865,26 @@ def cmd_status(args) -> int:
     if not tasks:
         print("no tasks yet")
         return 0
+    reviews_dir = cfg.state_dir / "reviews"
+    for rep_path in sorted(reviews_dir.glob("*.json")):
+        try:
+            rep = json.loads(rep_path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        print(f"reviewer {rep.get('reviewer')}: score={rep.get('score')} "
+              f"(reviewed={rep.get('reviewed')}, proved={rep.get('proved')}, "
+              f"dropped={rep.get('dropped')}, out_of_scope={rep.get('out_of_scope')})")
     width = max(len(t.id) for t in tasks)
     for t in tasks:
         state = f"{t.state}/{t.status}" if t.state else t.status
         due = due_human(t)
         flag = " ⚠" if t.overdue else ""
+        if t.mode == "async":
+            flag += " a"
+        if (t.review or {}).get("verdict") == "pending":
+            flag += " ⧗review"
+        elif (t.review or {}).get("verdict"):
+            flag += f" ✓{t.review['verdict']}"
         print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {due:<14}{flag} {t.brief[:60]}")
     return 0
 
@@ -1169,6 +1200,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("review", help="trigger one adversarial review pass over a task")
     s.add_argument("task", help="task id, e.g. T-0001")
     s.set_defaults(func=cmd_review)
+    s = sub.add_parser("reflect", help="distil a task's rework history into a draft skill")
+    s.add_argument("task", help="task id, e.g. T-0001")
+    s.set_defaults(func=cmd_reflect)
 
     s = sub.add_parser("principles", help="the work-discipline cards every dispatch follows")
     s.add_argument("name", nargs="?", default="", help="show one full card (default: list)")
@@ -1176,6 +1210,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / relay receipts)")
     s.add_argument("--once", action="store_true", help="drain the current queue and exit")
+    s.set_defaults(func=cmd_worker)
 
     s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
     s.add_argument("to", help="target: session id, unique title substring, or the alias 'tower'")

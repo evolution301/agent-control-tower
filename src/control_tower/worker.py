@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -241,6 +242,8 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
             dispatch_fn=lambda b, t, reasons: redispatch_with_reasons(cfg, b, t, reasons),
         )
         task = board.load(task.id)
+        if task.status == "accepted":
+            reflect_skill_draft(cfg, board, task)
         task.settled_at = now_ts()
         notice = _settlement_notice(cfg, task, result)
         board.notify(notice)
@@ -295,8 +298,46 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
 
     raw = review_task.report or {}
     findings = [str(f).strip() for f in (raw.get("findings") or []) if str(f).strip()]
-    proved = [f for f in findings if ("→" in f or "->" in f or "`" in f)]
     rounds = int((origin.review or {}).get("rounds", 0)) + 1
+
+    # ---- reviewer governance (pstack no-comments: the auditor is audited) ----
+    origin_paths = set(origin.report.get("files") or []) if origin.report else set()
+    path_re = re.compile(r"[A-Za-z0-9_\-.]+\.(?:py|md|js|ts|txt|json|html|css|toml|ya?ml)")
+    proved, dropped, out_of_scope = [], [], []
+    for f in findings:
+        has_run = ("command:" in f or "`" in f) and ("→" in f or "->" in f or "output:" in f)
+        paths = set(path_re.findall(f))
+        escapes = {p2 for p2 in paths if origin_paths and not any(
+            p2 == op or p2.endswith("/" + op) or op.endswith("/" + p2) for op in origin_paths)}
+        if not has_run:
+            dropped.append(f)
+        elif escapes:
+            out_of_scope.append(f)
+        else:
+            proved.append(f)
+    rejected = len(dropped) + len(out_of_scope)
+    rep = update_reputation(cfg, reviewer, proved=len(proved),
+                            dropped=len(dropped), out_of_scope=len(out_of_scope))
+
+    # two audited-away findings void the report: rerun once with the failure named;
+    # a second void report is reported open instead of being trusted again
+    if rejected >= 2 and not (job.get("payload") or {}).get("retry"):
+        from .worker import enqueue as _enq
+
+        _enq(cfg, "adversarial", job["task"], payload={
+            "reviewer": reviewer, "retry": True,
+            "failure": f"previous report voided: {rejected} findings failed the audit "
+                       f"(no repro / out of scope) — rerun with evidence only",
+        })
+        board.event("review_voided", origin=origin_id, reviewer=reviewer,
+                    rejected=rejected, rerun=True)
+        return {"outcome": "reviewer_rerun", "rejected": rejected}
+    if rejected >= 2:
+        board.notify({"event": "review_open_issue", "task": origin_id,
+                      "reviewer": reviewer,
+                      "summary": f"reviewer {reviewer} failed the audit twice on "
+                                 f"{origin_id}; findings discarded — escalate manually"})
+        board.log("review_open_issue", origin=origin_id, reviewer=reviewer)
 
     with tower_lock(cfg):
         origin = board.load(origin_id)
@@ -304,6 +345,18 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         if proved:
             verdict = "rework"
             redispatch_with_reasons(cfg, board, origin, "; ".join(proved)[:400])
+        elif rejected and not proved:
+            # nothing survived the audit: treat the report as noise and let the
+            # mechanical verifier decide the origin's fate
+            verdict = "pass"
+            if verify_report(cfg, origin).ok:
+                board.transition(origin, STATUS_ACCEPTED,
+                                 note=f"review noise dropped ({rejected} findings failed audit)",
+                                 verification=verify_report(cfg, origin).as_dict())
+            else:
+                verdict = "rework"
+                redispatch_with_reasons(cfg, board, origin,
+                                        "review passed but verification regressed")
         elif not verify_report(cfg, origin).ok:
             verdict = "rework"
             redispatch_with_reasons(cfg, board, origin, "review pass: verification regressed")
@@ -311,8 +364,10 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
             board.transition(origin, STATUS_ACCEPTED,
                              note=f"adversarial review passed ({review_task.id})",
                              verification=verify_report(cfg, origin).as_dict())
+        reflect_skill_draft(cfg, board, origin)
         origin.review = {"rounds": rounds, "verdict": verdict, "reviewer": reviewer,
                          "findings": len(findings), "proved": len(proved),
+                         "dropped": len(dropped), "out_of_scope": len(out_of_scope),
                          "review_task": review_task.id}
         notice = {
             "event": "review_verdict",
@@ -328,10 +383,13 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         origin.settled_at = now_ts()
         board.save(origin)
     board.event("adversarial_verdict", origin=origin_id, review=review_task.id,
-                verdict=verdict, findings=len(findings), proved=len(proved))
+                verdict=verdict, findings=len(findings), proved=len(proved),
+                dropped=len(dropped), out_of_scope=len(out_of_scope),
+                reputation=rep.get("score"))
     board.log("adversarial_done", origin=origin_id, review=review_task.id,
               verdict=verdict, proved=len(proved))
-    return {"outcome": verdict, "findings": len(findings), "proved": len(proved)}
+    return {"outcome": verdict, "findings": len(findings), "proved": len(proved),
+            "dropped": len(dropped), "out_of_scope": len(out_of_scope)}
 
 
 def _settle_restate(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
@@ -404,6 +462,65 @@ def _watch_relay(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
                     return _finish("receipt", str(entry.get("from", "")), summary)
         time.sleep(POLL_S)
     return _finish("timeout", "", f"no receipt for relay {relay_id} within {int(timeout_s)}s")
+
+
+def reviews_dir(cfg: TowerConfig) -> Path:
+    path = cfg.state_dir / "reviews"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def update_reputation(cfg: TowerConfig, reviewer: str, proved: int, dropped: int,
+                      out_of_scope: int) -> dict[str, Any]:
+    """Per-reviewer trust ledger: `.tower/reviews/<role>.json` (design P2)."""
+    path = reviews_dir(cfg) / f"{reviewer}.json"
+    try:
+        rep = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rep = {"reviewer": reviewer, "reviewed": 0, "proved": 0,
+               "dropped": 0, "out_of_scope": 0, "score": 1.0}
+    rep["reviewed"] = int(rep.get("reviewed", 0)) + 1
+    rep["proved"] = int(rep.get("proved", 0)) + proved
+    rep["dropped"] = int(rep.get("dropped", 0)) + dropped
+    rep["out_of_scope"] = int(rep.get("out_of_scope", 0)) + out_of_scope
+    total = rep["proved"] + rep["dropped"] + rep["out_of_scope"]
+    rep["score"] = round(rep["proved"] / total, 2) if total else 1.0
+    path.write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
+    return rep
+
+
+def reflect_skill_draft(cfg: TowerConfig, board: Board, task: Task) -> str | None:
+    """P3: same-cause reworks ≥2 → draft a skill from what went wrong.
+
+    Drafts live under `skills/drafts/` and are NOT in the teach index until a
+    person adopts them (`tower skill save` still owns the registered path).
+    """
+    reworks = [h.get("note", "") for h in (task.history or [])
+               if h.get("status") == "rework" and h.get("note")]
+    if len(reworks) < 2:
+        return None
+    slug = f"{task.id.lower()}-lesson"
+    role_dir = cfg.role_dir(task.role)
+    drafts = role_dir / "skills" / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    body = (
+        f"# Lesson from {task.id} (draft — adopt with `tower skill save` close to this)\n\n"
+        f"## When to use\n"
+        f"Tasks for `{task.role}` whose brief touches: {task.brief[:120]}\n\n"
+        f"## What went wrong (from the rework rounds)\n"
+        + "".join(f"- {note[:200]}\n" for note in reworks)
+        + "\n## Do instead\n"
+        "- Re-read the deliverable against the report contract BEFORE filing.\n"
+        "- Run the checks and paste the real output.\n"
+    )
+    path = drafts / f"{slug}.md"
+    if path.exists():
+        return None                    # already distilled once — no duplicate notice
+    path.write_text(body, encoding="utf-8")
+    board.event("lesson_drafted", task=task.id, role=task.role, path=str(path))
+    board.notify({"event": "lesson_drafted", "task": task.id, "role": task.role,
+                  "summary": f"a repeated failure pattern was drafted into a skill: {path}"})
+    return str(path)
 
 
 def run_one_job(cfg: TowerConfig) -> dict[str, Any] | None:

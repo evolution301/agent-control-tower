@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.10.1] - 2026-11-09
+
+### Added — reviewer governance (P2) & learning drafts (P3), per the upgrade plan
+
+- **The auditor is audited.** Every adversarial finding passes a governance pass:
+  no run-proof → dropped; naming a file outside the origin's diff → out-of-scope
+  dropped. Two audited-away findings void the reviewer's report — one rerun with
+  the failure named, a second void becomes an `review_open_issue` instead of
+  trusted noise. Review-noise reports (nothing survived) fall back to the
+  mechanical verifier rather than blocking the task.
+- **Reputation.** `.tower/reviews/<reviewer>.json` tracks reviewed/proved/dropped/
+  out_of_scope and a score; `tower status` prints reviewer standings.
+- **`tower reflect <task>` + auto-drafts.** A task accepted after ≥2 rework rounds
+  distils its rework notes into a draft skill under `roles/<role>/skills/drafts/`
+  (never auto-registered; a person adopts it). The tower drafts it automatically
+  on acceptance and `tower reflect <task>` re-runs it by hand; duplicates are
+  silent no-ops.
+- **`tower status` markers**: `a` for async, `⧗review` while a review is pending,
+  `✓pass/✓rework` once settled.
+
 ## [0.10.0] - 2026-11-09
 
 ### Added — the self-review loop (写完 ≠ 完成，审查通过才算)
