@@ -28,6 +28,8 @@ class Role:
     max_rounds: int = 1
     timeout_s: int = 1800
     env: dict[str, str] = field(default_factory=dict)
+    # "" inherits the tower-level dispatch_mode (docs: dispatch --async / tower worker)
+    dispatch_mode: str = ""
 
 
 @dataclass
@@ -42,6 +44,10 @@ class TowerConfig:
     # rework with its own failure reasons). A person is asked only when the tower
     # has run out of moves.
     auto_triage: bool = True
+    # "sync" (default, unchanged behaviour) or "async": dispatch hands the task to
+    # the queue and returns the id in under a second; a `tower worker` process runs
+    # the adapter and settles the task. Per-role override via roles.<name>.dispatch_mode.
+    dispatch_mode: str = "sync"
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     accept_requires: list[str] = field(
@@ -64,6 +70,16 @@ class TowerConfig:
     @property
     def inbox_path(self) -> Path:
         return self.state_dir / "inbox.jsonl"
+
+    @property
+    def queue_dir(self) -> Path:
+        return self.state_dir / "queue"
+
+    def effective_dispatch_mode(self, role_name: str = "") -> str:
+        """sync | async — the role override wins over the tower default."""
+        role = self.roles.get(role_name)
+        mode = (role.dispatch_mode if role and role.dispatch_mode else "") or self.dispatch_mode
+        return mode if mode in ("sync", "async") else "sync"
 
     @property
     def roles_dir(self) -> Path:
@@ -144,6 +160,7 @@ def parse_config(path: Path) -> TowerConfig:
             max_rounds=int(spec.get("max_rounds", 1)),
             timeout_s=int(spec.get("timeout_s", 1800)),
             env=dict(spec.get("env") or {}),
+            dispatch_mode=str(spec.get("dispatch_mode", "")).strip().lower(),
         )
 
     if not roles:
@@ -158,6 +175,7 @@ def parse_config(path: Path) -> TowerConfig:
         request_gap_s=float(raw.get("request_gap_s", 1.5)),
         auto_triage=bool(raw.get("auto_triage", True)),
         account=str(raw.get("account", "")),
+        dispatch_mode=str(raw.get("dispatch_mode", "sync")).strip().lower(),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )

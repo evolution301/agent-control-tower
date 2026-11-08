@@ -43,6 +43,20 @@ def _escalate(board: Board, task: Task, question: str) -> None:
     board.log("triage_escalated", task=task.id, role=task.role, question=question[:300])
 
 
+def redispatch_with_reasons(cfg: TowerConfig, board: Board, task: Task, reasons: str) -> None:
+    """Re-dispatch a rejected job with its own failure reasons attached.
+
+    The one shared re-dispatch path for sync (`cli._triage_dispatch`) and the
+    async worker, so a rework reads the same no matter who ran the triage.
+    """
+    task.brief = (task.brief + "\n\n## Rework: the previous attempt failed verification\n"
+                  + reasons)[:8000]
+    board.save(task)
+    from .dispatch import dispatch
+
+    dispatch(cfg, board, task)
+
+
 def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) -> dict[str, Any]:
     """Move one task forward without a human. Returns what happened.
 

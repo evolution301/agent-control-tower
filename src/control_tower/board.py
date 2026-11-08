@@ -237,6 +237,14 @@ class Board:
         with self.cfg.inbox_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def notify(self, entry: dict[str, Any]) -> None:
+        """Append a notice to the tower inbox (async settlements, relay receipts...)."""
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"ts": now_ts(), "read": False}
+        payload.update(entry)
+        with self.cfg.inbox_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
     def inbox(self, unread_only: bool = False) -> list[dict[str, Any]]:
         if not self.cfg.inbox_path.exists():
             return []

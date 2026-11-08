@@ -132,3 +132,15 @@ class MockAdapter:
         return AdapterResult(
             text=f"[mock:{req.role}] peer note queued", exit_code=0, meta={"mode": "deliver"}
         )
+
+    def deliver_to_session(self, session_id: str, text: str) -> AdapterResult:
+        """The mock accepts a relay into any session id (nothing to queue into)."""
+        return AdapterResult(
+            text=f"[mock] relay queued into {session_id}",
+            exit_code=0,
+            meta={"session_id": session_id, "mode": "relay"},
+        )
+
+    def find_session_by_title(self, title: str, cwd: str = "") -> str | None:
+        """Offline stub: the mock has no session directory to search."""
+        return None

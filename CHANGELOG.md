@@ -5,6 +5,29 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.9.0] - 2026-11-08
+
+### Added
+
+- **Async dispatch.** `tower dispatch --async` (and `dispatch_mode: async` in `tower.toml`, with a
+  per-role `roles.<name>.dispatch_mode` override) writes the task into `.tower/queue/pending/` and
+  returns the id in under a second (measured: ~90 ms). A `tower worker` process — spawned detached
+  and automatically on first use, heartbeat-guarded — claims jobs atomically (`os.replace`), runs the
+  adapter exactly like the sync path (report → peer-message relay → auto-triage with the shared
+  `redispatch_with_reasons`), archives the settled job, and lands an `async_settled` notice in
+  `tower inbox`. Claimed jobs older than 15 minutes are presumed dead and requeued. Sync mode is
+  byte-for-byte the old behaviour.
+- **Generic relay.** `tower relay --to <target> -m "..."` delivers a message to any DSH session — a
+  session id, a unique session-title substring (ambiguous titles are refused, never guessed), or the
+  reserved alias `tower` meaning this tower's own inbox. With `--await-receipt` a worker watches for
+  a reply carrying the relay id — the peer answers with `tower relay --to tower --reply <id> -m
+  "..."` — and lands a `relay_receipt` (or `relay_timeout`) notice. Every relay is filed under
+  `.tower/relay/` and in the ledger (`relay_sent`).
+- **Plugin surface.** `tower_dispatch` gains `async: true` (queued call returns `queued/job/mode`),
+  and a new `tower_relay` tool exposes the relay (16 tools now). `tower worker [--once]` runs the
+  queue by hand for scripts and CI.
+- **`Board.notify`** — the generic inbox append used by settlements, receipts and timeouts.
+
 ## [0.8.3] - 2026-11-08
 
 ### Fixed

@@ -170,6 +170,24 @@ active one — the panel defaults to it, and the DSH bundle's `tower_*` tools fo
 
 Deep links: `?lang=zh`, `?theme=dark`, `?project=<name>`, `?project=__all__`.
 
+### Async dispatch & relay (0.9.0)
+
+`tower dispatch --async` queues the task and returns its id in under a second; a
+background `tower worker` process (started automatically on first use) runs the
+adapter, relays peer messages and runs auto-triage, then lands an `async_settled`
+notice in `tower inbox`. Set `dispatch_mode: async` in `tower.toml` (or
+`roles.<name>.dispatch_mode`) to make it the default; `--no-auto` and every other
+flag behave as in sync mode.
+
+`tower relay --to <target> -m "..."` delivers a message to **any** DSH session —
+a session id, a unique session-title substring, or the alias `tower` (this
+tower's own inbox). With `--await-receipt`, a worker watches for a reply carrying
+the relay id (the peer answers with `tower relay --to tower --reply <id> -m
+"..."`) and lands a `relay_receipt` — or `relay_timeout` — in the inbox.
+
+In the DSH plugin this is `tower_dispatch {async: true}` and the new
+`tower_relay` tool.
+
 The **control room** lives at `/scene`: an isometric glass tower where each role is a robot,
 floors are departments, LED strips show alert state, and approving / replying / repairing
 happens in place (every action lands in the ledger). Data comes from `/api/scene`, i.e. from

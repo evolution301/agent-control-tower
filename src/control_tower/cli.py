@@ -32,7 +32,7 @@ from .huddle import huddle as run_huddle
 from .onboard import onboard as run_onboard
 from .skills import rebuild_index, save_skill, skill_index_lines
 from .supervise import due_human, overdue_tasks, parse_due, supervise
-from .triage import triage as run_triage, triage_task
+from .triage import redispatch_with_reasons, triage as run_triage, triage_task
 from .snapshot import build_snapshot
 from .verify import verify_report
 
@@ -216,6 +216,25 @@ def cmd_dispatch(args) -> int:
     task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
     task.due_at = due_at
     board.save(task)
+    # --async (or dispatch_mode: async / role override): enqueue and return the id
+    # in under a second; a tower worker runs the adapter and settles the task.
+    async_mode = (getattr(args, "async_", False)
+                  or cfg.effective_dispatch_mode(task.role) == "async")
+    if async_mode and not args.dry_run:
+        from .worker import enqueue, ensure_worker
+
+        kind = "restate" if getattr(args, "restate", False) else "dispatch"
+        job = enqueue(cfg, kind, task.id)
+        ensure_worker(cfg)
+        if args.json:
+            _print({"id": task.id, "role": task.role, "queued": True,
+                    "job": job["id"], "mode": "async",
+                    "settle": "tower inbox (async_settled)"}, as_json=True)
+            return 0
+        print(f"queued {task.id} (job {job['id']}) — the worker will run it")
+        print("settlement lands in `tower inbox`; watch progress with `tower show "
+              + task.id + "`")
+        return 0
     if getattr(args, "restate", False):
         task = dispatch_restate(cfg, board, task, dry_run=args.dry_run)
         if args.json:
@@ -556,6 +575,55 @@ def cmd_projects(args) -> int:
     return 2
 
 
+def cmd_worker(args) -> int:
+    """Run the async queue worker: claim → run adapter → settle → notify.
+
+    Started automatically by `dispatch --async` when no live heartbeat exists;
+    run it by hand to keep a visible process (or with --once in scripts/CI).
+    """
+    from .worker import run_worker
+
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    return run_worker(cfg, once=getattr(args, "once", False))
+
+
+def cmd_relay(args) -> int:
+    """Deliver a message to any DSH session (or `--to tower` = this inbox)."""
+    from .adapters import get_adapter
+    from .relay import send_relay
+
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    adapter_name = getattr(args, "adapter", "") or "dsh"
+    options = dict(cfg.adapter_options.get(adapter_name) or {})
+    adapter = get_adapter(adapter_name, options)
+    try:
+        entry = send_relay(
+            cfg, board, adapter,
+            to=args.to, message=args.message,
+            sender=getattr(args, "from_", "") or "",
+            reply=getattr(args, "reply", "") or "",
+            await_receipt=getattr(args, "await_receipt", False),
+            timeout_s=int(getattr(args, "timeout_s", 300)),
+        )
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
+    if args.json:
+        _print(entry, as_json=True)
+        return 0
+    status = "delivered" if entry["delivered"] else "NOT delivered"
+    print(f"relay {entry['id']} → {entry['to']} ({entry['resolution']}): {status}")
+    if entry.get("watch"):
+        print(f"awaiting receipt for {args.timeout_s}s — outcome lands in `tower inbox`")
+    if not entry["delivered"]:
+        print(entry.get("detail", ""))
+        return 3
+    return 0
+
+
 def cmd_stats(args) -> int:
     """BI view: throughput, verified rate, lead time, per-role and supervision."""
     if getattr(args, "all", False):
@@ -595,16 +663,14 @@ def cmd_stats(args) -> int:
 def _triage_dispatch(cfg, board, task, reasons: str):
     """Re-dispatch a rejected job with its own failure reasons attached.
 
-    This takes cfg, so it does NOT match `triage.triage_task`'s 3-arg
-    `dispatch_fn(board, task, reasons)` contract directly — the callers below bind
-    cfg with a closure (the formal fix for the 2026-11-08 exit-1 crash: a failed
-    task on the board made the next dispatch die in auto-triage with
-    "missing 1 required positional argument: reasons").
+    Thin wrapper over `triage.redispatch_with_reasons` (the shared path also used
+    by the async worker). This takes cfg, so it does NOT match
+    `triage.triage_task`'s 3-arg `dispatch_fn(board, task, reasons)` contract
+    directly — the callers below bind cfg with a closure (the formal fix for the
+    2026-11-08 exit-1 crash: a failed task on the board made the next dispatch
+    die in auto-triage with "missing 1 required positional argument: reasons").
     """
-    task.brief = (task.brief + "\n\n## Rework: the previous attempt failed verification\n"
-                  + reasons)[:8000]
-    board.save(task)
-    dispatch(cfg, board, task)
+    redispatch_with_reasons(cfg, board, task, reasons)
 
 
 def _auto_triage(cfg, board, task):
@@ -1015,6 +1081,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ask the role to restate the brief first; no work runs until `tower restate ok`")
     s.add_argument("--no-auto", action="store_true",
                    help="do not auto-triage (leave the report for a human to accept)")
+    s.add_argument("--async", dest="async_", action="store_true",
+                   help="queue the task and return its id in under a second; a tower worker "
+                        "runs the adapter and the settlement lands in `tower inbox`")
     s.add_argument("--due", default="",
                    help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; a silent overrun gets chased by `tower supervise`")
     s.set_defaults(func=cmd_dispatch)
@@ -1037,6 +1106,21 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / relay receipts)")
+    s.add_argument("--once", action="store_true", help="drain the current queue and exit")
+
+    s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
+    s.add_argument("to", help="target: session id, unique title substring, or the alias 'tower'")
+    s.add_argument("-m", "--message", required=True, help="the message text")
+    s.add_argument("--from", dest="from_", default="", help="label the sender (default: the tower name)")
+    s.add_argument("--reply", default="", help="mark this as the answer to relay <id>")
+    s.add_argument("--adapter", default="", help="adapter used for delivery (default: dsh)")
+    s.add_argument("--await-receipt", action="store_true",
+                   help="watch for a reply carrying the relay id; outcome lands in `tower inbox`")
+    s.add_argument("--timeout-s", type=int, default=300, help="receipt watch budget (default 300s)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_relay)
 
     s = sub.add_parser("triage", help="the tower's own follow-up pass: verify, accept, retry, escalate")
     s.add_argument("--json", action="store_true")

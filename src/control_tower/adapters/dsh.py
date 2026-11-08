@@ -355,6 +355,38 @@ class DshAdapter:
             meta={"session_id": session_id, "resolution": how},
         )
 
+    def deliver_to_session(self, session_id: str, text: str) -> AdapterResult:
+        """Queue a note into an explicit session id — the relay path.
+
+        Unlike `deliver`, there is no role to resolve: the caller owns the target
+        (a session id, a title match, or the tower's own inbox alias handled
+        upstream in `relay.send_relay`).
+        """
+        reply = self.rpc(
+            "session/prompt",
+            {
+                "request": {
+                    "sessionId": session_id,
+                    "requestId": str(uuid.uuid4()),
+                    "mode": "queue",
+                    "content": [{"type": "text", "text": text}],
+                    "clientTimeZone": self.timezone,
+                }
+            },
+            timeout=90,
+        )
+        if reply.get("error"):
+            return AdapterResult(
+                text="[dsh] relay queue failed: %s" % reply["error"],
+                exit_code=3,
+                meta={"rpc": "session/prompt", "session_id": session_id},
+            )
+        return AdapterResult(
+            text="[dsh] relay queued into %s" % session_id,
+            exit_code=0,
+            meta={"session_id": session_id},
+        )
+
     def run(self, req: AdapterRequest) -> AdapterResult:
         session_id, how = self.resolve_session(req)
         self.resolution[req.role] = how
