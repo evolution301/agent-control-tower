@@ -160,11 +160,40 @@ def render_prompt(cfg: TowerConfig, task: Task) -> str:
             "working; deviate only with the reason recorded in the report.\n"
         )
     # pstack-derived work discipline: the compact index only (context guard);
-    # a full card is one `tower principles show <name>` away.
+    # a full card is one `tower principles <name>` away.
     if getattr(cfg, "principles", True):
         from .principles import scaffold_section
 
         prompt += scaffold_section()
+
+    # Role charter: roles/<role>/AGENT.md was written by `tower role add` but
+    # never read at dispatch — a dead file. Inject it (truncated) so charter
+    # edits apply to every future dispatch.
+    charter_path = role_dir / "AGENT.md"
+    try:
+        charter = charter_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        charter = ""
+    if charter:
+        limit = 1500
+        if len(charter) > limit:
+            charter = charter[:limit] + "\n…(truncated)"
+        prompt += "\n## Role charter\n\n" + charter + "\n"
+
+    # Workspace standing rules: docs/bug-report-protocol.md, docs/RULES.md or
+    # RULES.md — whichever exists first. 全塔台规则改一处、每次派单全体生效。
+    for rules_name in ("docs/bug-report-protocol.md", "docs/RULES.md", "RULES.md"):
+        rules_path = Path(cfg.workspace) / rules_name
+        try:
+            rules = rules_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if rules:
+            limit = 2000
+            if len(rules) > limit:
+                rules = rules[:limit] + "\n…(truncated; full text: " + rules_name + ")"
+            prompt += "\n## Standing rules（全塔常设规则）\n\n" + rules + "\n"
+        break
     return prompt
 
 

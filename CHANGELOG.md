@@ -50,6 +50,28 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.8] - 2026-11-09
+
+### Added — charter & standing rules ride every dispatch (John's standing-rules request)
+
+- **`## Role charter`** — `roles/<role>/AGENT.md` (written by `tower role add`)
+  was a dead file: never read after session creation. It is now injected into
+  every dispatch prompt, truncated at 1500 chars.
+- **`## Standing rules（全塔常设规则）`** — the first existing file of
+  `docs/bug-report-protocol.md` → `docs/RULES.md` → `RULES.md` is injected,
+  truncated at 2000 chars. 改一处、每次派单全体生效 — no more re-notifying
+  every bot session one by one.
+- Both sections are plain file reads with truncation markers, so oversized
+  charters can never blow the context window. Verified live on prl-tower
+  (auditor charter) and the evergocasa tower (bug-report-protocol).
+
+### Maintainer receipts
+
+Per the new bug-report protocol, closure receipts for the four reported bugs
+were left in the prl-tower inbox (`bugfix_receipt` ×4): ctx units → 0.10.6,
+tower_compact inject → 0.10.7, relay session-id → 0.10.7, triage TypeError →
+0.8.3.
+
 ## [0.10.7] - 2026-11-09
 
 ### Fixed — two field bugs from John's live use
@@ -64,7 +86,6 @@ nothing at all while the work had never started.
   bare uuids) now resolve as exact ids; title search is only the fallback.
   Regression tests cover both.
 
-## [0.10.7] - 2026-11-09
 
 ### Fixed — two field bugs from John's live use
 
