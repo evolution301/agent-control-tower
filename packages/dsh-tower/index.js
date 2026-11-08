@@ -29,7 +29,7 @@ import { dirname, join, resolve } from 'node:path'
 export const name = 'dsh-tower'
 
 /** Services this plugin requires to be mounted before `apply`. */
-export const inject = ['tools']
+export const inject = ['tools', 'agents', 'compaction']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
 export const VERSION = '0.10.6'

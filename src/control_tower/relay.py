@@ -73,8 +73,11 @@ def next_relay_id(cfg: TowerConfig) -> str:
 
 
 def _looks_like_session_id(to: str) -> bool:
-    """DSH session ids are uuid-shaped; anything else is treated as a title."""
-    return len(to) >= 32 and to.count("-") == 4
+    """DSH session ids are `session-<uuid>` (or a bare uuid); anything else is a title."""
+    value = to.strip()
+    if value.lower().startswith("session-"):
+        return True
+    return len(value) >= 32 and value.count("-") == 4
 
 
 def resolve_target(cfg: TowerConfig, adapter, to: str) -> tuple[str, str]:

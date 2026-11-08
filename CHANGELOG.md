@@ -50,6 +50,20 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.7] - 2026-11-09
+
+### Fixed — two field bugs from John's live use
+
+- **`tower_compact` failed with `cannot get property "agents" without inject`.**
+  The bundle declared `inject: ['tools']` only; the compact tool reads
+  `ctx.agents` / `ctx.compaction`. The plugin now declares
+  `inject: ['tools', 'agents', 'compaction']` (same contract as the native
+  dsh-command-compact), so the in-process compaction works.
+- **`tower relay` ignored exact session ids.** The id heuristic required exactly
+  four hyphens, but real ids are `session-<uuid>` (five). `session-*` ids (and
+  bare uuids) now resolve as exact ids; title search is only the fallback.
+  Regression tests cover both.
+
 ## [0.10.6] - 2026-11-09
 
 ### Fixed — `tower ctx` unit math (John's field report)
