@@ -26,6 +26,9 @@ tower demo           # end-to-end offline demo, must print verify: PASS
 Python 3.10+. Runtime dependency: `PyYAML` only. Please keep it that way; the tower should stay
 installable on a potato.
 
+The board's own rules (entities, queues, every number's formula) live in
+[`docs/board-model.md`](docs/board-model.md). Change that file first, then the code.
+
 ## Keeping a local DSH install in sync
 
 The checkout and the installed bundle are two copies. `git pull` moves only the checkout: the desktop

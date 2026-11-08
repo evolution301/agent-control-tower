@@ -5,6 +5,37 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.7] - 2026-11-08
+
+### Added
+
+- **`tower triage` — the tower closes the ordinary loop itself.** A reported task is verified; if it
+  passes it is accepted (`auto_accepted` in the ledger), if it fails it is sent back **quoting its own
+  verification problems** and retried inside the role's `max_rounds`, and a task that runs out of
+  rounds is escalated with one concrete question. `tower dispatch`/`batch`/`restate ok` run the same
+  pass automatically (`--no-auto` opts out), so a job the verifier already accepted never waits for a
+  person. `auto_triage` in `tower.toml` turns it off globally.
+- **`docs/board-model.md` — one written model for the board.** Entities (project → bot → task), the
+  four mutually exclusive queues with their exact predicates, the formula behind every number on the
+  page, the three ways work can enter a tower, and the aim precedence. The page, the CLI and the panel
+  now read the same decisions instead of each deciding for itself.
+
+### Fixed
+
+- **"Needs you" counted finished work.** `PERSON_STATES` included `ready`, so every accepted task
+  stayed in the human queue: a real tower showed `需要你 32` while only one task actually needed a
+  decision. Accepted tasks are now excluded everywhere, and the board shows `需要你 2` for the same
+  tower.
+- **The board disagreed with itself.** A restating task (which carries an attention question) was
+  counted as a person decision in the snapshot but as tower work in the project badge; an
+  `in_progress` task was counted as tower queue. The snapshot now reuses `Board.needs_person()` /
+  `Board.needs_lead()` verbatim, so badge, KPI and dock cannot drift.
+- **The page called itself `my-team`.** The board title is the registered project name (falling back
+  to `tower.toml`), so a person sees `evergocasa-new`, not a scaffold placeholder.
+- **The board was noisy for a first-time reader.** Five KPIs with written tooltips, only three
+  queues, an inline "这是什么？点开看规则" legend, a collapsed 统计 section for the business numbers,
+  and an empty state that says how to dispatch the first task.
+
 ## [0.7.6] - 2026-11-08
 
 ### Added

@@ -14,6 +14,8 @@ Design borrowed from the 值守台HQ reference the user pointed at ("抄袭，�
 
 from __future__ import annotations
 
+from pathlib import Path
+
 PAGE = r"""<!doctype html>
 <html lang="__LANG__" data-theme="dark">
 <head>
@@ -179,8 +181,8 @@ PAGE = r"""<!doctype html>
   <header>
     <span class="mark" id="mark"></span>
     <span>
-      <h1>__NAME__</h1>
-      <div class="sub">值守台 · 每个 bot 在干嘛，一眼看全</div>
+      <h1 id="title">__NAME__</h1>
+      <div class="sub">值守台 · 一眼看清：谁在干、谁要你决定、哪些塔自己会处理</div>
     </span>
     <span class="grow"></span>
     <span class="kpis" id="kpis"></span>
@@ -205,15 +207,28 @@ PAGE = r"""<!doctype html>
   <div class="grid">
     <div>
       <div class="panel coord" id="coord"></div>
-      <div class="label">TEAMS · 点哪队看哪队</div>
+      <div class="label">项目 PROJECTS · 一个塔 = 一个工作区，点一个只看它</div>
       <div id="teams"></div>
     </div>
     <div>
-      <div class="auto" id="auto">All systems autonomous · 只有修不好的大问题才会亮红</div>
-      <div class="label"><span style="color:var(--dim2)">BOTS</span> · 角色 — 谁在干什么</div>
+      <div class="auto" id="auto">规则：待总控 = 已交付待验收 / 打回重试中（塔自己收口）· 需要你 = blocked/failed 且重试用尽</div>
+      <div class="label"><span style="color:var(--dim2)">BOTS</span> · 角色 — 谁在干什么
+        <details class="how" style="display:inline-block;margin-left:10px;text-transform:none;letter-spacing:0">
+          <summary>这是什么？点开看规则</summary>
+          <div style="font:12px/1.7 var(--sans);color:var(--dim);max-width:620px;margin-top:6px">
+            <b>进行中</b>：bot 正在干活，不用管。<br>
+            <b>待总控</b>：已交付 / 打回重试中 —— 塔会自己验收、自己看着办，<b>不用你动手</b>。<br>
+            <b>需要你</b>：只有 <code>blocked</code>（卡住要你拍板）或 <code>failed</code>（重试用尽）才会出现，点开有具体问题。<br>
+            <b>已完成</b>：验收通过，只在「业务」里计数，不再占队列。<br>
+            <span style="color:var(--dim2)">每个数字都来自 .tower/ 里的任务文件；这套看板只读，不改任何东西。</span>
+          </div>
+        </details>
+      </div>
       <div id="bots"></div>
-      <div class="label">Business<span style="text-transform:none;letter-spacing:0"> — is this team working well?</span></div>
-      <div class="business" id="business"></div>
+      <details class="how" style="margin-top:14px">
+        <summary style="font:600 10.5px var(--mono);letter-spacing:.12em;color:var(--dim2)">统计 STATS · 验收率 / 周期 / 每日吞吐（复盘时再看）</summary>
+        <div class="business" id="business" style="margin-top:8px"></div>
+      </details>
       <div class="label">Ledger · 操作日志</div>
       <div class="panel" style="max-height:220px;overflow:auto">
         <div id="log" style="font:11.5px/1.7 var(--mono);color:var(--dim)"></div>
@@ -224,12 +239,14 @@ PAGE = r"""<!doctype html>
 
 <div class="dock">
   <div class="col">
-    <div class="hdr"><b>NOW · 需要你处理</b><span id="nowcount"></span></div>
+    <div class="hdr"><b>NOW · 需要你处理</b><span id="nowcount"></span>
+      <span style="color:var(--dim2);font-size:11px">只有你能做的决定</span></div>
     <div id="now"></div>
     <div class="bar"><i id="nowbar"></i></div>
   </div>
   <div class="col">
-    <div class="hdr"><b>NEXT · 进行中 / 到期</b><span id="nextcount"></span></div>
+    <div class="hdr"><b>NEXT · 进行中 / 到期</b><span id="nextcount"></span>
+      <span style="color:var(--dim2);font-size:11px">塔自己会推进，不需要你</span></div>
     <div id="next"></div>
     <div class="bar"><i id="nextbar"></i></div>
   </div>
@@ -288,18 +305,27 @@ function dotString(project) {
 
 function drawHeader() {
   $("mark").innerHTML = bot("ok", "#3b82f6", 42);
+  const selected = state.projects.find((p) => p.name === state.project);
+  const title = state.project === "__all__" ? L.all : (selected?.name || state.project || "");
+  if (title) { $("title").textContent = title; document.title = title + " — 控制塔 HQ"; }
+  // Five numbers, each with the formula written down in docs/board-model.md §3.
   const t = state.overview?.totals || {};
   const snap = state.snapshot?.counts || {};
+  const proj = state.projects.find((p) => p.name === state.project);
+  const all = state.project === "__all__";
+  const lead = all ? (t.lead ?? 0) : (snap.triage ?? 0);
+  const person = snap.attention ?? 0;
+  const late = all ? (t.overdue ?? 0) : (proj?.overdue ?? 0);
   const items = [
-    [t.projects ?? 0, "teams"],
-    [t.bots ?? 0, "bots"],
-    [snap.progress ?? t.working ?? 0, "running"],
-    [snap.total ?? t.tasks ?? 0, "tasks"],
-    [snap.attention ?? t.needs_you ?? 0, "needs_you", (snap.attention ?? t.needs_you) > 0],
-    [t.overdue ?? 0, "overdue", (t.overdue ?? 0) > 0],
+    [t.projects ?? 0, "teams", false, "登记在这台机器上的项目数（一个工作区一个塔）"],
+    [all ? (t.bots ?? 0) : (proj?.bots ?? 0), "bots", false, "角色数，一个角色 = 一个 bot"],
+    [all ? (t.working ?? 0) : (snap.in_flight ?? 0), "running", false, "此刻正在干活的任务数"],
+    [lead, "lead_queue", lead > 0, "塔自己会收口：验收 / 打回重试 / 催办"],
+    [person, "needs_you", person > 0, "只有 blocked/failed 才计数：要你给一个决定"],
   ];
-  $("kpis").innerHTML = items.map(([n, label, alarm]) =>
-    `<div class="kpi ${alarm ? "alarm" : ""}"><b>${n}</b><span>${esc(L[label] || label)}</span></div>`).join("");
+  if (late > 0) items.push([late, "overdue", true, "过了期限还没交的任务"]);
+  $("kpis").innerHTML = items.map(([n, label, alarm, hint]) =>
+    `<div class="kpi ${alarm ? "alarm" : ""}" title="${esc(hint)}"><b>${n}</b><span>${esc(L[label] || label)}</span></div>`).join("");
 }
 
 function drawTeams() {
@@ -320,10 +346,13 @@ function drawTeams() {
       <i class="dot" style="background:${esc(p.color)};color:${esc(p.color)}"></i>
       <div>
         <div class="nm">${esc(p.name)}</div>
-        <div class="meta">${p.ok ? `${esc(L.bots)} ${p.bots} · ${esc(L.open)} ${p.open}` : `<span style="color:var(--red)">${esc(L.broken)}</span>`}</div>
+        <div class="meta">${p.ok ? `${p.bots} ${esc(L.bots)} · ${p.open} ${esc(L.open)}` : `<span style="color:var(--red)">${esc(L.broken)}</span>`}</div>
         <div class="dots">${dotString(p)}</div>
       </div>
-      <span class="meta">${p.ok ? `${p.needs_you ? p.needs_you + " " + L.needs : ""}` : ""}</span>
+      <span class="meta">${p.ok
+        ? (p.needs_you ? `<span style="color:var(--red)">${esc(L.needs_you)} ${p.needs_you}</span>`
+           : ((p.lead ?? 0) > 0 ? `<span style="color:var(--orange)">${esc(L.lead_queue)} ${p.lead}</span>` : "—"))
+        : ""}</span>
     </div>`).join("");
   $("teams").innerHTML = allChip + rows;
   $("teams").querySelectorAll("[data-p]").forEach((el) => {
@@ -436,9 +465,9 @@ function drawBots() {
           <div class="what ${doing ? "" : "empty"}">${doing ? esc(doing.brief) : esc(L.all_quiet)}</div>
         </div>
         <div class="tail">
-          <span class="running"><span class="tag ${r.doing === "working" ? "progress" : "ready"}">${r.doing === "working" ? "running" : "idle"}</span>
-            <b>${mine.filter((t) => t.status === "in_progress" || t.state === "progress").length}</b></span>
+          <span class="tag ${r.doing === "working" ? "progress" : "ready"}">${r.doing === "working" ? "在干活" : "空闲"}</span>
           <span>${mine.length} ${esc(L.tasks)}</span>
+          <span>${mine.filter((t) => t.status === "in_progress" || t.state === "progress").length ? "" : ""}</span>
           <span class="chev">⌄</span>
         </div>
       </div>
@@ -449,6 +478,19 @@ function drawBots() {
   $("bots").querySelectorAll(".botrow").forEach((row) => {
     row.querySelector(".head").onclick = () => row.toggleAttribute("open");
   });
+}
+
+function drawAuto() {
+  const s = state.snapshot || {};
+  const all = state.project === "__all__";
+  const lead = all ? (state.overview?.totals?.lead ?? 0) : (s.triage || []).length;
+  const person = s.counts?.attention ?? 0;
+  const el = $("auto");
+  if (!el) return;
+  el.innerHTML =
+    '<span style="color:var(--orange)">◐</span> 待总控 <b>' + lead +
+    '</b> 项（塔自己验收入库 / 打回重试） · <span style="color:var(--red)">●</span> 需要你 <b>' +
+    person + '</b> 项（blocked/failed 且重试用尽）';
 }
 
 function drawBusiness() {
@@ -517,7 +559,7 @@ function drawDock() {
   }
   const s = state.snapshot || {};
   const attention = s.attention || [];
-  const flight = s.in_flight || [];
+  const flight = [...(s.in_flight || []), ...(s.triage || [])];
   $("nowcount").textContent = attention.length ? `${attention.length} 项` : "0";
   $("nextcount").textContent = flight.length ? `${flight.length} 项` : "0";
 
@@ -574,7 +616,7 @@ async function load() {
       state.stats = null;
       state.project = "__all__";
       $("clock").textContent = (overview.generated_at || "").slice(11);
-      drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm();
+      drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm(); drawAuto();
       return;
     }
     const q = state.project ? "?project=" + encodeURIComponent(state.project) : "";
@@ -585,7 +627,7 @@ async function load() {
     state.snapshot = snap;
     state.stats = stats;
     $("clock").textContent = (snap.generated_at || "").slice(11);
-    drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm();
+    drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm(); drawAuto();
   } catch (err) {
     $("term").textContent = L.disconnected;
   }
@@ -619,7 +661,7 @@ LABELS = {
         "needs": "needs", "nothing_needs_you": "Nothing needs you.",
         "nothing_in_flight": "Nothing in flight.", "no_roles": "no roles yet",
         "no_projects": "no projects registered", "all_quiet": "all quiet — nothing in flight",
-        "no_events": "no events yet", "dock_now": "now", "all": "all", "projects": "projects", "in_flight": "in flight",
+        "no_events": "no events yet", "dock_now": "now", "all": "all", "projects": "projects", "in_flight": "in flight", "lead_queue": "tower queue",
         "disconnected": "panel disconnected — is `tower panel` still running?",
     },
     "zh": {
@@ -630,16 +672,35 @@ LABELS = {
         "needs": "需要", "nothing_needs_you": "没有需要你处理的事。",
         "nothing_in_flight": "没有进行中的任务。", "no_roles": "还没有角色",
         "no_projects": "还没有注册项目", "all_quiet": "一切平静 — 没有进行中的任务",
-        "no_events": "暂无事件", "dock_now": "现在", "all": "全部", "projects": "项目", "in_flight": "进行中",
+        "no_events": "暂无事件", "dock_now": "现在", "all": "全部", "projects": "项目", "in_flight": "进行中", "lead_queue": "待总控",
         "disconnected": "面板断开 —— `tower panel` 还在运行吗？",
     },
 }
 
 
+def display_name(cfg) -> str:
+    """What this board calls itself: the registered project name, else the config name.
+
+    The tower.toml 
+ame: is often a scaffold placeholder (my-team); a person
+    reading the board wants the project they are actually working in.
+    """
+    try:
+        from . import registry
+
+        target = Path(cfg.workspace).resolve() if hasattr(cfg.workspace, "resolve") else Path(str(cfg.workspace)).resolve()
+        for item in registry.load_projects():
+            if Path(item["path"]).resolve() == target:
+                return item.get("name") or cfg.name
+    except Exception:
+        pass
+    return cfg.name
+
+
 def render(cfg, lang: str = "en") -> str:
     import json as _json
 
-    page = PAGE.replace("__NAME__", cfg.name).replace("__WS__", str(cfg.workspace))
+    page = PAGE.replace("__NAME__", display_name(cfg)).replace("__WS__", str(cfg.workspace))
     page = page.replace("__LANG__", "zh-CN" if lang == "zh" else "en")
     page = page.replace("__LABELS__", _json.dumps(LABELS.get(lang, LABELS["en"]), ensure_ascii=False))
     if lang == "zh":

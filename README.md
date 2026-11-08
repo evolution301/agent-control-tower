@@ -170,6 +170,20 @@ active one — the panel defaults to it, and the DSH bundle's `tower_*` tools fo
 
 Deep links: `?lang=zh`, `?theme=dark`, `?project=<name>`, `?project=__all__`.
 
+**Every number has a written formula.** The board is for people, so the model is
+specified once — [docs/board-model.md](docs/board-model.md) — and the page, the CLI
+and the panel all read the same decisions:
+
+| Queue | Who owns it |
+|---|---|
+| 需要你 / *needs you* | a person: only `blocked` or `failed` (retries exhausted) |
+| 待总控 / *tower queue* | the tower: verify → accept, or rework with the failure reasons |
+| 进行中 / *in flight* | the bot |
+| 已完成 / *done* | nobody: accepted tasks never occupy a queue |
+
+`tower triage` closes that loop; `tower dispatch` runs it automatically after a
+report (`--no-auto` opts out), so an accepted-by-verifier job never waits for a human.
+
 Two renderings of the same snapshot — the terminal (`tower board`) and a local read-only web panel
 (`tower panel`). Person-states first, healthy work takes no space.
 
