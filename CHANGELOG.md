@@ -50,6 +50,18 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.5] - 2026-11-09
+
+### Fixed
+
+- **A worker running yesterday's code kept claiming new jobs.** The heartbeat now
+  records the worker's version; `ensure_worker` treats a version-mismatched
+  heartbeat as stale, retires the old process and spawns a fresh one — so a CLI/
+  plugin update takes over the queue without manually killing anything.
+- **Job ids collided with the done archive.** The enqueue sequence only scanned
+  pending/claimed, so a retried id could overwrite an archived job; done is part
+  of the scan now.
+
 ## [0.10.4] - 2026-11-09
 
 ### Fixed — live-run bugs from the prl-tower adversarial pass (2026-11-09)
