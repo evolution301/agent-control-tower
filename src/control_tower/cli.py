@@ -109,7 +109,7 @@ def _cfg(args):
     """
     from . import registry
 
-    explicit = getattr(args, "workspace", None)
+    explicit = getattr(args, "global_workspace", None) or getattr(args, "workspace", None)
     if explicit:
         return load_config(explicit)
     try:
@@ -985,7 +985,8 @@ def cmd_plugin_install(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tower", description="Dispatch tasks to role agents and verify their reports.")
     p.add_argument("--version", action="version", version=f"agent-control-tower {__version__}")
-    p.add_argument("--workspace", help="tower workspace (defaults to cwd and walks up)")
+    p.add_argument("--workspace", dest="global_workspace", default=None,
+                   help="tower workspace (defaults to cwd and walks up)")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("init", help="create a tower in a directory")
