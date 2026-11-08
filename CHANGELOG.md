@@ -50,6 +50,30 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.4] - 2026-11-09
+
+### Fixed — live-run bugs from the prl-tower adversarial pass (2026-11-09)
+
+- **A detached worker kept a stale role list.** `tower review` queued an
+  adversarial pass for the freshly added `auditor` role and the worker answered
+  "unknown role 'auditor'" — it had been spawned before the tower.toml edit and
+  never re-read it. The worker now re-parses the tower file for every job
+  (`config_path` + `reload_config`).
+- **The board lock starved other dispatches.** `_settle_dispatch` held
+  `.tower/.lock` across the whole adapter turn (minutes), timing out Q-00002 with
+  "lock held for over 60s". Reworks are now **staged** under the lock (verdict +
+  reasons recorded) and the redispatch runs after it — the lock only covers board
+  mutations, per design doc §6.
+- **GBK crash in the cli-agent adapter** on non-ASCII bot output
+  (`encoding="utf-8", errors="replace"`), from the parallel plugin-maintenance
+  session.
+
+### Added — multi-root verification (parallel session)
+
+- `project_root` + `verify_cwd` in tower.toml: report file paths and verify
+  commands resolve against the project checkout too, for towers whose
+  deliverables live in a sibling project directory (prl-tower's exact shape).
+
 ## [0.10.3] - 2026-11-09
 
 ### Changed — auto-compaction is a native knob, not a plugin (context-guard cancelled)
