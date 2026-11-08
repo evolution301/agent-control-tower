@@ -44,11 +44,11 @@ class _Noop:
         return None
 
 
-def test_plugin_declares_agents_and_compaction_inject():
-    """The compact tool reads ctx.agents/ctx.compaction — they must be injected."""
-    src = (pytest.pathlib.Path("packages/dsh-tower/index.js")
-           if hasattr(pytest, "pathlib") else None)
+def test_plugin_declares_agents_inject_and_compaction_stays_optional():
+    """agents is injected (available), compaction stays optional so the plugin
+    never pends when dsh-compaction-basic is not loaded."""
     import pathlib
 
     src = pathlib.Path("packages/dsh-tower/index.js").read_text(encoding="utf-8")
-    assert "export const inject = ['tools', 'agents', 'compaction']" in src
+    assert "export const inject = ['tools', 'agents']" in src
+    assert "compaction" not in src.split("export const inject")[1].split("\n")[0]

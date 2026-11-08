@@ -29,7 +29,7 @@ import { dirname, join, resolve } from 'node:path'
 export const name = 'dsh-tower'
 
 /** Services this plugin requires to be mounted before `apply`. */
-export const inject = ['tools', 'agents', 'compaction']
+export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
 export const VERSION = '0.10.7'
@@ -698,15 +698,34 @@ export function compactTool(cfg, host) {
           return { ok: false, text: `no session configured for role '${role}' in tower.toml [sessions]` }
         }
       }
-      if (!host?.agents || !host?.compaction) {
-        return { ok: false, text: 'this mount does not expose agents/compaction services — run the compact inside the DSH host' }
+      if (!host?.agents) {
+        return { ok: false, text: 'this mount does not expose the agents service' }
       }
       const agent = host.agents.get(sessionId)
       if (!agent) {
         return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }
       }
+      // compaction is an OPTIONAL service: reading it throws the cordis
+      // "cannot get property … without inject" error when dsh-compaction-basic
+      // is not loaded/available in this profile — surface that as guidance.
+      let compaction = null
       try {
-        const result = await host.compaction.compactNow(agent, AbortSignal.timeout(120000), 'tower-compact')
+        compaction = host.compaction
+      } catch {
+        return { ok: false, text: 'compaction service not available in this profile — '
+          + 'enable dsh-compaction-basic (cordis patch: - id: compaction-basic) '
+          + 'or use /compact in that session\'s GUI' }
+      }
+      if (!compaction || typeof compaction.compactNow !== 'function') {
+        return { ok: false, text: 'compaction service not available in this profile — '
+          + 'enable dsh-compaction-basic (cordis patch: - id: compaction-basic) '
+          + 'or use /compact in that session\'s GUI' }
+      }
+      if (!agent) {
+        return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }
+      }
+      try {
+        const result = await compaction.compactNow(agent, AbortSignal.timeout(120000), 'tower-compact')
         const text = result === null
           ? 'No compactable history yet.'
           : `Compacted ${result.shadowedSeqs.length} history items (~${result.shadowedTokenCount} tokens).`

@@ -64,6 +64,23 @@ nothing at all while the work had never started.
   bare uuids) now resolve as exact ids; title search is only the fallback.
   Regression tests cover both.
 
+## [0.10.7] - 2026-11-09
+
+### Fixed — two field bugs from John's live use
+
+- **`tower_compact` failed with `cannot get property "agents" without inject`.**
+  Root cause: the bundle declared `inject: ['tools']` only. `agents` is now
+  declared (always available once a session exists); **`compaction` stays
+  optional by design** — declaring it made the whole bundle pend when
+  dsh-compaction-basic is not loaded/available in the profile (18 tools went
+  offline; worse than the bug). The compact tool instead detects the missing
+  service at execute time and returns precise guidance (enable
+  dsh-compaction-basic, or use /compact in the session GUI).
+- **`tower relay` ignored exact session ids.** The id heuristic required exactly
+  four hyphens; real ids are `session-<uuid>` (five). `session-*` (and bare
+  uuids) now resolve as exact ids — title search is only the fallback.
+  Regression tests for both.
+
 ## [0.10.6] - 2026-11-09
 
 ### Fixed — `tower ctx` unit math (John's field report)
