@@ -60,7 +60,8 @@ def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None
     with _CLAIM_LOCK:
         _, pending, _, _ = _dirs(cfg)
         seq = 0
-        for old in list(pending.glob("*.json")) + list((cfg.queue_dir / "claimed").glob("*.json")):
+        for old in list(pending.glob("*.json")) + list((cfg.queue_dir / "claimed").glob("*.json")) \
+                + list((cfg.queue_dir / "done").glob("*.json")):
             try:
                 seq = max(seq, int(old.stem.split("-")[1]))
             except (IndexError, ValueError):
@@ -114,11 +115,33 @@ def worker_alive(cfg: TowerConfig) -> bool:
 def ensure_worker(cfg: TowerConfig) -> bool:
     """Start a detached `tower worker` unless a live one is already heartbeating.
 
-    Returns True when a new process was spawned. Works from the CLI (python -m),
-    from the frozen console script, and from the DSH bundle's execFile calls.
+    A heartbeat whose recorded version differs from the running code (a CLI/
+    plugin update while the worker stayed up) is treated as stale: the old
+    process is terminated and a fresh one takes over. Returns True when a new
+    process was spawned. Works from the CLI (python -m), from the frozen console
+    script, and from the DSH bundle's execFile calls.
     """
+    from . import __version__
+
+    heart = cfg.queue_dir / "worker.json"
     if worker_alive(cfg):
-        return False
+        try:
+            info = json.loads(heart.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = {}
+        if info.get("v") == __version__:
+            return False
+        # code moved under a live worker: retire it and take over
+        pid = int(info.get("pid", 0) or 0)
+        if pid and pid != os.getpid():
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        try:
+            heart.unlink()
+        except OSError:
+            pass
     creationflags = 0
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -143,9 +166,12 @@ def ensure_worker(cfg: TowerConfig) -> bool:
 
 
 def _heartbeat(cfg: TowerConfig) -> None:
+    from . import __version__
+
     heart = cfg.queue_dir / "worker.json"
     heart.parent.mkdir(parents=True, exist_ok=True)
-    heart.write_text(json.dumps({"pid": os.getpid(), "unix_ts": time.time()},
+    heart.write_text(json.dumps({"pid": os.getpid(), "unix_ts": time.time(),
+                                 "v": __version__},
                                 ensure_ascii=False), encoding="utf-8")
 
 
