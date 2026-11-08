@@ -188,6 +188,26 @@ the relay id (the peer answers with `tower relay --to tower --reply <id> -m
 In the DSH plugin this is `tower_dispatch {async: true}` and the new
 `tower_relay` tool.
 
+#### Async knobs (0.9.1)
+
+```yaml
+dispatch_mode: async      # tower default (per-role: roles.<name>.dispatch_mode)
+workers: 4                # threads inside one `tower worker` process
+notify:
+  kind: lead_session      # inbox (default) | lead_session — one message pushed to the lead's session
+  session: session-…
+async_roles: [seo, ops]   # role-level override as a list
+```
+
+Relay flags: `--to role:<name>` targets a role's session; `--wait <file>` uses a
+file as the receipt (its content, once it appears); `--timeout 45m` uses the same
+duration grammar as `--due`. Settlement notices read
+`[tower] T-00xx settled: accepted | role=… | summary=…`, land in `tower inbox`,
+and — with `notify.kind: lead_session` — are also pushed to the lead's session.
+`.tower/.lock` serialises board writes; `.tower/events.jsonl` is the
+enqueued→settled→notified audit trail.
+
+
 The **control room** lives at `/scene`: an isometric glass tower where each role is a robot,
 floors are departments, LED strips show alert state, and approving / replying / repairing
 happens in place (every action lands in the ledger). Data comes from `/api/scene`, i.e. from

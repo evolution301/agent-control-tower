@@ -5,6 +5,30 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.9.1] - 2026-11-08
+
+### Added — per the async/relay design doc (`plugin-async-relay-design.md`)
+
+- **Worker pool.** `workers: N` (default 4) threads inside one `tower worker` process; the atomic
+  claim keeps them from doubling work, `serial_requests` becomes a per-role semaphore inside the pool
+  (same-role serial, cross-role parallel), and enqueueing is concurrency-safe (in-process claim lock +
+  unique temp file + `os.replace`, with an id-bump retry for cross-process collisions). Verified by a
+  10-concurrent-enqueue stress test.
+- **`.tower/.lock`** — advisory file lock (msvcrt/fcntl) around board-mutating worker and triage
+  sections, per design §6.
+- **`.tower/events.jsonl`** — the lifecycle audit trail (`enqueued → settled → notified`, plus relay
+  events), per design §2, via the new `Board.event`.
+- **Task fields** `mode` / `waiter` / `settled_at` / `notified` on `T-xxxx.json`, backward compatible
+  (`from_dict` fills defaults for old files).
+- **Settlement notices in the doc's format** — `[tower] T-00xx settled: accepted | role=… |
+  summary=…` — always in the inbox, and with `notify.kind: lead_session` + `notify.session` also
+  pushed to the lead's DSH session through the settled task's own adapter.
+- **`async_roles: [seo, ops]`** list override alongside `roles.<name>.dispatch_mode`.
+- **Relay deltas**: `--to role:<name>` (the role's own session), `--wait <file>` (the file is the
+  receipt — its content, once it appears), `--timeout 45m` (same duration grammar as `--due`).
+- **`--notify session:<id>|inbox`** on dispatch, stamped into the task's `waiter`.
+- **Visibility**: snapshot counts expose `async_in_flight`.
+
 ## [0.9.0] - 2026-11-08
 
 ### Added

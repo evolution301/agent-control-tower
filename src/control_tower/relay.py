@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .adapters import AdapterRequest
 from .board import Board, now_ts
 from .config import TowerConfig
 
@@ -40,6 +41,19 @@ The tower forwards your answer to whoever sent this.
 """
 
 RESERVED_INBOX = {"tower", "lead", "inbox"}
+DURATION_RE = None  # filled lazily from supervise (same 45m/2h grammar)
+
+
+def duration_seconds(spec: str, default: int = 300) -> int:
+    """`45m` / `2h` / `90s` / `1d` → seconds; falls back to `default`."""
+    import re
+
+    from .supervise import UNITS
+
+    match = re.match(r"^(\d+)\s*([smhd])$", (spec or "").strip(), re.IGNORECASE)
+    if not match:
+        return default
+    return int(match.group(1)) * UNITS[match.group(2).lower()]
 
 
 def relay_dir(cfg: TowerConfig):
@@ -66,12 +80,14 @@ def _looks_like_session_id(to: str) -> bool:
 def resolve_target(cfg: TowerConfig, adapter, to: str) -> tuple[str, str]:
     """Return (session_id, how). The reserved aliases mean the tower's own inbox.
 
-    An explicit session id is used verbatim; anything else is treated as a title
-    substring and must match exactly one session, so a fuzzy name can never
-    deliver a confidential note into the wrong chat.
+    Targets: a DSH session id, `role:<name>` (the role's own session), a title
+    substring that must match exactly one session, or the alias `tower`.
     """
-    if to.strip().lower() in RESERVED_INBOX:
+    lowered = to.strip().lower()
+    if lowered in RESERVED_INBOX:
         return "inbox", "tower-inbox"
+    if lowered.startswith("role:"):
+        return f"role:{lowered[5:].strip()}", "role"
     if _looks_like_session_id(to.strip()):
         return to.strip(), "session-id"
     found = adapter.find_session_by_title(to, str(cfg.workspace))
@@ -79,13 +95,13 @@ def resolve_target(cfg: TowerConfig, adapter, to: str) -> tuple[str, str]:
         return found, "title-match"
     raise ValueError(
         f"no DSH session whose title contains {to!r}; pass an exact session id, "
-        "a unique title substring, or the alias 'tower'"
+        "a unique title substring, 'role:<name>', or the alias 'tower'"
     )
 
 
 def send_relay(cfg: TowerConfig, board: Board, adapter, to: str, message: str,
                sender: str = "", reply: str = "", await_receipt: bool = False,
-               timeout_s: int = 300) -> dict[str, Any]:
+               timeout_s: int = 300, wait_file: str = "") -> dict[str, Any]:
     """Deliver one relayed note and file it. Returns immediately either way."""
     message = (message or "").strip()
     if not message:
@@ -103,6 +119,7 @@ def send_relay(cfg: TowerConfig, board: Board, adapter, to: str, message: str,
         "message": message,
         "await_receipt": bool(await_receipt),
         "timeout_s": int(timeout_s),
+        "wait_file": wait_file,
         "delivered": None,
         "detail": "",
     }
@@ -118,6 +135,24 @@ def send_relay(cfg: TowerConfig, board: Board, adapter, to: str, message: str,
         })
         entry["delivered"] = True
         entry["detail"] = "queued into the tower inbox"
+    elif session_id.startswith("role:"):
+        role_name = session_id[len("role:"):]
+        if role_name not in cfg.roles:
+            raise ValueError(f"unknown role {role_name!r}; known: {', '.join(sorted(cfg.roles))}")
+        role = cfg.roles[role_name]
+        options = dict(cfg.adapter_options.get(role.adapter) or {})
+        req = AdapterRequest(
+            role=role_name,
+            prompt=RELAY_CONTRACT.format(tower=cfg.name, message=message, relay_id=relay_id),
+            cwd=cfg.role_dir(role_name),
+            timeout_s=role.timeout_s,
+            env=role.env,
+            options=options,
+        )
+        result = adapter.deliver(req)
+        entry["delivered"] = result.exit_code == 0
+        entry["detail"] = result.text[:300]
+        entry["session"] = result.meta.get("session_id", session_id)
     else:
         text = RELAY_CONTRACT.format(tower=cfg.name, message=message, relay_id=relay_id)
         if reply:
@@ -130,11 +165,13 @@ def send_relay(cfg: TowerConfig, board: Board, adapter, to: str, message: str,
         json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
     board.log("relay_sent", relay=relay_id, to=to, session=session_id,
               delivered=entry["delivered"], chars=len(message))
+    board.event("enqueued", relay=relay_id, kind="relay", to=to)
 
     if await_receipt and entry["delivered"]:
         from .worker import enqueue
 
         enqueue(cfg, "relay_watch", payload={
-            "relay_id": relay_id, "to": to, "timeout_s": int(timeout_s)})
+            "relay_id": relay_id, "to": to, "timeout_s": int(timeout_s),
+            "wait_file": wait_file})
         entry["watch"] = "queued"
     return entry

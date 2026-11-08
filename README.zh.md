@@ -20,6 +20,45 @@ DSH 优先，适配器可换，无 SaaS、无数据库、无守护进程。
 
 ![architecture](docs/assets/architecture.png)
 
+
+## 异步派单与中继（0.9.x）
+
+```python
+# DSH 插件
+tower_dispatch { role, brief, async: true }     # <1s 返回任务号，worker 后台跑
+tower_relay    { to, message, await_receipt: true }
+```
+
+```bash
+# CLI
+tower dispatch seo "..." --async          # 立即返回；后台 worker 跑 adapter + 自动分诊
+tower worker --once                       # 手动清队列（一般不用，自动拉起）
+tower relay --to <目标> -m "..." [--await-receipt] [--timeout 45m] [--wait 回执文件]
+```
+
+- `--to` 支持三种写法：**会话 id** / **`role:<角色名>`** / **标题唯一子串**；别名 `tower` = 本塔收件箱。
+- 结算（自动验收/打回/升级）后写一条 `async_settled` 到 `tower inbox`；配置
+  `notify.kind: lead_session` + `session:` 时还会推一条消息到 lead 会话。
+- 回执：对方用 `tower relay --to tower --reply <R-id> -m "..."` 回话（或 `--wait <文件>`
+  直接盯文件），`relay_receipt` / `relay_timeout` 落 inbox。
+
+```yaml
+# tower.toml
+dispatch_mode: sync     # 默认 sync 完全兼容；async 全塔异步
+workers: 4              # worker 线程池
+async_roles: [seo, ops] # 角色级覆盖
+notify:
+  kind: lead_session
+  session: session-…
+```
+
+## 场景看板（0.8+）
+
+`tower panel` 起来后访问 **`/scene`**：等轴测玻璃塔楼，每个角色一台机器人、每层一个部门、
+楼层 LED 显示告警状态；批准 / 回复 / 跳过 / 维修直接在页面点（动作全部落台账）。
+运营表格视图仍在 `/`，两页右上角互相跳转。每个数字的口径见
+`docs/board-model.md`，中英切换 `?lang=zh|en`。
+
 ## 它解决什么问题
 
 单个 agent 能写代码、能写文案、能审查。真正翻车的是**它们之间的交接**，而且翻得很有规律：

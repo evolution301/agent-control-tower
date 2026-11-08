@@ -224,8 +224,16 @@ def cmd_dispatch(args) -> int:
         from .worker import enqueue, ensure_worker
 
         kind = "restate" if getattr(args, "restate", False) else "dispatch"
+        notify = str(getattr(args, "notify", "") or "")
+        if notify.startswith("session:"):
+            task.waiter = {"kind": "lead_session", "target": notify[len("session:"):]}
+        else:
+            task.waiter = {"kind": "inbox", "target": ""}
+        task.mode = "async"
+        board.save(task)
         job = enqueue(cfg, kind, task.id)
         ensure_worker(cfg)
+        board.event("enqueued", job=job["id"], kind=kind, task=task.id, mode="async")
         if args.json:
             _print({"id": task.id, "role": task.role, "queued": True,
                     "job": job["id"], "mode": "async",
@@ -599,14 +607,20 @@ def cmd_relay(args) -> int:
     adapter_name = getattr(args, "adapter", "") or "dsh"
     options = dict(cfg.adapter_options.get(adapter_name) or {})
     adapter = get_adapter(adapter_name, options)
+    from .relay import duration_seconds
+
+    wait_file = str(getattr(args, "wait", "") or "")
+    timeout_raw = str(getattr(args, "timeout", "") or "")
+    timeout_s = duration_seconds(timeout_raw) if timeout_raw else int(getattr(args, "timeout_s", 300))
     try:
         entry = send_relay(
             cfg, board, adapter,
             to=args.to, message=args.message,
             sender=getattr(args, "from_", "") or "",
             reply=getattr(args, "reply", "") or "",
-            await_receipt=getattr(args, "await_receipt", False),
-            timeout_s=int(getattr(args, "timeout_s", 300)),
+            await_receipt=getattr(args, "await_receipt", False) or bool(wait_file),
+            timeout_s=timeout_s,
+            wait_file=wait_file,
         )
     except ValueError as exc:
         _say(args, str(exc))
@@ -1084,6 +1098,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--async", dest="async_", action="store_true",
                    help="queue the task and return its id in under a second; a tower worker "
                         "runs the adapter and the settlement lands in `tower inbox`")
+    s.add_argument("--notify", default="", metavar="KIND",
+                   help="where the settlement notice goes: 'inbox' (default) or 'session:<id>' "
+                        "to also push one message to the lead's DSH session")
     s.add_argument("--due", default="",
                    help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; a silent overrun gets chased by `tower supervise`")
     s.set_defaults(func=cmd_dispatch)
@@ -1118,7 +1135,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--adapter", default="", help="adapter used for delivery (default: dsh)")
     s.add_argument("--await-receipt", action="store_true",
                    help="watch for a reply carrying the relay id; outcome lands in `tower inbox`")
-    s.add_argument("--timeout-s", type=int, default=300, help="receipt watch budget (default 300s)")
+    s.add_argument("--wait", default="", metavar="REPLY_FILE",
+                   help="watch this file instead: the receipt is its content once it appears")
+    s.add_argument("--timeout", default="", metavar="DURATION",
+                   help="watch budget like 45m / 2h / 90s (default 300s)")
+    s.add_argument("--timeout-s", type=int, default=300, help="receipt watch budget in seconds (default 300)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_relay)
 

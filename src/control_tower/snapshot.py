@@ -176,6 +176,11 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         "attention": len(attention),
         "triage": len(triage),
         "in_flight": len(in_flight),
+        # design doc §3: the panel/supervise show in-flight async work explicitly
+        "async_in_flight": sum(
+            1 for t in tasks
+            if getattr(t, "mode", "") == "async" and t.status != "accepted"
+        ),
         **{k: v for k, v in sorted(by_state.items())},
     }
 

@@ -84,6 +84,12 @@ class Task:
     restatement: str = ""
     restate_ok: bool = False
     restated_at: str = ""
+    # v0.9.1 — async dispatch (docs/…: plugin-async-relay-design). Old task files
+    # lack these keys; from_dict fills the defaults, so nothing to migrate.
+    mode: str = ""                                   # "" (sync) | "async"
+    waiter: dict[str, Any] = field(default_factory=dict)  # {"kind": "inbox"|"lead_session"|"file", "target": …}
+    settled_at: str = ""                             # stamped when the worker settles the task
+    notified: bool = False                           # the settlement notice went out
     # v0.8 — supervision: a task is a job with a due date, and a role that misses
     # it gets pulled up by the lead instead of quietly rotting.
     due_at: str = ""
@@ -244,6 +250,19 @@ class Board:
         payload.update(entry)
         with self.cfg.inbox_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def event(self, name: str, **payload: Any) -> None:
+        """Append to `.tower/events.jsonl` — the async/relay audit trail.
+
+        The ledger records decisions; events.jsonl records the *lifecycle* of
+        async work (enqueued → prompted → reported → settled → notified) in the
+        order the design doc specifies, for supervise and post-mortems.
+        """
+        path = self.cfg.state_dir / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"ts": now_ts(), "event": name, **payload}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def inbox(self, unread_only: bool = False) -> list[dict[str, Any]]:
         if not self.cfg.inbox_path.exists():

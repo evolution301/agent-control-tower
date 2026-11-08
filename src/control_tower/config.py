@@ -46,8 +46,15 @@ class TowerConfig:
     auto_triage: bool = True
     # "sync" (default, unchanged behaviour) or "async": dispatch hands the task to
     # the queue and returns the id in under a second; a `tower worker` process runs
-    # the adapter and settles the task. Per-role override via roles.<name>.dispatch_mode.
+    # the adapter and settles the task. Per-role override via roles.<name>.dispatch_mode
+    # or the async_roles list.
     dispatch_mode: str = "sync"
+    # background worker pool inside one `tower worker` process (design doc §1: N=4)
+    workers: int = 4
+    # settlement notice: "inbox" (always written) and optionally a lead session push
+    notify_kind: str = "inbox"          # inbox | lead_session
+    notify_session: str = ""            # required when notify_kind == lead_session
+    async_roles: list[str] = field(default_factory=list)
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     accept_requires: list[str] = field(
@@ -76,10 +83,13 @@ class TowerConfig:
         return self.state_dir / "queue"
 
     def effective_dispatch_mode(self, role_name: str = "") -> str:
-        """sync | async — the role override wins over the tower default."""
+        """sync | async — role override wins over async_roles, then the tower default."""
         role = self.roles.get(role_name)
-        mode = (role.dispatch_mode if role and role.dispatch_mode else "") or self.dispatch_mode
-        return mode if mode in ("sync", "async") else "sync"
+        if role and role.dispatch_mode:
+            return role.dispatch_mode if role.dispatch_mode in ("sync", "async") else "sync"
+        if role_name in self.async_roles:
+            return "async"
+        return self.dispatch_mode if self.dispatch_mode in ("sync", "async") else "sync"
 
     @property
     def roles_dir(self) -> Path:
@@ -176,6 +186,10 @@ def parse_config(path: Path) -> TowerConfig:
         auto_triage=bool(raw.get("auto_triage", True)),
         account=str(raw.get("account", "")),
         dispatch_mode=str(raw.get("dispatch_mode", "sync")).strip().lower(),
+        workers=max(1, min(16, int(raw.get("workers", 4)))),
+        notify_kind=str((raw.get("notify") or {}).get("kind", "inbox")).strip().lower(),
+        notify_session=str((raw.get("notify") or {}).get("session", "")),
+        async_roles=[str(r) for r in (raw.get("async_roles") or [])],
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )
