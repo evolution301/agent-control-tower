@@ -355,6 +355,28 @@ class DshAdapter:
             meta={"session_id": session_id, "resolution": how},
         )
 
+    def session_pressure(self, session_id: str) -> dict[str, Any] | None:
+        """Read contextPressure (and friends) from session/projections.
+
+        Best-effort: returns None when the host answers nothing usable, so the
+        CLI can degrade to guidance text instead of crashing.
+        """
+        reply = self.rpc("session/projections", {"sessionId": session_id}, timeout=30)
+        value = self._result_value(reply)
+        if not isinstance(value, dict):
+            return None
+        projections = value.get("projections") or value
+        values = projections.get("values") if isinstance(projections, dict) else None
+        source = values if isinstance(values, dict) else projections
+        pressure = source.get("contextPressure", source.get("context_pressure"))
+        if pressure is None:
+            return None
+        try:
+            pressure = float(pressure)
+        except (TypeError, ValueError):
+            return None
+        return {"session": session_id, "contextPressure": pressure}
+
     def deliver_to_session(self, session_id: str, text: str) -> AdapterResult:
         """Queue a note into an explicit session id — the relay path.
 

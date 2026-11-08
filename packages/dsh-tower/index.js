@@ -504,6 +504,7 @@ export function apply(ctx, config = {}) {
   const disposers = [
     ctx.tools.register(dispatchTool(cfg)),
     ctx.tools.register(restateOkTool(cfg)),
+    ctx.tools.register(compactTool(cfg, ctx)),
     ctx.tools.register(inboxTool(cfg)),
     ctx.tools.register(acceptTool(cfg)),
     ctx.tools.register(reworkTool(cfg)),
@@ -652,6 +653,75 @@ export function reviewTool(cfg) {
     },
     presentCall(args) {
       return { card: 'command', title: `tower review ${args.task ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/**
+ * Human outcomes for manual compaction, mirroring dsh-command-compact so the
+ * tower reports exactly what the native /compact would say.
+ */
+export function compactErrorText(code) {
+  switch (code) {
+    case 'busy': return 'Compaction is unavailable because this process has an active compaction, or the agent is not idle.'
+    case 'cancelled': return 'Compaction cancelled.'
+    case 'changed': return 'The history selected for compaction changed before it could be replaced. The attempt is recorded in the session log.'
+    case 'summary': return 'Compaction could not produce a useful summary. The attempt is recorded in the session log.'
+    case 'commit': return 'Compaction did not finish cleanly; some session history may have changed. Inspect the current session state before retrying.'
+    case 'persistence': return 'Compaction finished, but the session could not be saved.'
+    default: return `Compaction failed (${code}).`
+  }
+}
+
+/** `tower_compact`: force one manual compaction of a live session, in-process. */
+export function compactTool(cfg, host) {
+  return tool({
+    name: 'tower_compact',
+    description:
+      'Force one manual context compaction (the /compact machinery) on a live session, in-process: no extra turn, no GUI needed. Pass the DSH session id, or \'role:<name>\' to resolve the session from the tower\'s sessions mapping. Returns how much history was shadowed.',
+    parameters: {
+      session: { type: 'string', required: true, description: 'DSH session id, or \'role:<name>\' resolved via tower.toml sessions.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties:
+        { ok: { type: 'boolean', required: true }, text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      let sessionId = String(args.session ?? '')
+      if (sessionId.startsWith('role:')) {
+        const role = sessionId.slice(5).trim()
+        const sessions = cfg.sessions ?? {}
+        sessionId = String(sessions[role] ?? '')
+        if (!sessionId) {
+          return { ok: false, text: `no session configured for role '${role}' in tower.toml [sessions]` }
+        }
+      }
+      if (!host?.agents || !host?.compaction) {
+        return { ok: false, text: 'this mount does not expose agents/compaction services — run the compact inside the DSH host' }
+      }
+      const agent = host.agents.get(sessionId)
+      if (!agent) {
+        return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }
+      }
+      try {
+        const result = await host.compaction.compactNow(agent, AbortSignal.timeout(120000), 'tower-compact')
+        const text = result === null
+          ? 'No compactable history yet.'
+          : `Compacted ${result.shadowedSeqs.length} history items (~${result.shadowedTokenCount} tokens).`
+        return { ok: true, text }
+      } catch (err) {
+        if (err?.name === 'TimeoutError' || /timed? ?out/i.test(String(err?.message))) {
+          return { ok: false, text: 'compaction timed out after 120s — try again when the session is idle' }
+        }
+        const code = err?.code ?? err?.cause?.code
+        if (code) return { ok: false, text: compactErrorText(code) }
+        return { ok: false, text: `compaction failed: ${String(err?.message ?? err).slice(0, 200)}` }
+      }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower compact ${args.session ?? ''}`, kind: 'other' }
     },
   })
 }

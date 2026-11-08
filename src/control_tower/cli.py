@@ -596,6 +596,37 @@ def cmd_worker(args) -> int:
     return run_worker(cfg, once=getattr(args, "once", False))
 
 
+def cmd_ctx(args) -> int:
+    """Context pressure per session (sessions configured in tower.toml).
+
+    Source of truth is the host's session/projections. Compaction itself is a
+    host-context capability: the DSH plugin's tower_compact tool calls the
+    compaction seam in-process (a server RPC for /compact does not exist).
+    """
+    cfg = _cfg(args)
+    sessions = {}
+    options = cfg.adapter_options.get("dsh") or {}
+    sessions.update(options.get("sessions") or {})
+    if not sessions:
+        print("no sessions configured in tower.toml [adapter_options.dsh.sessions]")
+        return 0
+    from .adapters import get_adapter
+
+    adapter = get_adapter("dsh", dict(options))
+    width = max(len(str(name)) for name in sessions) if sessions else 5
+    for role, session_id in sorted(sessions.items()):
+        info = adapter.session_pressure(str(session_id)) if hasattr(adapter, "session_pressure") else None
+        if info is None:
+            print(f"{role:<{width}}  {session_id}  pressure=? (projections unavailable)")
+        else:
+            pct = round(info["contextPressure"] * 100) if info["contextPressure"] <= 1 else round(info["contextPressure"])
+            marker = " ⚠ COMPACT NOW (>=50%)" if pct >= 50 else ""
+            print(f"{role:<{width}}  {session_id}  pressure={pct}%{marker}")
+    print("\nrule (John): pressure >= 50% -> compact. One-shot: DSH plugin tool "
+          "`tower_compact { session }` (in-process, no extra turn).")
+    return 0
+
+
 def cmd_relay(args) -> int:
     """Deliver a message to any DSH session (or `--to tower` = this inbox)."""
     from .adapters import get_adapter
@@ -1211,6 +1242,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / relay receipts)")
     s.add_argument("--once", action="store_true", help="drain the current queue and exit")
     s.set_defaults(func=cmd_worker)
+
+    s = sub.add_parser("ctx", help="context pressure per configured session (50 percent or more = compact now)")
+    s.set_defaults(func=cmd_ctx)
 
     s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
     s.add_argument("to", help="target: session id, unique title substring, or the alias 'tower'")

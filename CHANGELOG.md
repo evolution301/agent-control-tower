@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.10.2] - 2026-11-09
+
+### Added — programmatic context compaction (John's 50% rule)
+
+- **Source-level answer to the compact question.** The harness JSON-RPC surface
+  is exactly seven methods (`initialize`, `session/prompt|query|resume|wait`,
+  `session/working-directory/get|set`, `shutdown`) — there is **no compact RPC**,
+  confirming the 10×404 probe. The real seam is the in-process compaction
+  service: `/compact` is a human command whose handler calls
+  `ctx.compaction.compactNow(agent, signal, id)` (implemented in
+  `@deepseek-ai/dsh-compaction-basic`), with agents resolvable by session id via
+  `ctx.agents.get(sessionId)`.
+- **`tower_compact { session }` (DSH plugin tool, option A).** Because the
+  plugin runs inside the same host context, it calls `compactNow` directly —
+  no extra turn, no GUI, no print token. Accepts a DSH session id or
+  `role:<name>` (resolved through tower.toml sessions). Errors are surfaced
+  with the same human texts the native `/compact` prints (busy / cancelled /
+  changed / summary / commit / persistence), plus a 120s idle timeout.
+- **`tower ctx` (option C).** Prints `contextPressure` per session configured in
+  tower.toml (`[adapters.dsh.sessions]`), read from `session/projections`,
+  flagging **⚠ COMPACT NOW at ≥50%** and naming the one-shot trigger
+  (`tower_compact`); degrades to "projections unavailable" without crashing.
+
+### Why not B (GUI/CDP automation)
+
+Electron launches without a remote-debugging port, and patching app.asar is
+wiped on every app update. The in-process seam is strictly better: it is the
+same code path the native /compact uses.
+
 ## [0.10.1] - 2026-11-09
 
 ### Added — reviewer governance (P2) & learning drafts (P3), per the upgrade plan

@@ -395,3 +395,6 @@ MIT — see [LICENSE](LICENSE).
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=evolution301/agent-control-tower&type=Date)](https://star-history.com/#evolution301/agent-control-tower&Date)
+
+
+Context hygiene: `tower ctx` prints each session's contextPressure (⚠ at ≥50%, John's rule) and the DSH plugin's `tower_compact { session }` forces the native /compact machinery in-process — no extra turn.

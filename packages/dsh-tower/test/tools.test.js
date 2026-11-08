@@ -45,6 +45,7 @@ test('apply registers every tower tool and is unloadable', () => {
     registered.map((d) => d.name).sort(),
     [
       'tower_accept',
+      'tower_compact',
       'tower_dispatch',
       'tower_huddle',
       'tower_inbox',
@@ -64,7 +65,7 @@ test('apply registers every tower tool and is unloadable', () => {
     ],
   )
   dispose()
-  assert.equal(disposed.length, 17)
+  assert.equal(disposed.length, 18)
 })
 
 test('a missing tower CLI cannot crash the host with an unhandled spawn error', async () => {
