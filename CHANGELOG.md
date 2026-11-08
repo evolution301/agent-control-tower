@@ -5,6 +5,30 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.9.2] - 2026-11-08
+
+### Added — work discipline distilled from pstack
+
+After studying [pstack](https://github.com/cursor/plugins/tree/main/pstack)
+(Lauren Tan's agent skill stack; Claude port
+[michael-denyer/pstack-claude](https://github.com/michael-denyer/pstack-claude)),
+the tower now carries that discipline itself:
+
+- **14 principle cards** (`src/control_tower/principles.py`) — rewritten for tower
+  bots, not copied: understand-first, smallest-change, fix-root-causes,
+  prove-it-works, test-behavior, subtract-before-add, attack-the-premise,
+  model-the-domain, boundary-discipline, idempotent-operations,
+  never-block-on-human, show-your-work, minimize-reader-load, explain-the-number.
+- **Every dispatch prompt** appends a Work-discipline section: eight
+  non-negotiables plus the compact index (one line per principle — the context
+  window is a principle too). Full card: `tower principles <name>`. Off switch:
+  `principles: false` in `tower.toml`.
+- **`tower principles [name]`** — list or show a card.
+- **`docs/pstack-discipline.md`** — the attribution and the mapping table
+  (pstack concept → the tower mechanism that already implements it: restatement
+  gate ↔ in-your-own-words, verifier ↔ prove-it-works, supervise ↔ babysit,
+  Attention ↔ never-block-on-the-human, ledger ↔ show-me-your-work).
+
 ## [0.9.1] - 2026-11-08
 
 ### Added — per the async/relay design doc (`plugin-async-relay-design.md`)

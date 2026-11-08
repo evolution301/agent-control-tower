@@ -55,6 +55,8 @@ class TowerConfig:
     notify_kind: str = "inbox"          # inbox | lead_session
     notify_session: str = ""            # required when notify_kind == lead_session
     async_roles: list[str] = field(default_factory=list)
+    # inject the pstack-derived work-discipline index into every dispatch prompt
+    principles: bool = True
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     accept_requires: list[str] = field(
@@ -190,6 +192,7 @@ def parse_config(path: Path) -> TowerConfig:
         notify_kind=str((raw.get("notify") or {}).get("kind", "inbox")).strip().lower(),
         notify_session=str((raw.get("notify") or {}).get("session", "")),
         async_roles=[str(r) for r in (raw.get("async_roles") or [])],
+        principles=bool(raw.get("principles", True)),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )

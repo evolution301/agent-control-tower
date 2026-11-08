@@ -151,6 +151,12 @@ def render_prompt(cfg: TowerConfig, task: Task) -> str:
             + "/` — open one for the full steps. Follow them as the default way of "
             "working; deviate only with the reason recorded in the report.\n"
         )
+    # pstack-derived work discipline: the compact index only (context guard);
+    # a full card is one `tower principles show <name>` away.
+    if getattr(cfg, "principles", True):
+        from .principles import scaffold_section
+
+        prompt += scaffold_section()
     return prompt
 
 

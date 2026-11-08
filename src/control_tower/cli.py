@@ -638,6 +638,24 @@ def cmd_relay(args) -> int:
     return 0
 
 
+def cmd_principles(args) -> int:
+    """The work-discipline cards injected into every dispatch (pstack-derived)."""
+    from .principles import ORDER, PRINCIPLES, show
+
+    name = getattr(args, "name", "") or ""
+    if not name:
+        for item in ORDER:
+            print(f"{item} — applies when {PRINCIPLES[item]['applies']}")
+        print("\nfull card: tower principles <name>")
+        return 0
+    try:
+        print(show(name))
+        return 0
+    except KeyError as exc:
+        _say(args, str(exc.args[0]))
+        return 2
+
+
 def cmd_stats(args) -> int:
     """BI view: throughput, verified rate, lead time, per-role and supervision."""
     if getattr(args, "all", False):
@@ -1123,6 +1141,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("principles", help="the work-discipline cards every dispatch follows")
+    s.add_argument("name", nargs="?", default="", help="show one full card (default: list)")
+    s.set_defaults(func=cmd_principles)
 
     s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / relay receipts)")
     s.add_argument("--once", action="store_true", help="drain the current queue and exit")
