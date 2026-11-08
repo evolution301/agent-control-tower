@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.8.0] - 2026-11-08
+
+### Added
+
+- **The control room (`/scene`).** A single HTML page, Canvas 2D, no build step: an isometric glass
+  tower where every role is a robot on its own floor, LED strips carry the floor's alert state
+  (working / waiting / stuck / resting), an elevator rides between levels, and the plaza has roads,
+  moving cars and trees. Day and night themes, click-to-focus floors, hover preview, wheel zoom, drag
+  pan, double-click fit, `1–6`/`0` floor keys, `W`/`S` jump to the next waiting/stuck item and
+  `A`/`R`/`X`/`F` act on it.
+- **`/api/scene` and `docs/scene-brief.md`.** The payload is assembled from the tower's own task files
+  by `scene.py`: floors = roles, robots = roles, pending = `blocked`/`failed` (at most 4 cards, at most
+  2 stuck, matching the brief), spend = runs × a stated rate (labelled "estimated"), completed-today
+  from accept events, activity from the ledger. Nothing is simulated.
+- **The control room can act, and only through four verbs.** `approve` (runs the verifier first and
+  refuses if it would fail), `reply` (rework with your note, re-dispatched in the background), `skip`
+  (dismiss the question) and `repair` (the tower's retry path). Each action is written to the ledger,
+  and `docs/board-model.md` records this as the single documented exception to "the board is read-only".
+- **The page's "ask" box answers from the payload** — summary, who is waiting, what is stuck, spend,
+  or an agent by name — so a first-time reader gets an answer without knowing the schema.
+
+### Deliberately deferred (documented in `docs/scene-brief.md`)
+
+- idle micro-actions (coffee, watering, chatting), the full conversation panel backed by a model,
+  and 60fps budget tuning on low-end GPUs.
+
 ## [0.7.10] - 2026-11-08
 
 ### Fixed

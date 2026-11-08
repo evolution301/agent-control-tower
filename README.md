@@ -170,6 +170,11 @@ active one — the panel defaults to it, and the DSH bundle's `tower_*` tools fo
 
 Deep links: `?lang=zh`, `?theme=dark`, `?project=<name>`, `?project=__all__`.
 
+The **control room** lives at `/scene`: an isometric glass tower where each role is a robot,
+floors are departments, LED strips show alert state, and approving / replying / repairing
+happens in place (every action lands in the ledger). Data comes from `/api/scene`, i.e. from
+the same task files this README describes.
+
 `tower panel` keeps a **stable URL**: it reuses the port this workspace used last
 time (`.tower/panel-port`), else 8787, else the next free port — and remembers the
 choice, so a bookmarked page keeps working. Two panels can no longer share one port.

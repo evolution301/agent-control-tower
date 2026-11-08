@@ -50,7 +50,10 @@
 ③ 脚本 / 定时     直接调 ①
 ```
 
-- 进来即落盘：`.tower/tasks/T-xxxx.json`；看板**只读**，页面上没有任何写操作。
+- 进来即落盘：`.tower/tasks/T-xxxx.json`。运营看板（`/`）**只读**。
+- 控制室（`/scene`）是唯一例外：approve / reply / skip / repair 四个动词会写任务，且每个都记台账
+  （`scene_approved` / `scene_replied` / `scene_skipped` / `scene_repair`）。这是为了让"看板"能承担
+  "指挥"的职责，而不是再开一个来源不明的操作入口。
 - 所以「为什么看板上没有这条任务」的答案永远是：**没人用上面三条路把它派进来**（或它已 accepted）。
 
 ## 5. 瞄准（一个 profile 对应哪一个塔）
