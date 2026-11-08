@@ -430,8 +430,8 @@ class PanelServer(ThreadingHTTPServer):
 
 INSTANCE = uuid.uuid4().hex[:8]
 STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
-SOURCE_FILES = ("panel.py", "panel_hq.py", "snapshot.py", "registry.py", "analytics.py",
-                "board.py", "config.py", "verify.py")
+SOURCE_FILES = ("__init__.py", "panel.py", "panel_hq.py", "snapshot.py", "registry.py",
+                "analytics.py", "board.py", "config.py", "verify.py")
 
 
 def source_fingerprint(directory: Path | None = None) -> str:

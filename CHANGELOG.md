@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.10] - 2026-11-08
+
+### Fixed
+
+- **A release that only bumped the version did not restart the panel.** The self-restart fingerprint
+  watched the page and model modules but not `__init__.py`, where `__version__` lives — so an update
+  that changed nothing else left the board serving the previous build. `__init__.py` is watched now,
+  and a test pins it.
+
 ## [0.7.9] - 2026-11-08
 
 ### Fixed

@@ -34,6 +34,15 @@ def test_fingerprint_is_stable_and_tracks_changes(tmp_path):
     assert source_fingerprint(tmp_path) != first
 
 
+def test_the_version_file_is_watched(tmp_path):
+    """A release that only bumps __version__ must still restart the panel."""
+    for name in panel.SOURCE_FILES:
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    before = source_fingerprint(tmp_path)
+    (tmp_path / "__init__.py").write_text("__version__ = '0.7.10'", encoding="utf-8")
+    assert source_fingerprint(tmp_path) != before
+
+
 def test_should_restart_only_when_the_code_moved():
     assert should_restart("aaa", "bbb")
     assert not should_restart("aaa", "aaa")
