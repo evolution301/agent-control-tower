@@ -108,6 +108,7 @@ class DshAdapter:
         role_titles: dict[str, str] | None = None,
         create_cwd: str = "",
         projcache_dir: str = "",
+        turn_start_s: float = 45,
         **_,
     ):
         self.base_url = base_url.rstrip("/")
@@ -119,6 +120,11 @@ class DshAdapter:
         )
         self.wait_s = float(wait_s)
         self.poll_s = max(0.05, float(poll_s))
+        # Grace period for the host to actually START a turn after it accepted
+        # the prompt. A session with no model selected never starts one, so this
+        # is the difference between "fails in 45s with a reason" and "silently
+        # burns wait_s and reports a bare timeout".
+        self.turn_start_s = float(turn_start_s)
         self.secret = b64d(secret) if secret else b""
         self.authority = authority or self.base_url.split("://", 1)[-1].split("/", 1)[0]
         self.timezone = timezone
@@ -355,13 +361,49 @@ class DshAdapter:
             meta={"session_id": session_id, "resolution": how},
         )
 
+    def session_state(self, session_id: str) -> dict[str, Any]:
+        """Best-effort read of turns/llmMs/model for one session.
+
+        `session/projections` is the only RPC that answers these; its args live
+        under `request` (unlike `session/list`, which wants `_request` — the two
+        methods genuinely disagree, and getting it wrong silently returns an
+        argument error instead of data).
+        """
+        reply = self.rpc("session/projections", {"request": {"sessionId": session_id}}, timeout=20)
+        if reply.get("error"):
+            return {"error": reply["error"]}
+        value = self._result_value(reply)
+        if not isinstance(value, dict):
+            return {}
+        values = value.get("values") if isinstance(value.get("values"), dict) else {}
+        stats = values.get("sessionStats") or {}
+        selection = values.get("modelSelection") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+        if not isinstance(selection, dict):
+            selection = {}
+        used = selection.get("lastUsed") or selection.get("next") or {}
+        if not isinstance(used, dict):
+            used = {}
+        return {
+            "turns": int(stats.get("turns") or 0),
+            "llmMs": int(stats.get("llmMs") or 0),
+            "steps": int(stats.get("steps") or 0),
+            "model": used.get("model"),
+            "provider": used.get("provider"),
+            # A host that does not project modelSelection must not be read as
+            # "this session has no model": only an explicitly empty selection is
+            # proof that a turn cannot start.
+            "model_known": "modelSelection" in values,
+        }
+
     def session_pressure(self, session_id: str) -> dict[str, Any] | None:
         """Read contextPressure (and friends) from session/projections.
 
         Best-effort: returns None when the host answers nothing usable, so the
         CLI can degrade to guidance text instead of crashing.
         """
-        reply = self.rpc("session/projections", {"sessionId": session_id}, timeout=30)
+        reply = self.rpc("session/projections", {"request": {"sessionId": session_id}}, timeout=30)
         value = self._result_value(reply)
         if not isinstance(value, dict):
             return None
@@ -371,6 +413,10 @@ class DshAdapter:
         pressure = source.get("contextPressure", source.get("context_pressure"))
         if pressure is None:
             return None
+        # The host may answer either a bare number or {pressureTokens,
+        # projectedTokens, contextWindow}; keep the number when it is there.
+        if isinstance(pressure, dict):
+            pressure = pressure.get("pressureTokens") or pressure.get("projectedTokens")
         try:
             pressure = float(pressure)
         except (TypeError, ValueError):
@@ -457,6 +503,32 @@ class DshAdapter:
                 meta={"rpc": "session/prompt", "result": result, "resolution": how},
             )
 
+        # A session with no model selected accepts the prompt and then never
+        # starts a turn. Catch that inside turn_start_s and say why, instead of
+        # burning the whole wait_s and reporting a bare timeout.
+        before = self.session_state(session_id)
+        if (before and not before.get("error") and before.get("model_known")
+                and not before.get("model") and self.turn_start_s > 0):
+            grace = time.time() + self.turn_start_s
+            while time.time() < grace:
+                state = self.session_state(session_id)
+                if state.get("turns", 0) > before.get("turns", 0):
+                    break
+                time.sleep(self.poll_s)
+            else:
+                return AdapterResult(
+                    text=(
+                        "[dsh] prompt 已入队，但会话 %s 在 %.0fs 内没有开始 turn"
+                        "（turns=%s，model=空）。这个会话没有可用模型，派不动 —— "
+                        "先给它选模型（session/selectModel，或 GUI 里选一次）再重派。"
+                        % (session_id, self.turn_start_s, before.get("turns", 0))
+                    ),
+                    exit_code=4,
+                    meta={"rpc": "session/projections", "session_id": session_id,
+                          "resolution": how, "cold_session": True,
+                          "turns": before.get("turns", 0)},
+                )
+
         deadline = time.time() + self.wait_s
         while time.time() < deadline:
             if report.exists() and report.stat().st_size > 0:
@@ -466,8 +538,13 @@ class DshAdapter:
                     meta={"report_file": str(report), "session_id": session_id, "resolution": how},
                 )
             time.sleep(self.poll_s)
+        state = self.session_state(session_id)
         return AdapterResult(
-            text="[dsh] timed out after %gs waiting for %s" % (self.wait_s, report),
+            text=("[dsh] timed out after %gs waiting for %s "
+                  "(turns=%s, llmMs=%s, model=%s)"
+                  % (self.wait_s, report, state.get("turns"), state.get("llmMs"),
+                     state.get("model") or "空")),
             exit_code=4,
-            meta={"expected_report": str(report), "session_id": session_id, "resolution": how},
+            meta={"expected_report": str(report), "session_id": session_id,
+                  "resolution": how, "state": state},
         )

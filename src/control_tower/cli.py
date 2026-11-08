@@ -977,6 +977,64 @@ def _command_available(command: str) -> bool:
     return shutil.which(token) is not None
 
 
+def _dsh_preflight(cfg) -> list[str]:
+    """Probe each configured dsh endpoint once: reachable? authorized? sessions pinned?
+
+    A tower config can look flawless and still point at a closed port or a stale
+    secret. Without a live probe the first symptom is a dispatch that "does not
+    fail" until the wait_s timeout, which reads like a tower bug.
+    Cheap: one `session/list` per distinct base_url.
+    """
+    problems: list[str] = []
+    by_base: dict[str, dict] = {}
+    for name, role in cfg.roles.items():
+        if role.adapter != "dsh":
+            continue
+        opts = dict(cfg.adapter_options.get("dsh") or {})
+        base = str(opts.get("base_url") or "").strip()
+        if not base:
+            problems.append(f"role {name}: dsh adapter has no base_url")
+            continue
+        by_base.setdefault(base, opts)
+
+    for base, opts in by_base.items():
+        try:
+            from .adapters import get_adapter
+
+            adapter = get_adapter("dsh", opts)
+            reply = adapter.rpc("session/list", {"_request": {}}, timeout=15)
+        except Exception as exc:  # pragma: no cover - network dependent
+            problems.append(f"dsh adapter {base}: probe failed: {exc}")
+            continue
+        if reply.get("error"):
+            problems.append(
+                f"dsh adapter {base} unreachable or unauthorized: {reply['error']} "
+                "— check base_url (the desktop port changes on every restart) and secret"
+            )
+            continue
+        result = reply.get("result") or {}
+        if isinstance(result, dict) and result.get("ok") is False:
+            err = result.get("error") or {}
+            problems.append(
+                f"dsh adapter {base}: {err.get('code')}: {str(err.get('message'))[:200]}"
+            )
+            continue
+        value = result.get("value") if isinstance(result, dict) else None
+        items = (value or {}).get("items") if isinstance(value, dict) else None
+        known = {str(i.get("sessionId")) for i in (items or []) if isinstance(i, dict)}
+        if not known:
+            # Some desktop hosts answer session/list with no rows; the on-disk
+            # projection cache still resolves titles. Absence here is not proof.
+            continue
+        for role_name, sid in (opts.get("sessions") or {}).items():
+            if sid and str(sid) not in known:
+                problems.append(
+                    f"role {role_name}: pinned session {sid} is not on {base} "
+                    "— dispatch would create a duplicate session"
+                )
+    return problems
+
+
 def cmd_doctor(args) -> int:
     cfg = _cfg(args)
     problems = []
@@ -1036,6 +1094,12 @@ def cmd_doctor(args) -> int:
             problems.append(f"role {name}: openai adapter has no API key in env")
         if role.adapter == "dsh" and not (opts.get("sessions") or {}).get(name):
             problems.append(f"role {name}: dsh adapter has no session id")
+    # Live preflight: a config can look perfect and still point at a dead port
+    # or a stale secret. Without this the first symptom is a dispatch that sits
+    # there "not failing" until the wait_s timeout. (observed 2026-11: doctor
+    # said "problems: none" with base_url on a closed port.)
+    for line in _dsh_preflight(cfg):
+        problems.append(line)
     print("workspace:", cfg.workspace)
     print("roles:", ", ".join(sorted(cfg.roles)))
     for warning in warnings:

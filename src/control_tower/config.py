@@ -36,6 +36,13 @@ class Role:
 class TowerConfig:
     name: str = "control-tower"
     workspace: Path = Path(".")
+    # Where the actual project lives, when it is not the tower workspace (a
+    # tower often coordinates work in a sibling checkout). Report file paths and
+    # relative verify commands resolve against this too.
+    project_root: Path = Path(".")
+    # cwd for verify_commands; empty = workspace. Set this when the checks live
+    # in the project (e.g. node scripts/lint.mjs) instead of the tower dir.
+    verify_cwd: str = ""
     roles: dict[str, Role] = field(default_factory=dict)
     adapter_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     serial_requests: bool = False
@@ -64,6 +71,9 @@ class TowerConfig:
     review_budget: int = 1
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
+    # where the tower file lives — the worker re-parses it per job so role edits
+    # made after the detached worker started are picked up without a restart
+    config_path: str = ""
     accept_requires: list[str] = field(
         default_factory=lambda: ["summary", "files", "checks"]
     )
@@ -165,6 +175,10 @@ def parse_config(path: Path) -> TowerConfig:
 
     adapter_options = raw.get("adapters") or {}
 
+    project_root = Path(raw.get("project_root") or workspace).expanduser()
+    if not project_root.is_absolute():
+        project_root = (path.parent / project_root).resolve()
+
     roles: dict[str, Role] = {}
     for name, spec in (raw.get("roles") or {}).items():
         spec = spec or {}
@@ -186,6 +200,8 @@ def parse_config(path: Path) -> TowerConfig:
     return TowerConfig(
         name=raw.get("name", path.parent.name),
         workspace=workspace,
+        project_root=project_root,
+        verify_cwd=str(raw.get("verify_cwd") or ""),
         roles=roles,
         adapter_options=adapter_options,
         serial_requests=bool(raw.get("serial_requests", False)),
@@ -201,9 +217,25 @@ def parse_config(path: Path) -> TowerConfig:
         self_review=bool(raw.get("self_review", True)),
         review_roles=[str(r) for r in (raw.get("review_roles") or ["auditor"])],
         review_budget=max(0, int(raw.get("review_budget", 1))),
+        config_path=str(path),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )
+
+
+def reload_config(cfg: TowerConfig) -> TowerConfig:
+    """Re-parse the tower file (the detached worker picks up role edits live).
+
+    Returns the same cfg when the source path is unknown or unreadable — the
+    worker keeps running with what it has instead of dying on a bad edit.
+    """
+    path = getattr(cfg, "config_path", "") or ""
+    if not path:
+        return cfg
+    try:
+        return parse_config(Path(path))
+    except (OSError, ValueError):
+        return cfg
 
 
 def ensure_layout(cfg: TowerConfig) -> None:

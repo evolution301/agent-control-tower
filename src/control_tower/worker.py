@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from .board import Board, STATUS_ACCEPTED, now_ts
-from .config import TowerConfig
+from .config import TowerConfig, reload_config
 from .locks import tower_lock
 
 HEARTBEAT_STALE_S = 30
@@ -224,6 +224,18 @@ def _deliver_lead_push(cfg: TowerConfig, board: Board, task, text: str) -> bool:
         return False
 
 
+def stage_rework(board: Board, task, reasons: str, staged: list) -> None:
+    """Record the rework verdict + reasons WITHOUT dispatching (lock stays short).
+
+    The caller dispatches the staged task after releasing `tower_lock`, so the
+    minutes-long adapter turn never runs under the board lock.
+    """
+    task.brief = (task.brief + "\n\n## Rework: the previous attempt failed verification\n"
+                  + reasons)[:8000]
+    board.save(task)
+    staged.append(task)
+
+
 def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .converse import relay_report_messages
     from .dispatch import dispatch
@@ -233,13 +245,17 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     if not task.mode:
         task.mode = "async"
         board.save(task)
+    # adapter turn runs OUTSIDE the tower lock (a dsh turn can take minutes —
+    # holding the lock here starved every other dispatch: Q-00002, 2026-11-09)
+    dispatch(cfg, board, task)
+    relay_report_messages(cfg, board, task)
+    staged = []
     with tower_lock(cfg):
-        dispatch(cfg, board, task)
-        relay_report_messages(cfg, board, task)
         task = board.load(task.id)
         result = triage_task(
             cfg, board, task,
-            dispatch_fn=lambda b, t, reasons: redispatch_with_reasons(cfg, b, t, reasons),
+            # stage the rework under the lock; the redispatch runs outside it
+            dispatch_fn=lambda b, t, reasons: stage_rework(b, t, reasons, staged),
         )
         task = board.load(task.id)
         if task.status == "accepted":
@@ -249,6 +265,9 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         board.notify(notice)
         task.notified = _deliver_lead_push(cfg, board, task, notice["summary"])
         board.save(task)
+    if staged:
+        dispatch(cfg, board, staged[0])
+        relay_report_messages(cfg, board, staged[0])
     board.event("settled", task=task.id, status=task.status,
                 triage=result.get("outcome", ""))
     board.event("notified", task=task.id, inbox=True, lead_session=task.notified)
@@ -265,7 +284,7 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     """
     from .converse import relay_report_messages
     from .dispatch import dispatch
-    from .triage import redispatch_with_reasons, triage_task
+    from .triage import triage_task
     from .verify import verify_report
 
     origin_id = job["task"]
@@ -342,9 +361,10 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     with tower_lock(cfg):
         origin = board.load(origin_id)
         verdict = "pass"
+        staged_rework = []
         if proved:
             verdict = "rework"
-            redispatch_with_reasons(cfg, board, origin, "; ".join(proved)[:400])
+            stage_rework(board, origin, "; ".join(proved)[:400], staged_rework)
         elif rejected and not proved:
             # nothing survived the audit: treat the report as noise and let the
             # mechanical verifier decide the origin's fate
@@ -355,11 +375,11 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
                                  verification=verify_report(cfg, origin).as_dict())
             else:
                 verdict = "rework"
-                redispatch_with_reasons(cfg, board, origin,
-                                        "review passed but verification regressed")
+                stage_rework(board, origin, "review passed but verification regressed",
+                             staged_rework)
         elif not verify_report(cfg, origin).ok:
             verdict = "rework"
-            redispatch_with_reasons(cfg, board, origin, "review pass: verification regressed")
+            stage_rework(board, origin, "review pass: verification regressed", staged_rework)
         else:
             board.transition(origin, STATUS_ACCEPTED,
                              note=f"adversarial review passed ({review_task.id})",
@@ -382,6 +402,9 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         origin.notified = _deliver_lead_push(cfg, board, origin, notice["summary"])
         origin.settled_at = now_ts()
         board.save(origin)
+    if staged_rework:
+        dispatch(cfg, board, staged_rework[0])
+        relay_report_messages(cfg, board, staged_rework[0])
     board.event("adversarial_verdict", origin=origin_id, review=review_task.id,
                 verdict=verdict, findings=len(findings), proved=len(proved),
                 dropped=len(dropped), out_of_scope=len(out_of_scope),
@@ -588,6 +611,9 @@ def run_worker(cfg: TowerConfig, once: bool = False) -> int:
 
 
 def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
+    # a detached worker can outlive a tower.toml edit: re-read the roles/config
+    # for every job, so "unknown role 'auditor'" never happens again
+    cfg = reload_config(cfg)
     board = Board(cfg)
     try:
         if job.get("kind") == "dispatch":

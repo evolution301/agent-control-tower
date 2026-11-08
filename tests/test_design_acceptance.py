@@ -1,6 +1,7 @@
 """Design-doc acceptance (plugin-async-relay-design.md): fields, pool, locks, relay."""
 
 import json
+import pathlib
 import threading
 import time
 
@@ -61,8 +62,15 @@ def test_notify_lead_session_pushes_one_message(tower, monkeypatch, capsys):
 
     monkeypatch.setattr("control_tower.adapters.mock.MockAdapter.deliver_to_session",
                         Capture().deliver_to_session)
-    tower.notify_kind = "lead_session"
-    tower.notify_session = "session-lead"
+    # file-driven config: the worker re-reads tower.json per job, so runtime
+    # mutations on the cfg object would be silently discarded
+    cfg_path = pathlib.Path(tower.config_path)
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["notify"] = {"kind": "lead_session", "session": "session-lead"}
+    cfg_path.write_text(json.dumps(data), encoding="utf-8")
+    from control_tower.config import reload_config
+
+    tower = reload_config(tower)
     assert cli_dispatch(tower, capsys, "push me") == 0
     assert worker.run_worker(tower, once=True) == 0
     board = Board(tower)

@@ -5,6 +5,51 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [Unreleased]
+
+### Fixed — the four ways a dispatch used to fail silently (found on a live tower)
+
+All four cost real debugging time in production: the tower reported success or
+nothing at all while the work had never started.
+
+- **`tower doctor` never touched the network.** It validated the config's shape
+  only, so it printed `problems: none` while `base_url` pointed at a closed port
+  and `secret` held a stale value. `doctor` now runs a `session/list` preflight
+  per distinct dsh endpoint and reports `unreachable or unauthorized`, plus any
+  pinned session id that is not on that host. (`cli._dsh_preflight`)
+- **A session with no model selected accepted the prompt and never started a
+  turn.** The adapter then waited the full `wait_s` (900s) and returned a bare
+  timeout. `DshAdapter` now reads `session/projections` after queueing and fails
+  in `turn_start_s` (default 45s) with "this session has no model" when the host
+  explicitly projects an empty `modelSelection`. A host that does not project it
+  at all is left alone (`model_known` guards the check). The timeout message now
+  carries `turns/llmMs/model` so the next reader sees the state. (`adapters/dsh.py`)
+- **`session_pressure` always returned `None`.** It called
+  `session/projections` with `{"sessionId": …}` but the method requires
+  `{"request": {"sessionId": …}}` (the neighbouring `session/list` really does
+  want `_request`), so every call came back as an argument error. Context
+  pressure in `tower ctx` works again, and it now accepts the host's dict shape
+  (`{pressureTokens, contextWindow}`) as well as a bare number.
+- **`verify_commands` ran with `cwd = workspace`.** A relative
+  `node scripts/lint.mjs` therefore raised `MODULE_NOT_FOUND` and *every* accept
+  failed. New `verify_cwd` config key (relative values resolve against the
+  workspace), and a 127 / "not found" exit is reported as *"command is not
+  runnable from <dir> — likely a relative path"* instead of a generic failure.
+  Verify subprocesses now decode as UTF-8 with `errors="replace"`; on a GBK
+  Windows console a check that printed non-ASCII text crashed the reader thread.
+- **Reported files were resolved against the workspace only.** A deliverable
+  written into the project root was reported missing, while a wrong-root write
+  *into* the workspace passed. Files now resolve against `workspace`,
+  `project_root` (new key) and `verify_cwd`, and the failure message lists the
+  roots that were checked.
+
+### Added
+
+- `project_root` and `verify_cwd` config keys: a tower often coordinates a
+  project that lives in a sibling checkout.
+- `DshAdapter.session_state()` — turns/llmMs/model for one session.
+- `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
+
 ## [0.10.3] - 2026-11-09
 
 ### Changed — auto-compaction is a native knob, not a plugin (context-guard cancelled)

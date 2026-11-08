@@ -67,6 +67,8 @@ class CliAdapter:
                 input=req.prompt if not self.shell else None,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=req.timeout_s,
             )
         except subprocess.TimeoutExpired as exc:

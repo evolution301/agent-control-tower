@@ -28,6 +28,34 @@ class Verification:
         return {"ok": self.ok, "problems": self.problems, "ran": self.ran}
 
 
+def _expand_braces(text: str, limit: int = 64) -> list[str]:
+    """Expand `{a,b}` groups the way a shell would, for file-existence checks.
+
+    Only the first group is expanded per pass; unexpanded braces (or nonsense
+    nesting) fall back to the literal string, so this can never make a real
+    missing file look present.
+    """
+    out = [text]
+    for _ in range(4):
+        grown: list[str] = []
+        changed = False
+        for item in out:
+            open_at = item.find("{")
+            close_at = item.find("}", open_at + 1) if open_at >= 0 else -1
+            if open_at < 0 or close_at < 0:
+                grown.append(item)
+                continue
+            changed = True
+            head, body, tail = item[:open_at], item[open_at + 1:close_at], item[close_at + 1:]
+            grown.extend(head + option + tail for option in body.split(","))
+            if len(grown) > limit:
+                return [text]
+        out = grown
+        if not changed:
+            break
+    return out
+
+
 def verify_report(cfg: TowerConfig, task: Task) -> Verification:
     problems: list[str] = []
     report = task.report or {}
@@ -70,30 +98,78 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
     if report.get("checks") and len(weak) == len(report.get("checks", [])):
         problems.append("every '## Checks' line lacks a '→ result' — ask for real output")
 
-    # Files must exist inside the workspace.
+    # Files must exist inside the workspace or the project root. Roles routinely
+    # write project deliverables into a sibling directory (the tower workspace is
+    # the coordination root, not always the code root), so checking only the
+    # workspace both rejects real files and lets a wrong-root write pass.
+    roots = [cfg.workspace]
+    project_root = getattr(cfg, "project_root", None)
+    if project_root and Path(project_root) != Path(cfg.workspace):
+        roots.append(Path(project_root))
+    # If the checks run in the project, a report about that tree is about that
+    # directory — resolve those paths there too.
+    raw_verify_cwd = str(getattr(cfg, "verify_cwd", "") or "").strip()
+    if raw_verify_cwd:
+        extra = Path(raw_verify_cwd).expanduser()
+        if not extra.is_absolute():
+            extra = (Path(cfg.workspace) / extra).resolve()
+        if extra not in roots:
+            roots.append(extra)
     missing = []
     for f in report.get("files", []):
         candidate = f.split(" — ")[0].split(" - ")[0].strip().strip("`")
         if not candidate:
             continue
-        path = Path(candidate)
-        if not path.is_absolute():
-            path = cfg.workspace / candidate
-        if not path.exists():
+        # A report often summarises a set with a shell-style brace pattern
+        # (`shots/{home,faq}-{1440,390}.png`). Every expansion must exist: a
+        # pattern that names files the role did not produce is still a false
+        # claim, and an unexpandable string falls back to the literal path.
+        expanded = _expand_braces(candidate)
+        found = True
+        for item in expanded:
+            path = Path(item)
+            if path.is_absolute():
+                if not path.exists():
+                    found = False
+                    break
+            elif not any((root / item).exists() for root in roots):
+                found = False
+                break
+        if not found:
             missing.append(candidate)
     if missing:
-        problems.append("reported files do not exist: " + ", ".join(missing[:5]))
+        problems.append("reported files do not exist (checked: "
+                        + ", ".join(str(r) for r in roots) + "): " + ", ".join(missing[:5]))
 
     ran: list[dict[str, Any]] = []
     commands = list(getattr(cfg, "verify_commands", []) or [])
+    # cwd for verify commands: `verify_cwd` when set (relative paths resolve
+    # against the workspace), else the workspace. A relative script path plus the
+    # workspace cwd is the classic "every accept fails with MODULE_NOT_FOUND".
+    raw_cwd = str(getattr(cfg, "verify_cwd", "") or "").strip()
+    if raw_cwd:
+        verify_dir = Path(raw_cwd).expanduser()
+        if not verify_dir.is_absolute():
+            verify_dir = (Path(cfg.workspace) / verify_dir).resolve()
+    else:
+        verify_dir = Path(cfg.workspace)
     for cmd in commands:
         try:
             proc = subprocess.run(
-                cmd, shell=True, cwd=str(cfg.workspace), capture_output=True, text=True, timeout=900
+                cmd, shell=True, cwd=str(verify_dir), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=900,
             )
-            ran.append({"command": cmd, "exit_code": proc.returncode, "tail": (proc.stdout or proc.stderr or "")[-800:]})
+            tail = (proc.stdout or proc.stderr or "")[-800:]
+            ran.append({"command": cmd, "cwd": str(verify_dir), "exit_code": proc.returncode, "tail": tail})
             if proc.returncode != 0:
-                problems.append(f"verify command failed ({proc.returncode}): {cmd}")
+                lowered = tail.lower()
+                if proc.returncode == 127 or "not found" in lowered or "not recognized" in lowered:
+                    problems.append(
+                        f"verify command is not runnable from {verify_dir} ({proc.returncode}): {cmd} "
+                        "— likely a relative path; use an absolute one"
+                    )
+                else:
+                    problems.append(f"verify command failed ({proc.returncode}): {cmd}")
         except Exception as exc:  # pragma: no cover
             ran.append({"command": cmd, "error": f"{type(exc).__name__}: {exc}"})
             problems.append(f"verify command error: {cmd}")
