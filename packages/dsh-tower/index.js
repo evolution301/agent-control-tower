@@ -32,7 +32,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.8.3'
+export const VERSION = '0.9.0'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -509,6 +509,7 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(reworkTool(cfg)),
     ctx.tools.register(statusTool(cfg)),
     ctx.tools.register(sayTool(cfg)),
+    ctx.tools.register(relayTool(cfg)),
     ctx.tools.register(huddleTool(cfg)),
     ctx.tools.register(superviseTool(cfg)),
     ctx.tools.register(skillSaveTool(cfg)),
@@ -532,13 +533,14 @@ export function dispatchTool(cfg) {
   return tool({
     name: 'tower_dispatch',
     description:
-      'Dispatch work to a role agent through the control tower. Creates a task, renders the report contract, runs the role adapter and returns the role\'s report (summary/files/checks/open issues) plus the task id. Use this instead of pasting a brief by hand when the project uses agent-control-tower.',
+      'Dispatch work to a role agent through the control tower. Creates a task, renders the report contract, runs the role adapter and returns the role\'s report (summary/files/checks/open issues) plus the task id. Use this instead of pasting a brief by hand when the project uses agent-control-tower. With async:true the call returns the task id in under a second; a background tower worker runs the adapter and the settlement (auto-triage incl. accept/rework) lands in `tower inbox`.',
     parameters: {
       role: { type: 'string', required: true, description: 'Role name from tower.toml (e.g. backend, frontend, qa).' },
       brief: { type: 'string', required: true, description: 'The task brief. Be explicit about deliverable and acceptance.' },
       batch: { type: 'string', description: 'Optional batch label to group related tasks.' },
       due: { type: 'string', description: 'Deadline: 90m / 2h / 3d or "2026-11-09 18:00". An overdue task with no report is chased by tower_supervise.' },
       restate: { type: 'boolean', description: 'Restatement gate: the role first restates the brief in its own words; no work runs until tower_restate_ok confirms it.' },
+      async: { type: 'boolean', description: 'Queue instead of blocking: returns the task id immediately; read tower_inbox for the settlement. dispatch_mode in tower.toml can set this per tower/role.' },
     },
     output: {
       schema: {
@@ -558,12 +560,71 @@ export function dispatchTool(cfg) {
       if (args.batch) argv.push('--batch', String(args.batch))
       if (args.due) argv.push('--due', String(args.due))
       if (args.restate) argv.push('--restate')
+      if (args.async) argv.push('--async')
       const { data } = await runTower(cfg, argv)
+      if (data?.queued) {
+        return {
+          ok: true,
+          task: data,
+          text: `Queued ${data.id} (job ${data.job}) — returns immediately. The worker runs `
+            + `the adapter; the settlement (auto-triage incl. accept/rework) lands in `
+            + `tower_inbox as an async_settled notice.`,
+        }
+      }
       const text = summarizeDispatch(data)
       return { ok: true, task: data?.task ?? data, text }
     },
     presentCall(args) {
       return { card: 'command', title: `tower dispatch ${args.role ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_relay`: deliver a message to ANY DSH session; receipts come back async. */
+export function relayTool(cfg) {
+  return tool({
+    name: 'tower_relay',
+    description:
+      'Deliver a message to any DSH session — not only tower roles. Target is a session id, a unique session-title substring, or the alias \'tower\' (this tower\'s own inbox). Fire-and-forget: it returns the relay id immediately. With await_receipt:true a worker watches for a reply carrying that id (the peer answers with tower relay --to tower --reply <id> -m "...") and the receipt/timeout lands in tower_inbox.',
+    parameters: {
+      to: { type: 'string', required: true, description: 'Target: a DSH session id, a unique session-title substring, or \'tower\' for this tower\'s inbox.' },
+      message: { type: 'string', required: true, description: 'The message text.' },
+      from: { type: 'string', description: 'Label the sender (default: the tower name).' },
+      reply: { type: 'string', description: 'Mark this message as the answer to relay <id>.' },
+      await_receipt: { type: 'boolean', description: 'Watch for a reply with the relay id; receipt/timeout lands in tower_inbox.' },
+      timeout_s: { type: 'number', description: 'Receipt watch budget in seconds (default 300).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          relay: { type: 'string' },
+          text: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const argv = ['relay', String(args.to ?? ''), '-m', String(args.message ?? ''), '--json']
+      if (args.from) argv.push('--from', String(args.from))
+      if (args.reply) argv.push('--reply', String(args.reply))
+      if (args.await_receipt) argv.push('--await-receipt')
+      if (args.timeout_s) argv.push('--timeout-s', String(Math.round(Number(args.timeout_s))))
+      const { data } = await runTower(cfg, argv)
+      const where = data.resolution === 'tower-inbox'
+        ? 'the tower inbox'
+        : `session ${data.session} (${data.resolution})`
+      const text = data.delivered
+        ? `Relay ${data.id} delivered to ${where}.`
+          + (data.watch ? ` Watching ${data.timeout_s}s for a reply; it lands in tower_inbox.` : '')
+        : `Relay ${data.id} NOT delivered: ${data.detail}`
+      return { ok: !!data.delivered, relay: data.id, text }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower relay ${args.to ?? ''}`, kind: 'other' }
     },
   })
 }
