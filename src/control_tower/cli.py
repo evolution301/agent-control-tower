@@ -1486,7 +1486,27 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+
+
+def _force_utf8_stdio() -> None:
+    """Any Windows code page: piped output is UTF-8, always.
+
+    The plugin channel spawns `tower` and decodes UTF-8; under cp936 the locale
+    encoder mangled every Chinese brief into U+FFFD (2026-11-09 field report).
+    Interactive consoles keep their native wrapper (isatty), so GUI display is
+    untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None and not stream.isatty() and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+
+    _force_utf8_stdio()
     # A GBK console cannot encode every charter line; degrade instead of crashing.
     for stream in (sys.stdout, sys.stderr):
         try:

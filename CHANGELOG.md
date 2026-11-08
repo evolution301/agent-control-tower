@@ -50,6 +50,25 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.9] - 2026-11-09
+
+### Fixed — `tower_*` 中文乱码（plugin channel forced cp936 → UTF-8 decode）
+
+John's field report: every `tower_status` / `tower_inbox` / `tower_roles` call
+from the plugin returned Chinese briefs as U+FFFD mush (`G:\新网站项目` →
+`G:\??????`), because the spawned `tower` CLI encoded stdout with the Windows
+code page (cp936) while the plugin decodes UTF-8.
+
+- **CLI entry guard** (`_force_utf8_stdio`): piped stdout/stderr are
+  reconfigured to UTF-8 on every run — `tower.exe`, `python -m`, the plugin
+  channel, scripts; interactive consoles (isatty) keep their native wrapper, so
+  GUI display is untouched. Even `PYTHONIOENCODING=cp936` cannot change piped
+  bytes any more.
+- **Plugin spawn env**: every CLI/panel child process now runs with
+  `PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8` (belt over the braces).
+- Regression tests: piped CLI output under a forced cp936 environment decodes as
+  UTF-8 with the Chinese brief intact and no U+FFFD; tty streams stay native.
+
 ## [0.10.8] - 2026-11-09
 
 ### Added — charter & standing rules ride every dispatch (John's standing-rules request)

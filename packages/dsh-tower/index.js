@@ -145,7 +145,8 @@ function runTower(settings, args) {
     execFile(
       file,
       argv,
-      { cwd: settings.workspace, timeout: settings.timeoutMs, maxBuffer: 20 * 1024 * 1024 },
+      { cwd: settings.workspace, timeout: settings.timeoutMs, maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },uffer: 20 * 1024 * 1024 },
       (error, stdout, stderr) => {
         const text = (stdout ?? '').trim()
         const errText = (stderr ?? '').trim()
@@ -424,6 +425,7 @@ export function killPanel(child, deps = {}) {
 function defaultSpawnPanel(cfg) {
   const child = spawn(cfg.towerBin, ['panel', '--port', String(cfg.panelPort)], {
     cwd: cfg.workspace,
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
     windowsHide: true,
     detached: true,
     stdio: 'ignore',
