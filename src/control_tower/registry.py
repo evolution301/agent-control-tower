@@ -310,7 +310,7 @@ def summarise(entry: dict[str, Any]) -> dict[str, Any]:
 
     directory = Path(entry["path"])
     row = {"name": entry["name"], "path": entry["path"], "color": entry["color"],
-           "ok": False, "tasks": 0, "open": 0, "needs_you": 0, "overdue": 0,
+           "ok": False, "tasks": 0, "open": 0, "needs_you": 0, "lead": 0, "overdue": 0,
            "bots": 0, "working": 0, "error": ""}
     try:
         cfg = load_config(directory)
@@ -327,6 +327,7 @@ def summarise(entry: dict[str, Any]) -> dict[str, Any]:
         "accepted": sum(1 for t in tasks if t.status == "accepted"),
         "open": sum(1 for t in tasks if t.status in OPEN_STATES),
         "needs_you": len(board.needs_person()),
+        "lead": len(board.needs_lead()),
         "overdue": sum(1 for t in tasks if t.overdue),
         "working": sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
     })
@@ -349,6 +350,7 @@ def overview(projects: list[dict[str, Any]] | None = None) -> dict[str, Any]:
             "accepted": sum(r.get("accepted", 0) for r in rows),
             "open": sum(r["open"] for r in rows),
             "needs_you": sum(r["needs_you"] for r in rows),
+            "lead": sum(r.get("lead", 0) for r in rows),
             "overdue": sum(r["overdue"] for r in rows),
             "working": sum(r["working"] for r in rows),
             "broken": sum(1 for r in rows if not r["ok"]),
