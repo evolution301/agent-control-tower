@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.8.2] - 2026-11-08
+
+### Added
+
+- **Repair visits.** Pressing 维修/Repair sends the Operations robot on a real walk: to the lift, up
+  (or down) to the stuck floor, to the broken bot's side — sparks fly for three seconds — then home
+  again. The retry itself already ran server-side; the visit is the visible half.
+- **Reactions.** Approve makes the bot hop with a heart, reply pops a "!" bubble, skip earns a shrug.
+  Presentation only; the ledger carries the real event.
+- **Cost panel depth.** An end-of-day projection (`projected_usd` = spend ÷ fraction-of-day) and the
+  per-floor split (top three by spend).
+- **Completed-today rows expand** to show the original instruction.
+- **Activity log scope**: 全部/本层 (all / this floor only).
+- **Agent detail card gains a 💬 对话 button** that opens the chat drawer addressed to that agent.
+- **`account` in `tower.toml`** is shown on the top bar (empty → "local operator"), so the brief's
+  X.com label is a config value, not a hardcoded string.
+
 ## [0.8.1] - 2026-11-08
 
 ### Added

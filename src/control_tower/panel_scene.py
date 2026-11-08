@@ -130,7 +130,7 @@ PAGE = r"""<!doctype html>
 
 <div id="top" class="glass">
   <span class="brand">__NAME__</span>
-  <span class="acct" data-i18n="operator">本机操作员</span>
+  <span class="acct" id="acct" data-i18n="operator">本机操作员</span>
   <span class="chip" id="clock">--:--</span>
   <span class="chip" id="fps">-- fps</span>
   <span class="chip" id="err"></span>
@@ -161,8 +161,15 @@ PAGE = r"""<!doctype html>
     <div class="kv"><span data-i18n="today">今日</span><b id="spend">$0.00</b></div>
     <div class="bar"><i id="spendBar" style="width:0%"></i></div>
     <div class="kv"><span id="budgetNote"></span><span id="topBurner"></span></div>
+    <div class="kv"><span data-i18n="projected">当日结束预估</span><b id="proj">$0.00</b></div>
+    <div id="byFloor"></div>
   </div>
-  <div class="block"><h3 data-i18n="activity">动态日志</h3><div id="log"></div></div>
+  <div class="block">
+    <h3><span data-i18n="activity">动态日志</span>
+      <span style="float:right;display:flex;gap:4px;text-transform:none;letter-spacing:0">
+        <button class="btn" id="logAll" data-i18n="log_all" style="padding:1px 7px">全部</button>
+        <button class="btn" id="logFloor" data-i18n="log_floor" style="padding:1px 7px">本层</button>
+      </span></h3><div id="log"></div></div>
   <div class="block">
     <h3 data-i18n="ask">提问</h3>
     <div id="assist">
@@ -227,6 +234,7 @@ const I18N = {
     hint:"点击楼层聚焦 · 滚轮缩放 · 拖拽平移 · 双击适配 · 1–6 楼层 · 0 整栋 · W 待处理 · S 故障 · A/R/X 批准/回复/跳过 · F 维修 · C 对话 · T 主题",
     prompt_reply:"回复 ",
     st_working:"工作中", st_waiting:"待你处理", st_stuck:"任务卡住", st_resting:"休息中",
+    chat_with:"对话", projected:"当日结束预估", by_floor:"按楼层", log_all:"全部", log_floor:"本层",
   },
   en: {
     working:"Working", waiting:"Waiting", stuck:"Stuck", resting:"Resting", spend:"Spend",
@@ -249,6 +257,7 @@ const I18N = {
     hint:"click a floor to focus · wheel to zoom · drag to pan · double-click to fit · 1–6 floors · 0 building · W next waiting · S next stuck · A/R/X approve, reply, skip · F repair · C chat · T theme",
     prompt_reply:"Reply to ",
     st_working:"working", st_waiting:"needs you", st_stuck:"stuck", st_resting:"resting",
+    chat_with:"Chat", projected:"EOD estimate", by_floor:"by floor", log_all:"All", log_floor:"This floor",
   },
 };
 const LANG_KEY = "tower-scene-lang";
@@ -265,6 +274,9 @@ let DATA = null;
 let selectedFloor = null, selectedAgent = null, hoverFloor = null, filter = null, query = "";
 let toastTimer = null;
 const askedTasks = new Map();   // task id -> {done}
+const effects = [];   // {botId,type,t0,dur}: approve hop, heart, shrug, reply bubble
+const rides = [];     // repair visits: the ops robot rides the lift to the stuck floor
+let logScope = "all";
 const chatLog = [];
 
 document.documentElement.setAttribute("data-theme", QS.get("theme") || localStorage.getItem("tower-scene-theme") || "dark");
@@ -323,6 +335,85 @@ function buildScene() {
       act: null,
     });
   });
+}
+
+// repair visit: the ops robot walks to the lift, rides it, sparks for a bit,
+// and comes back — purely decorative; the real retry already ran server-side.
+function startRide(targetId) {
+  const opsEntry = DATA.agents.find((a) => a.dept === "Operations");
+  const opsId = opsEntry ? opsEntry.id : DATA.agents[0].id;
+  const bot = scene.bots.find((b) => b.id === opsId);
+  const target = scene.bots.find((b) => b.id === targetId);
+  if (!bot || !target || bot.ride) return;
+  bot.ride = true;
+  bot.act = null;
+  rides.push({
+    bot, targetId,
+    from: { x: bot.x, y: bot.y },
+    fromFloor: Math.round(bot.floor),
+    toFloor: Math.round(target.floor),
+    t0: performance.now(),
+    walk: 1500, ride: 1600, work: 3000,
+    phase: "walk1",
+    saved: { x: bot.x, y: bot.y, tx: bot.tx, ty: bot.ty, floor: bot.floor },
+  });
+}
+
+function updateRides() {
+  const nowMs = performance.now();
+  for (let i = rides.length - 1; i >= 0; i -= 1) {
+    const r = rides[i];
+    const bot = r.bot;
+    const target = scene.bots.find((b) => b.id === r.targetId);
+    const LX = 4.16, LY = 4.16;
+    const segs = [
+      ["walk1", r.walk], ["ride", r.ride], ["walk2", r.walk], ["work", r.work],
+      ["back2", r.walk], ["rideBack", r.ride], ["home", r.walk],
+    ];
+    let t = nowMs - r.t0;
+    let seg = null, k = 0;
+    for (const [name, dur] of segs) {
+      if (t < dur) { seg = name; k = t / dur; break; }
+      t -= dur;
+    }
+    if (!seg) {
+      Object.assign(bot, r.saved);
+      bot.ride = null;
+      bot.tx = bot.x; bot.ty = bot.y;
+      bot.nextMove = performance.now() / 1000 + 20;
+      rides.splice(i, 1);
+      continue;
+    }
+    r.phase = seg;
+    const sideX = target ? target.x + 0.45 : LX;
+    const sideY = target ? target.y + 0.2 : LY;
+    if (seg === "walk1") {
+      bot.x = r.from.x + (LX - r.from.x) * k;
+      bot.y = r.from.y + (LY - r.from.y) * k;
+      bot.floor = r.fromFloor;
+    } else if (seg === "ride") {
+      bot.x = LX; bot.y = LY;
+      bot.floor = r.fromFloor + (r.toFloor - r.fromFloor) * k;
+    } else if (seg === "walk2") {
+      bot.floor = r.toFloor;
+      bot.x = LX + (sideX - LX) * k;
+      bot.y = LY + (sideY - LY) * k;
+    } else if (seg === "work") {
+      bot.floor = r.toFloor;
+      bot.x = sideX; bot.y = sideY;
+    } else if (seg === "back2") {
+      bot.floor = r.toFloor;
+      bot.x = sideX + (LX - sideX) * k;
+      bot.y = sideY + (LY - sideY) * k;
+    } else if (seg === "rideBack") {
+      bot.x = LX; bot.y = LY;
+      bot.floor = r.toFloor + (r.fromFloor - r.toFloor) * k;
+    } else if (seg === "home") {
+      bot.floor = r.fromFloor;
+      bot.x = LX + (r.from.x - LX) * k;
+      bot.y = LY + (r.from.y - LY) * k;
+    }
+  }
 }
 
 // idle activities: coffee, watering, chatting in pairs, bean bag — presentation only
@@ -404,6 +495,22 @@ function drawRoom() {
 
   const sorted = [...scene.bots].sort((a, b) => (a.floor - b.floor) || (a.x + a.y) - (b.x + b.y));
   sorted.forEach((bot) => drawBot(bot, night));
+
+  // repair visit sparks
+  rides.forEach((r) => {
+    if (r.phase !== "work") return;
+    const tb = scene.bots.find((b) => b.id === r.targetId);
+    if (!tb) return;
+    const sp = iso(tb.x + 0.3, tb.y + 0.25, tb.floor);
+    for (let i = 0; i < 8; i += 1) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = Math.random() * 14;
+      ctx.globalAlpha = 0.4 + Math.random() * 0.6;
+      ctx.fillStyle = i % 2 ? "#fbbf24" : "#f87171";
+      ctx.fillRect(sp.x + Math.cos(ang) * dist, sp.y - 18 - Math.random() * 18, 2.2, 2.2);
+    }
+    ctx.globalAlpha = 1;
+  });
   ctx.restore();
 }
 
@@ -582,6 +689,8 @@ function drawBot(bot, night) {
   const now = performance.now() / 1000;
   const lounge = bot.act === "lounge";
   const bob = Math.sin(now * 2 + bot.phase) * 1.5;
+  const fx = effects.find((e) => e.botId === bot.id && performance.now() - e.t0 < e.dur);
+  const hop = fx && fx.type === "hop" ? Math.abs(Math.sin(now * 9)) * 7 : 0;
   const p = iso(bot.x, bot.y, bot.floor);
   ctx.save();
   ctx.globalAlpha = cam.floor !== null && bot.floor > cam.floor ? 0.22 : 1;
@@ -651,7 +760,7 @@ function drawBot(bot, night) {
     }
   }
 
-  const y = p.y - 26 + bob + (lounge ? 5 : 0);
+  const y = p.y - 26 + bob + (lounge ? 5 : 0) - hop;
   ctx.fillStyle = "#0f172a";
   ctx.fillRect(p.x - 6, y + (lounge ? 11 : 15), 4, lounge ? 4 : 7);
   ctx.fillRect(p.x + 2, y + (lounge ? 11 : 15), 4, lounge ? 4 : 7);
@@ -680,6 +789,28 @@ function drawBot(bot, night) {
     ctx.beginPath(); ctx.arc(p.x + 15, y - 22, 6, 0, 7); ctx.fill();
     ctx.fillStyle = "#0b1220"; ctx.font = `700 8px ${MONO}`; ctx.textAlign = "center";
     ctx.fillText("?", p.x + 15, y - 19.2);
+  }
+  // action reactions (presentation only)
+  if (fx && fx.type === "heart") {
+    ctx.fillStyle = "#f87171";
+    const hx = p.x, hy = y - 34 - hop;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy + 7);
+    ctx.bezierCurveTo(hx - 8, hy - 1, hx - 4, hy - 8, hx, hy - 3);
+    ctx.bezierCurveTo(hx + 4, hy - 8, hx + 8, hy - 1, hx, hy + 7);
+    ctx.fill();
+  }
+  if (fx && fx.type === "bubble") {
+    ctx.fillStyle = "rgba(59,130,246,.95)";
+    ctx.beginPath(); ctx.arc(p.x + 15, y - 24, 6, 0, 7); ctx.fill();
+    ctx.fillStyle = "#0b1220"; ctx.font = `700 8px ${MONO}`; ctx.textAlign = "center";
+    ctx.fillText("!", p.x + 15, y - 21.2);
+  }
+  if (fx && fx.type === "shrug") {
+    ctx.fillStyle = "rgba(148,163,184,.92)";
+    ctx.beginPath(); ctx.roundRect(p.x - 20, y - 36, 40, 12, 4); ctx.fill();
+    ctx.fillStyle = "#0b1220"; ctx.font = `600 7px ${MONO}`; ctx.textAlign = "center";
+    ctx.fillText("¯\\_(ツ)_/¯", p.x, y - 27.5);
   }
   ctx.restore();
 }
@@ -727,6 +858,15 @@ document.querySelectorAll("[data-filter]").forEach((chip) => {
     renderPanels();
   };
 });
+
+function setLogScope(scope) {
+  logScope = scope;
+  $("logAll").style.borderColor = scope === "all" ? "var(--accent)" : "var(--line2)";
+  $("logFloor").style.borderColor = scope === "floor" ? "var(--accent)" : "var(--line2)";
+  renderPanels();
+}
+$("logAll").onclick = () => setLogScope("all");
+$("logFloor").onclick = () => setLogScope("floor");
 
 // ---------- chat drawer ----------
 function openChat(open) { $("chat").classList.toggle("open", open); }
@@ -797,6 +937,7 @@ function renderPanels() {
   $("k-stuck").textContent = DATA.kpis.stuck;
   $("k-resting").textContent = DATA.kpis.resting;
   $("k-spend").innerHTML = `<span>${esc(T("spend"))}</span> <b>$${DATA.cost.est_usd.toFixed(2)}</b>`;
+  $("acct").textContent = DATA.account || T("operator");
 
   $("floors").innerHTML = DATA.floors.map((f) => `
     <div class="floor ${selectedFloor === f.level ? "sel" : ""}" data-level="${f.level}">
@@ -831,8 +972,13 @@ function renderPanels() {
   const comp = DATA.completed_today || [];
   $("compCount").textContent = `(${comp.length})`;
   $("completed").innerHTML = comp.slice(0, 6).map((c) => `
-    <div class="kv done"><span>${esc(c.agent)} · ${esc(c.task)}</span>
-      <span>${c.cost.runs} · $${c.cost.est_usd.toFixed(2)}</span></div>`).join("")
+    <details class="card done" style="padding:6px 8px;margin-bottom:6px">
+      <summary style="cursor:pointer;font:11.5px var(--mono);display:flex;justify-content:space-between;gap:8px">
+        <span>${esc(c.agent)} · ${esc(c.task)}</span>
+        <span style="color:var(--dim)">${c.cost.runs} · $${c.cost.est_usd.toFixed(2)}</span>
+      </summary>
+      <div style="font-size:12px;color:var(--dim);margin-top:5px;line-height:1.45">${esc(c.brief)}</div>
+    </details>`).join("")
     || `<div class="kv"><span>${esc(T("nothing_completed"))}</span></div>`;
 
   const zh = LANG === "zh";
@@ -847,6 +993,7 @@ function renderPanels() {
       <div class="kv"><span>${esc(T("status"))}</span><b style="color:${COLOURS[a.status]}">${esc(T("st_" + a.status))}</b></div>
       <div class="kv"><span>${esc(T("tasks"))}</span><b>${a.tasks}</b></div>
       <div class="kv"><span>${esc(T("runs_est"))}</span><b>${a.cost.runs} · $${a.cost.est_usd.toFixed(2)}</b></div>
+      <div class="acts" style="margin-top:6px"><button class="btn" data-chat="${esc(a.id)}">💬 ${esc(T("chat_with"))}</button></div>
       ${t ? `<div class="card"><div class="who">${esc(T("current"))} · ${esc(t.id)}</div>
         <div class="why">${esc(t.brief)}</div>
         ${t.steps.map((s) => `<div class="kv"><span>${s.done ? "✓" : "•"}</span><span>${esc(s.label)}</span></div>`).join("")}
@@ -871,8 +1018,16 @@ function renderPanels() {
   $("spendBar").style.width = Math.min(100, (DATA.cost.est_usd / BUDGET) * 100) + "%";
   $("budgetNote").textContent = `${T("budget")} $${BUDGET} · ${DATA.cost.runs} runs`;
   $("topBurner").textContent = DATA.cost.top_burner ? `${T("top")} ${DATA.cost.top_burner.agent}` : "";
+  $("proj").textContent = "$" + (DATA.cost.projected_usd || 0).toFixed(2);
+  const floorRows = Object.entries(DATA.cost.by_floor || {})
+    .map(([id, v]) => ({ id, ...v }))
+    .sort((a, b) => b.est_usd - a.est_usd).slice(0, 3);
+  $("byFloor").innerHTML = floorRows.map((f) => `
+    <div class="kv"><span>${esc(f.id)}</span><span>${f.runs} · $${f.est_usd.toFixed(2)}</span></div>`).join("");
 
-  $("log").innerHTML = (DATA.log || []).slice(0, 24).map((e) => `
+  const logSource = (DATA.log || [])
+    .filter((e) => logScope === "all" || !selectedFloor || e.floor === selectedFloor);
+  $("log").innerHTML = logSource.slice(0, 24).map((e) => `
     <div>${esc(e.ts)} <b>${esc(e.event)}</b> ${esc(e.task)} ${esc(e.role)}</div>`).join("")
     || `<div>${esc(T("no_events"))}</div>`;
 
@@ -881,6 +1036,14 @@ function renderPanels() {
   });
   $("ctx").querySelectorAll("[data-agent]").forEach((el) => {
     el.onclick = () => { selectedAgent = el.dataset.agent; renderPanels(); };
+  });
+
+  $("ctx").querySelectorAll("[data-chat]").forEach((btn) => {
+    btn.onclick = () => {
+      openChat(true);
+      $("chatInput").value = "@" + btn.dataset.chat + " ";
+      $("chatInput").focus();
+    };
   });
 
   const match = (agent) => {
@@ -927,6 +1090,8 @@ async function act(action, task) {
 }
 
 async function send(payload) {
+  const entry = (DATA.pending || []).find((p) => p.task === payload.task);
+  const agent = entry ? entry.agent : null;
   const card = document.querySelector(`[data-task="${payload.task}"]`);
   try {
     const response = await fetch("/api/actions", {
@@ -943,6 +1108,19 @@ async function send(payload) {
       setTimeout(() => card.remove(), 360);
     }
     toast(`✓ ${payload.action} · ${result.outcome || "done"}`);
+    if (agent) {
+      const t0 = performance.now();
+      if (payload.action === "approve") {
+        effects.push({ botId: agent, type: "hop", t0, dur: 1500 });
+        effects.push({ botId: agent, type: "heart", t0, dur: 1800 });
+      } else if (payload.action === "reply") {
+        effects.push({ botId: agent, type: "bubble", t0, dur: 2200 });
+      } else if (payload.action === "skip") {
+        effects.push({ botId: agent, type: "shrug", t0, dur: 2200 });
+      } else if (payload.action === "repair") {
+        startRide(agent);
+      }
+    }
     refresh();
   } catch (err) {
     toast(T("offline"));
@@ -1048,6 +1226,7 @@ function frame() {
       bot.nextMove = now + 16 + Math.random() * 18;
     }
   });
+  updateRides();
   assignRestStates();
   drawRoom();
   frames += 1;
@@ -1075,7 +1254,11 @@ async function refresh() {
     if (firstPaint || scene.bots.length !== DATA.agents.length) buildScene();
     DATA.agents.forEach((agent) => {
       const bot = scene.bots.find((b) => b.id === agent.id);
-      if (bot) { bot.status = agent.status; bot.floor = agent.floor; bot.accent = agent.accent; }
+      if (bot) {
+        bot.status = agent.status;
+        bot.accent = agent.accent;
+        if (!bot.ride) bot.floor = agent.floor;
+      }
     });
     if (firstPaint) {
       fit(false);

@@ -211,6 +211,8 @@ def build_scene(cfg: TowerConfig, board: Board | None = None,
             "age_s": _age_s(accepted.get("ts", "")),
         })
 
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_fraction = max(0.05, (now - midnight).total_seconds() / 86400)
     per_floor = {floor["id"]: {"est_usd": 0.0, "runs": 0} for floor in floors}
     for agent in agents:
         per_floor[agent["id"]] = {"est_usd": agent["cost"]["est_usd"], "runs": agent["cost"]["runs"]}
@@ -240,6 +242,7 @@ def build_scene(cfg: TowerConfig, board: Board | None = None,
     return {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "project": {"name": cfg.name, "path": str(cfg.workspace), "color": project_color},
+        "account": getattr(cfg, "account", "") or "",
         "currency": "USD",
         "rate_usd": RATE_USD,
         "floors": floors,
@@ -252,6 +255,8 @@ def build_scene(cfg: TowerConfig, board: Board | None = None,
         "cost": {
             "est_usd": round(total_runs * RATE_USD, 2),
             "runs": total_runs,
+            "day_fraction": round(day_fraction, 3),
+            "projected_usd": round(total_runs * RATE_USD / day_fraction, 2),
             "by_floor": per_floor,
             "top_burner": {"agent": top["id"], "est_usd": top["cost"]["est_usd"]} if top else None,
         },

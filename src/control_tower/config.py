@@ -42,6 +42,8 @@ class TowerConfig:
     # rework with its own failure reasons). A person is asked only when the tower
     # has run out of moves.
     auto_triage: bool = True
+    # shown on the control-room top bar; empty means "local operator"
+    account: str = ""
     accept_requires: list[str] = field(
         default_factory=lambda: ["summary", "files", "checks"]
     )
@@ -155,6 +157,7 @@ def parse_config(path: Path) -> TowerConfig:
         serial_requests=bool(raw.get("serial_requests", False)),
         request_gap_s=float(raw.get("request_gap_s", 1.5)),
         auto_triage=bool(raw.get("auto_triage", True)),
+        account=str(raw.get("account", "")),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )
