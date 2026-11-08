@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.9] - 2026-11-08
+
+### Fixed
+
+- **The test suite rewrote the real `~/.tower/binding.json`.** `tower dispatch` binds the tower that
+  did the work, so every test that dispatched left the developer's real binding pointing at a pytest
+  temp directory — the panel then "reconnected" to a tower called `triage-tower`. `tests/conftest.py`
+  now gives every test its own `TOWER_HOME`.
+- **`--workspace` after a subcommand was silently ignored.** The subparser's `--workspace` (default
+  `None`) overwrote the global value, so `tower panel --workspace <dir>` fell back to cwd/binding. The
+  global flag now has its own destination and the two are combined, whichever one was given.
+
 ## [0.7.8] - 2026-11-08
 
 ### Added
