@@ -29,8 +29,12 @@ original said "simulation engine", we say "read the files the tower already writ
    room* may act, but every action lands in the ledger.
 4. No "demo" / "mock" words in the UI; English interface.
 
-## Deliberately deferred (v2)
+## Landed in 0.8.1 (was deferred as v2)
 
-- agent-to-agent chatting animation, coffee/watering micro-actions
-- the full conversation panel with an assistant model; v1 answers from computed data
-- 60fps budget tuning on low-end GPUs
+- idle micro-actions: coffee with steam, watering plants, chatting in pairs, bean bag
+- the conversation drawer: quick tags answer from computed data; free text is
+  forwarded to a real agent as a real task (`/api/ask`) and its report is polled
+  via `/api/task` — the model on the other end is whatever adapter the role runs
+- bilingual zh/en (`?lang=` + toggle), floor deep links (`?floor=N`), a live FPS
+  counter, and JS errors surfaced in the top bar
+- verified at 1440 / 1920 / 390 widths and in both themes

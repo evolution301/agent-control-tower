@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.8.1] - 2026-11-08
+
+### Added
+
+- **The control room is bilingual.** 中文/EN everywhere — panels, buttons, floor pills, canvas floor
+  labels, computed answers — switched by the `中/EN` button, `?lang=`, remembered in localStorage,
+  default zh.
+- **The conversation drawer is real.** Free text goes to `/api/ask`, which creates a genuine task for
+  the least-busy role and dispatches it (`scene_ask` in the ledger); the drawer polls `/api/task` and
+  shows the agent's report when it lands. Quick tags still answer instantly from computed data. The
+  "model" on the other end is whatever adapter the role runs — no canned replies.
+- **Idle micro-actions.** Resting robots now drink coffee (steam), water plants, chat face-to-face in
+  pairs (speech bubble), or flop onto a bean bag; they re-seat around their floor with eased walking.
+- **Floor focus deep links** (`?floor=N`), verified upper-floor lift-and-fade in the screenshot.
+- **A live FPS counter** in the top bar and JS errors surfaced instead of failing silently.
+
+### Fixed
+
+- **The scene page died on load** after the first i18n attempt: the language wiring referenced `LANG`
+  before its declaration (TDZ), so the whole script aborted and the canvas stayed empty. The page was
+  rewritten in one piece instead of being patched again, and the boot order is now checked by a stub.
+
 ## [0.8.0] - 2026-11-08
 
 ### Added

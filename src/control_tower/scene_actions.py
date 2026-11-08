@@ -78,3 +78,32 @@ def perform(cfg: TowerConfig, board: Board, action: str, task_id: str,
                          dispatch_fn=lambda _b, t, reasons: _dispatch(cfg, t.id, reasons))
     board.log("scene_repair", task=task.id, role=task.role, outcome=result.get("outcome", ""))
     return {"ok": True, "task": task.id, "outcome": result.get("outcome", "retried")}
+
+
+def _least_busy(board: Board, cfg: TowerConfig) -> str:
+    """The role with the fewest open tasks gets the question."""
+    open_counts: dict[str, int] = {role: 0 for role in cfg.roles}
+    for task in board.all():
+        if task.status != STATUS_ACCEPTED and task.role in open_counts:
+            open_counts[task.role] += 1
+    return min(open_counts, key=open_counts.get) if open_counts else ""
+
+
+def ask(cfg: TowerConfig, board: Board, text: str) -> dict[str, Any]:
+    """Free-text chat: forward the question to a real agent as a real task.
+
+    The model on the other end is whatever adapter the role runs; the panel polls
+    `/api/task` for the report. This is the honest path — the tower never fakes a
+    model reply.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("an empty question cannot be forwarded")
+    role = _least_busy(board, cfg)
+    if not role:
+        raise ValueError("this tower has no roles to ask")
+    task = board.create(role, f"[control room] {text}"[:4000])
+    board.save(task)
+    board.log("scene_ask", task=task.id, role=role, chars=len(text))
+    _dispatch(cfg, task.id)
+    return {"ok": True, "task": task.id, "role": role, "outcome": "asked"}

@@ -396,6 +396,27 @@ def make_handler(cfg: TowerConfig):
                 self._send(200, json.dumps(report, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8")
                 return
+            if path == "/api/task":
+                from urllib.parse import parse_qs as _qs
+
+                query = _qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+                task_id = (query.get("id") or [""])[0]
+                board = Board(cfg)
+                try:
+                    task = board.load(task_id)
+                except FileNotFoundError:
+                    self._send(404, b'{"error":"unknown task"}', "application/json")
+                    return
+                report = task.report or {}
+                payload = {
+                    "id": task.id, "role": task.role, "status": task.status,
+                    "state": task.state, "brief": (task.brief or "").strip(),
+                    "summary": str(report.get("summary") or "")[:600],
+                    "checks": report.get("checks") or [],
+                }
+                self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             if path == "/api/scene":
                 from .scene import build_scene
 
@@ -426,7 +447,7 @@ def make_handler(cfg: TowerConfig):
 
         def do_POST(self):  # noqa: N802
             path = self.path.split("?")[0]
-            if path != "/api/actions":
+            if path not in ("/api/actions", "/api/ask"):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
             try:
@@ -439,10 +460,15 @@ def make_handler(cfg: TowerConfig):
             target = self._cfg_for(query, cfg)
             board = Board(target)
             try:
-                from .scene_actions import perform
+                if path == "/api/ask":
+                    from .scene_actions import ask
 
-                result = perform(target, board, str(body.get("action", "")),
-                                 str(body.get("task", "")), str(body.get("note", "")))
+                    result = ask(target, board, str(body.get("text", "")))
+                else:
+                    from .scene_actions import perform
+
+                    result = perform(target, board, str(body.get("action", "")),
+                                     str(body.get("task", "")), str(body.get("note", "")))
             except KeyError as exc:
                 self._send(400, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
                 return

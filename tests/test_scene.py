@@ -214,3 +214,61 @@ def test_action_endpoint_rejects_garbage(tower):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_ask_forwards_free_text_to_a_real_task(tower, tmp_path):
+    """Free chat must become a real dispatched task, never a canned reply."""
+    import urllib.request
+
+    from http.server import ThreadingHTTPServer
+
+    from control_tower.panel import make_handler
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(tower))
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/ask",
+                                       data=json.dumps({"text": "improve the hero"}).encode(),
+                                       headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        assert data["ok"] is True and data["task"] and data["role"] in tower.roles
+        assert "scene_ask" in tower.ledger_path.read_text(encoding="utf-8")
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/task?id={data['task']}",
+                                    timeout=5) as r:
+            task_data = json.loads(r.read().decode("utf-8"))
+        assert task_data["id"] == data["task"]
+        assert "[control room]" in task_data["brief"]
+
+        empty = urllib.request.Request(f"http://127.0.0.1:{port}/api/ask",
+                                       data=json.dumps({"text": "  "}).encode(),
+                                       headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as info:
+            urllib.request.urlopen(empty, timeout=5)
+        assert info.value.code == 409
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_scene_page_is_bilingual_and_has_the_chat_drawer(tower):
+    import urllib.request
+
+    from http.server import ThreadingHTTPServer
+
+    from control_tower.panel import make_handler
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(tower))
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/scene", timeout=5) as r:
+            page = r.read().decode("utf-8")
+        assert "I18N" in page and "zh:" in page and "en:" in page
+        assert "langBtn" in page and "chatInput" in page and "/api/ask" in page
+        assert "api/health" in page, "the page must follow panel restarts"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
