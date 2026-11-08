@@ -52,6 +52,10 @@ notify:
   session: session-…
 ```
 
+### 上下文卫生（0.10.2）
+
+`tower ctx` 打印各会话 contextPressure（≥50% 标 ⚠，John 规则：50% 必须压缩）；DSH 插件 `tower_compact { session }` 在宿主进程内直接调用压缩服务（等价原生 /compact，不多花一个 turn），支持 `role:<角色名>` 定位。
+
 ## 场景看板（0.8+）
 
 `tower panel` 起来后访问 **`/scene`**：等轴测玻璃塔楼，每个角色一台机器人、每层一个部门、
