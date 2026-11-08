@@ -50,6 +50,30 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.10.6] - 2026-11-09
+
+### Fixed — `tower ctx` unit math (John's field report)
+
+- `session/projections` returns `contextPressure` as an **object**
+  (`pressureTokens / projectedTokens / contextWindow`); the old code read it as a
+  scalar and printed raw values like `pressure=79661%`, flagging every session
+  COMPACT NOW. The adapter now computes
+  `pct = pressureTokens / contextWindow × 100` — the window size comes from the
+  data, so desktop (1,048,576) and headless (262,144) sessions both read
+  correctly. The RPC call also wraps the session id in the `request` envelope
+  the gateway expects (projections for live sessions now resolve; idle ones
+  degrade to "projections unavailable").
+- Live re-check on prl-tower: `auditor 14.87% (window 1048576)`, `ui 20.64%`,
+  `messenger 4.5% (window 1000000)` — units match John's field numbers.
+
+### Added
+
+- **`messenger` role** wired into prl-tower (Evergo 信使, cross-session relay,
+  timeout 3600s, session wired) — visible in `tower ctx` / `tower_roles` / doctor.
+- **Each panel defaults to its own workspace project.** Both boards used to
+  render the globally-active project, so `:8787` and `:8788` looked identical;
+  each now opens on the project it serves (`?project=` still overrides).
+
 ## [0.10.5] - 2026-11-09
 
 ### Fixed

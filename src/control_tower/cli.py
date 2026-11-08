@@ -619,9 +619,11 @@ def cmd_ctx(args) -> int:
         if info is None:
             print(f"{role:<{width}}  {session_id}  pressure=? (projections unavailable)")
         else:
-            pct = round(info["contextPressure"] * 100) if info["contextPressure"] <= 1 else round(info["contextPressure"])
+            pct = info.get("pct", 0)
             marker = " ⚠ COMPACT NOW (>=50%)" if pct >= 50 else ""
-            print(f"{role:<{width}}  {session_id}  pressure={pct}%{marker}")
+            win = info.get("contextWindow")
+            win_note = f" (window {win})" if win else ""
+            print(f"{role:<{width}}  {session_id}  pressure={pct}%{win_note}{marker}")
     print("\nrule (John): pressure >= 50% -> compact. One-shot: DSH plugin tool "
           "`tower_compact { session }` (in-process, no extra turn).")
     return 0

@@ -286,7 +286,8 @@ function bot(state, colour, size) {
     <circle class="cheek" cx="13" cy="32" r="2.6"/><circle class="cheek" cx="35" cy="32" r="2.6"/></g></svg>`;
 }
 
-let state = { project: QS.get("project") || "", projects: [], overview: null, snapshot: null, stats: null, instance: "" };
+const DEFAULT_PROJECT = "__PROJECT__";
+let state = { project: QS.get("project") || DEFAULT_PROJECT, projects: [], overview: null, snapshot: null, stats: null, instance: "" };
 
 // The panel restarts itself when the installed code changes; the page follows it
 // instead of showing numbers from the previous build.
@@ -718,6 +719,7 @@ def render(cfg, lang: str = "en") -> str:
     import json as _json
 
     page = PAGE.replace("__NAME__", display_name(cfg)).replace("__WS__", str(cfg.workspace))
+    page = page.replace("__PROJECT__", display_name(cfg))
     page = page.replace("__LANG__", "zh-CN" if lang == "zh" else "en")
     page = page.replace("__LABELS__", _json.dumps(LABELS.get(lang, LABELS["en"]), ensure_ascii=False))
     if lang == "zh":

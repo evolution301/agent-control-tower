@@ -138,8 +138,10 @@ def test_session_pressure_reads_the_projections_envelope():
 
     adapter.rpc = fake_rpc  # type: ignore[assignment]
     pressure = adapter.session_pressure("s1")
-    assert pressure == {"session": "s1", "contextPressure": 1234.0}
-    assert seen["args"] == {"request": {"sessionId": "s1"}}
+    # v0.10.6 contract: the object is converted to percent + raw fields kept
+    assert pressure == {"session": "s1", "pct": 1.23,
+                        "pressureTokens": 1234, "contextWindow": 100000}
+    assert seen["args"] in ({"sessionId": "s1"}, {"request": {"sessionId": "s1"}}), seen["args"]
     assert adapter.session_state("s1") == {"turns": 2, "llmMs": 5000, "steps": 0,
                                            "model": "m", "provider": "p", "model_known": True}
 

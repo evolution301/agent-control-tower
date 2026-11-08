@@ -398,30 +398,37 @@ class DshAdapter:
         }
 
     def session_pressure(self, session_id: str) -> dict[str, Any] | None:
-        """Read contextPressure (and friends) from session/projections.
+        """Read contextPressure from session/projections and return percent.
 
-        Best-effort: returns None when the host answers nothing usable, so the
-        CLI can degrade to guidance text instead of crashing.
+        The server returns `values.contextPressure` as an object:
+        `{pressureTokens, projectedTokens, contextWindow}`. The ratio is
+        pressureTokens / contextWindow (windows differ: desktop 1,048,576,
+        headless 262,144 — the size comes from the data, never hardcoded).
+        Returns None when the host answers nothing usable.
         """
-        reply = self.rpc("session/projections", {"request": {"sessionId": session_id}}, timeout=30)
+        reply = self.rpc("session/projections",
+                         {"request": {"sessionId": session_id}}, timeout=30)
         value = self._result_value(reply)
         if not isinstance(value, dict):
             return None
         projections = value.get("projections") or value
         values = projections.get("values") if isinstance(projections, dict) else None
         source = values if isinstance(values, dict) else projections
-        pressure = source.get("contextPressure", source.get("context_pressure"))
-        if pressure is None:
-            return None
-        # The host may answer either a bare number or {pressureTokens,
-        # projectedTokens, contextWindow}; keep the number when it is there.
-        if isinstance(pressure, dict):
-            pressure = pressure.get("pressureTokens") or pressure.get("projectedTokens")
-        try:
-            pressure = float(pressure)
-        except (TypeError, ValueError):
-            return None
-        return {"session": session_id, "contextPressure": pressure}
+        pressure_obj = source.get("contextPressure", source.get("context_pressure"))
+        if isinstance(pressure_obj, dict):
+            tokens = pressure_obj.get("pressureTokens")
+            window = pressure_obj.get("contextWindow")
+            try:
+                pct = round(float(tokens) / float(window) * 100, 2)
+            except (TypeError, ZeroDivisionError, ValueError):
+                return None
+            return {"session": session_id, "pct": pct,
+                    "pressureTokens": tokens, "contextWindow": window}
+        if isinstance(pressure_obj, (int, float)):
+            # legacy/fallback: a bare ratio (<=1) or an already-percent number
+            pct = round(pressure_obj * 100, 2) if pressure_obj <= 1 else round(pressure_obj, 2)
+            return {"session": session_id, "pct": pct}
+        return None
 
     def deliver_to_session(self, session_id: str, text: str) -> AdapterResult:
         """Queue a note into an explicit session id — the relay path.

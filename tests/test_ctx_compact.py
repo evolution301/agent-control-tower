@@ -31,20 +31,21 @@ def tower(tmp_path, monkeypatch):
 
 
 class FakeAdapter:
+    """Mirrors the adapter contract: session_pressure returns pct (0-100)."""
+
     def __init__(self, pressures):
-        self.pressures = pressures          # session id -> pressure float
+        self.pressures = pressures          # session id -> pct
         self.asked = []
 
     def session_pressure(self, session_id):
         self.asked.append(session_id)
         if session_id in self.pressures:
-            return {"session": session_id,
-                    "contextPressure": self.pressures[session_id]}
+            return {"session": session_id, "pct": self.pressures[session_id]}
         return None
 
 
 def test_tower_ctx_prints_pressure_and_flags_the_rule(tower, monkeypatch, capsys):
-    fake = FakeAdapter({"session-abc-1234-5678-9012": 0.62})
+    fake = FakeAdapter({"session-abc-1234-5678-9012": 62})
     monkeypatch.setattr("control_tower.adapters.get_adapter", lambda name, opts: fake)
     assert cli.main(["ctx"]) == 0
     out = capsys.readouterr().out
@@ -80,3 +81,27 @@ def test_compact_error_text_matches_the_native_slack_outcomes():
                          shell=True, timeout=30)
     assert "busy:Compaction is unavailable" in out.stdout
     assert "persistence:" in out.stdout
+
+
+def test_adapter_session_pressure_math_desktop_vs_headless(monkeypatch):
+    """John's real numbers: same ratio math across different context windows."""
+    from control_tower.adapters.dsh import DshAdapter
+
+    payloads = {
+        "session-desktop": {"projections": {"values": {"contextPressure": {
+            "pressureTokens": 835461, "projectedTokens": 835461,
+            "contextWindow": 1048576}}}},                       # desktop 1Mi
+        "session-headless": {"projections": {"values": {"contextPressure": {
+            "pressureTokens": 118120, "projectedTokens": 118120,
+            "contextWindow": 262144}}}},                        # headless 256Ki
+    }
+    adapter = object.__new__(DshAdapter)
+    monkeypatch.setattr(adapter, "rpc",
+                        lambda method, params, timeout=0: {"result": payloads[params["request"]["sessionId"]]})
+    monkeypatch.setattr(adapter, "_result_value", lambda reply: reply.get("result"))
+
+    desktop = adapter.session_pressure("session-desktop")
+    headless = adapter.session_pressure("session-headless")
+    assert desktop["pct"] == round(835461 / 1048576 * 100, 2)
+    assert headless["pct"] == round(118120 / 262144 * 100, 2)
+    assert desktop["contextWindow"] == 1048576 and headless["contextWindow"] == 262144
