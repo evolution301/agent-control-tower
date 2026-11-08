@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>塔台升级计划 · 自我审查回路（对标 pstack）</title>
+<style>
+  :root{
+    --bg:#070b12; --bg2:#0b1220; --panel:#0e1522; --ink:#e9eef6; --dim:#8195ad;
+    --line:rgba(120,150,200,.16); --line2:rgba(120,150,200,.32);
+    --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --violet:#a855f7;
+    --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+    --sans:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:
+      radial-gradient(900px 400px at 85% -5%, rgba(59,130,246,.14), transparent 60%),
+      radial-gradient(700px 380px at -10% 10%, rgba(236,72,153,.08), transparent 60%),
+      var(--bg);
+    color:var(--ink);font:15px/1.75 var(--sans);}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 28px 90px}
+  h1{font-size:34px;letter-spacing:-.02em;margin:0 0 6px}
+  h1 .accent{background:linear-gradient(90deg,var(--accent),var(--violet));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--dim);font:13px var(--mono);letter-spacing:.06em;margin-bottom:34px}
+  h2{font-size:22px;margin:52px 0 14px;padding-left:12px;border-left:3px solid var(--accent)}
+  h2 .tag{font:600 11px var(--mono);color:var(--dim);letter-spacing:.14em;vertical-align:middle;margin-left:10px}
+  h3{font-size:16px;margin:26px 0 8px;color:#cfe0f5}
+  p{margin:10px 0}
+  .card{background:linear-gradient(180deg,rgba(120,150,200,.06),rgba(120,150,200,.02));
+    border:1px solid var(--line);border-radius:16px;padding:20px 22px;margin:16px 0}
+  .card.ok{border-color:rgba(34,197,94,.35)}
+  .card.warn{border-color:rgba(245,158,11,.35)}
+  .card.bad{border-color:rgba(239,68,68,.4)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);
+     text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2)}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:rgba(120,150,200,.05)}
+  code{font:12.5px var(--mono);background:rgba(120,150,200,.12);border:1px solid var(--line);
+       border-radius:6px;padding:1px 6px;color:#bcd3ee;white-space:nowrap}
+  pre{background:#0a111d;border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+      overflow:auto;font:12.5px/1.65 var(--mono);color:#a8c0dd}
+  pre b{color:#7dd3fc;font-weight:600}
+  .pill{display:inline-block;font:600 11px var(--mono);padding:2px 10px;border-radius:999px;margin-right:6px}
+  .pill.g{background:rgba(34,197,94,.15);color:#4ade80}
+  .pill.a{background:rgba(245,158,11,.15);color:#fbbf24}
+  .pill.r{background:rgba(239,68,68,.16);color:#f87171}
+  .pill.v{background:rgba(168,85,247,.16);color:#c084fc}
+  .pill.b{background:rgba(59,130,246,.16);color:#60a5fa}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:16px 0}
+  .grid .card{margin:0}
+  .num{font:700 26px var(--mono);color:var(--accent)}
+  .flow{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin:18px 0}
+  .flow .step{flex:1 1 150px;min-width:150px;border:1px solid var(--line2);border-radius:12px;
+    padding:12px 14px;background:rgba(120,150,200,.06);position:relative}
+  .flow .step b{display:block;font:600 13px var(--mono);color:#7dd3fc;margin-bottom:4px}
+  .flow .step small{color:var(--dim);font-size:12px;line-height:1.5;display:block}
+  .flow .arrow{align-self:center;color:var(--dim);font-size:18px}
+  .kicker{font:600 11px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+  .phase{border-left:3px solid var(--violet);padding:4px 0 4px 16px;margin:26px 0}
+  .phase h3{margin-top:0}
+  .meta{color:var(--dim);font-size:12.5px}
+  a{color:#7db2f0;text-decoration:none;border-bottom:1px dashed rgba(125,178,240,.4)}
+  .check li{margin:6px 0}
+  .small{font-size:12.5px;color:var(--dim)}
+  .hl{background:rgba(245,158,11,.14);border-radius:4px;padding:0 5px}
+  @media print{ body{background:#fff;color:#111} .card,pre,td{border-color:#ddd} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="kicker">AGENT-CONTROL-TOWER · UPGRADE PLAN · v0.9.2 → v0.10</div>
+  <h1>塔台升级计划：<span class="accent">自我审查回路</span></h1>
+  <div class="sub">对标 pstack（Lauren Tan）的自我审查机器 · 目标：写完 ≠ 完成，审查通过才算 · 2026-11-08</div>
+
+  <!-- ================= 0. 一句话 ================= -->
+  <div class="card" style="border-color:rgba(59,130,246,.4)">
+    <b>一句话结论：</b>pstack 最厉害的不是某个 skill，而是它把「<span class="hl">自我审查</span>」做成了
+    <b>对抗性、并行、只有证据才成立、连审查者也被审计</b>的流水线。我们的塔台现在只有<b>机械验收</b>
+    （文件在、Checks 非空）——这次升级把「语义级自我审查」装进每一个任务的交付管道：
+    <b>交付 → 自审 → 对抗审查 → 修复 → 复检 → 反审计 → 沉淀</b>。
+  </div>
+
+  <!-- ================= 1. pstack 的自我审查解剖 ================= -->
+  <h2>一、pstack 的自我审查机器，拆开看 <span class="tag">WHAT WE LEARNED</span></h2>
+  <p>读了 <code>thermo-nuclear-review</code>、<code>thermos</code>、<code>interrogate</code>、
+     <code>deslop</code>、<code>no-comments</code>、<code>reflect</code>、<code>show-me-your-work</code>
+     的完整 SKILL.md（pstack 原版 + michael-denyer 的 Claude 移植版），它强在<b>五条铁律</b>：</p>
+
+  <div class="grid">
+    <div class="card"><span class="num">1</span>
+      <h3 style="margin:6px 0 4px">审查者不是作者</h3>
+      <small>thermo/interrogate 都是<b>独立子代理</b>拿着 diff 冷读，作者不在场——避免"自己查自己永远过"。</small>
+    </div>
+    <div class="card"><span class="num">2</span>
+      <h3 style="margin:6px 0 4px">发现必须"跑出来"</h3>
+      <small>interrogate 的规则：<b>没有运行证明的发现不成立</b>。每条 finding 必须带命令+实际输出；
+      风格类直接不要；"没有发现"是合法结果。</small>
+    </div>
+    <div class="card"><span class="num">3</span>
+      <h3 style="margin:6px 0 4px">多镜并行 + 聚合去重</h3>
+      <small>thermos 并行两个镜（bug/安全 + 代码质量），重叠的发现权重更高；分歧用自己的判断裁决。</small>
+    </div>
+    <div class="card"><span class="num">4</span>
+      <h3 style="margin:6px 0 4px">审查者也被审计</h3>
+      <small>no-comments 会<b>拒绝</b>审查者的越界/误报，退回重跑一次并把失败原因点名——审查权要靠质量挣。</small>
+    </div>
+    <div class="card"><span class="num">5</span>
+      <h3 style="margin:6px 0 4px">审查完还要清场 + 沉淀</h3>
+      <small>deslop 清 AI 味（改完必须<b>重跑全部检查</b>，检查挂了就回退）；reflect 把会话教训
+      <b>路由进 skill 文件</b>——教训变成结构，不是口头话。</small>
+    </div>
+  </div>
+
+  <div class="card warn">
+    <b>它的审查合同里最值得抄的三句话：</b><br>
+    ① 「发现只允许关于本次<b>新增/修改</b>的代码」—— scope 纪律，不翻旧账；<br>
+    ② 「<b>绝不带着没查完的研究发报告</b>」—— "如果后端处理了就行"这种话不允许；<br>
+    ③ 「<b>绝不虚报优先级</b>——虚报会让开发者不再听你的」—— 误报有代价，审查者才有信誉。
+  </div>
+
+  <!-- ================= 2. 现状差距 ================= -->
+  <h2>二、我们现在的差距 <span class="tag">GAP</span></h2>
+  <table>
+    <tr><th>环节</th><th>pstack</th><th>塔台现状</th><th>差距</th></tr>
+    <tr><td>交付判定</td><td>审查通过才算完</td><td><code>verify_report</code> 机械检查（文件存在/Checks 非空）</td><td class="pill r">无语义审查</td></tr>
+    <tr><td>自审</td><td>作者自审 + deslop 清场</td><td>无（报告即交付）</td><td class="pill r">缺失</td></tr>
+    <tr><td>对抗审查</td><td>thermos 双镜并行 + interrogate 4 对抗</td><td>auditor 角色存在但<b>不会自动介入</b></td><td class="pill a">有角色、无回路</td></tr>
+    <tr><td>发现有效性</td><td>必须带 repro 命令+输出</td><td>无发现格式约束</td><td class="pill a">缺失</td></tr>
+    <tr><td>审查者治理</td><td>误报退回、点名失败原因</td><td>accept/rework 是单向的</td><td class="pill a">缺失</td></tr>
+    <tr><td>学习沉淀</td><td>reflect → skill 编辑</td><td><code>tower skill save</code> 手动</td><td class="pill a">半自动</td></tr>
+    <tr><td>决策轨迹</td><td>TSV 决策日志</td><td>台账只有事件，无 why/evidence</td><td class="pill b">可增量</td></tr>
+  </table>
+  <p class="small">结论：塔台的"骨架"（角色、verifier、台账、supervise）都在，缺的是把 pstack 的<b>审查回路</b>接进去。不用换架构，加管道。</p>
+
+  <!-- ================= 3. 目标闭环 ================= -->
+  <h2>三、升级后的交付闭环 <span class="tag">TARGET PIPELINE</span></h2>
+  <div class="flow">
+    <div class="step"><b>① 干活</b><small>bot 按纪律卡 + Write scopes 工作</small></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>② 自审 P0</b><small>同角色换脑重读 diff，按自审清单过一遍，发现问题就地修</small></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>③ 对抗审查 P1</b><small>auditor 以"break it"合同介入；发现必须带运行证明</small></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>④ 反审计 P2</b><small>triage 审查审查者：误报退回重跑，点名失败原因</small></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>⑤ 机械验收</b><small>verify_report（现有）+ Self-review 区块检查</small></div>
+    <div class="arrow">→</div>
+    <div class="step"><b>⑥ 沉淀 P4</b><small>accepted 后 reflect 蒸馏教训 → tower skill save</small></div>
+  </div>
+  <p class="small">全部事件写 <code>events.jsonl</code>（review_started / review_finding / review_fixed / adversarial_verdict / lesson_saved），
+     面板 scene 的机器人可以在"自审/被审"状态时显示对应动画（审查中 = 头顶放大镜）。</p>
+
+  <!-- ================= 4. 分期计划 ================= -->
+  <h2>四、分期实施 <span class="tag">PHASES</span></h2>
+
+  <div class="phase">
+    <span class="pill v">P0</span> <b>自审闸门</b> <span class="meta">约 0.5 天 · 改 dispatch.py / verify.py / principles.py</span>
+    <h3>机制</h3>
+    <p>报告里新增 <code>## Self-review</code> 必填区块。bot 交报告前必须：换脑重读自己的 diff（只审新增/修改）、
+    跑一遍 pstack 自审清单（下表）、发现的问题<b>就地修完再交</b>。区块允许写「no findings」——但 verifier 会
+    抽查（diff 里明显的问题而 Self-review 说 no findings → 打回）。</p>
+    <table>
+      <tr><th>自审清单（写进 scaffold + 审查合同）</th><th>来源</th></tr>
+      <tr><td>只审本次新增/修改的代码，不翻旧账</td><td>thermo scope 纪律</td></tr>
+      <tr><td>追踪改动对其它文件的副作用（谁 import 了它、谁调了它）</td><td>breaking-functionality 指南</td></tr>
+      <tr><td>Checks 逐条重跑，引用真实输出（不许"应该会过"）</td><td>prove-it-works</td></tr>
+      <tr><td>清 AI 味：多余注释、防御性 try/except、嵌套过深</td><td>deslop</td></tr>
+      <tr><td>不留解释性注释，约束改成结构/命名/断言</td><td>no-comments</td></tr>
+      <tr><td>改完必须<b>重跑全部检查</b>；有检查挂了就回退该编辑</td><td>deslop guardrail</td></tr>
+    </table>
+    <h3>改动面</h3>
+    <ul class="check small">
+      <li><code>CONTRACT</code>（dispatch.py）：报告合同加 <code>## Self-review</code> 段说明 + 清单</li>
+      <li><code>verify.py</code>：<code>accept_requires</code> 增加 <code>self_review</code> 项（缺区块 → FAIL）</li>
+      <li>config：<code>self_review: true</code>（默认开）；<code>self_review_roles: []</code> 按角色豁免</li>
+      <li>scaffold（principles.py）：清单写进 Work discipline</li>
+    </ul>
+    <h3>验收</h3>
+    <ul class="check small">
+      <li>无 Self-review 区块的报告 → verify FAIL（回归测试）</li>
+      <li>写 "no findings" 但 diff 有明显未处理问题 → triage 打回（规则 + 测试）</li>
+      <li>sync 行为不变：<code>self_review: false</code> 时全绿</li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <span class="pill r">P1</span> <b>对抗审查（thermos/interrogate 化）</b> <span class="meta">约 1 天 · 改 worker/triage + auditor 合同</span>
+    <h3>机制</h3>
+    <p>自审通过的报告（state=ready）在 triage 之前<b>自动触发一次对抗审查派单</b>给 auditor（或 <code>review_roles</code> 配置的角色），
+    使用专门的 <b>ADVERSARIAL_CONTRACT</b>：</p>
+    <pre>Break this change. Prove each finding with a <b>run</b> against the real code —
+a failing test, a repro script, or command output showing wrong behavior.
+Report each finding: title / exact command / actual output / output the intent requires.
+Leave out anything you did not run. Style, naming, structure: out of scope.
+<b>No findings is a valid result.</b> Never misreport priority — false alarms
+spend the trust this review runs on.</pre>
+    <p>规则：</p>
+    <ul class="check small">
+      <li><b>异步并行</b>：审查派单走 0.9.x 的 async 队列，不阻塞原任务；可配置双镜
+          （<code>review_roles: [auditor, qa]</code>）——重叠发现权重更高，聚合去重</li>
+      <li><b>发现才有资格打回</b>：带 repro 的 finding → 原任务 <code>rework</code>（附 repro）；
+          无 finding → 自动 accept；<b>审查者自己跑不出证明的发现直接丢弃</b>（triage 验证 repro 可执行）</li>
+      <li><b>预算</b>：审查占一轮（<code>review_budget: 1</code>），不无限循环；auditor 超时 = 视为 pass + 通知</li>
+      <li><b>events</b>：adversarial_started / finding(proved|dropped) / adversarial_verdict</li>
+    </ul>
+    <h3>数据模型</h3>
+    <pre>task.json += { "review": {"verdict": "pass|rework", "findings": N, "proved": N,
+                            "dropped": N, "reviewer": "auditor", "ts": …} }</pre>
+    <h3>验收</h3>
+    <ul class="check small">
+      <li>mock 场景：auditor 报 1 个带 repro 的 finding → 原任务 rework 且 brief 含 repro；auditor 报 0 → accept</li>
+      <li>auditor 的 finding 无 repro → 被 triage 丢弃并计数（dropped）</li>
+      <li>async：审查本身 <1s 入队；结算走 inbox</li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <span class="pill a">P2</span> <b>反审计（审查者治理）</b> <span class="meta">约 0.5 天 · 改 triage.py</span>
+    <h3>机制</h3>
+    <p>抄 no-comments 的治理：triage 处理 auditor 发现时执行<b>审查者审计</b>——</p>
+    <ul class="check small">
+      <li>越界（finding 指向非 diff 文件）→ 丢弃 + 计数</li>
+      <li>repro 重跑不成立 → 丢弃；<b>同一审查者一轮内被拒 ≥2 次 → 该轮报告判废，退回重跑一次并点名失败原因</b>；再犯 → 上报 open issue</li>
+      <li>误报优先级（把 medium 报成 high）→ 降权并记录信誉分（<code>.tower/reviews/<role>.json</code> 信誉分）</li>
+      <li>信誉分进入派单决策：低信誉审查者的 finding 需要第二意见</li>
+    </ul>
+    <h3>验收</h3>
+    <ul class="check small">
+      <li>构造越界 finding / 假 repro / 误报 high → 各自被治理（3 条测试）</li>
+      <li>信誉分落盘且可查询（<code>tower status</code> 显示 auditor 信誉）</li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <span class="pill g">P3</span> <b>学习沉淀（reflect 化）</b> <span class="meta">约 0.5 天 · 改 skills.py + 新 reflect 流程</span>
+    <h3>机制</h3>
+    <p>任务 accepted 时自动做一次轻量 reflect：扫本次的 rework 原因 + Self-review 发现 +
+    对抗 findings，问一句「这条教训是<b>一次性的</b>还是<b>结构性的</b>？」——结构性的自动生成
+    skill 草稿（<code>tower skill save --draft</code>），lead 一键采纳。教训从此进结构：
+    下次同角色派单自动注入（现有技能索引机制）。</p>
+    <h3>验收</h3>
+    <ul class="check small">
+      <li>rework ≥2 次的同因任务 → 自动产出 skill 草稿（测试）</li>
+      <li>草稿采纳后，下次派单 prompt 出现该 skill 行（现有机制回归）</li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <span class="pill b">P4</span> <b>决策轨迹 + 面板可见</b> <span class="meta">约 0.5 天 · 面板/scene 小改</span>
+    <ul class="check small">
+      <li>长任务（>3 步或多轮）要求 <code>&lt;task&gt;-decisions.tsv</code>：ts/phase/decision/why/evidence/result（show-me-your-work 格式）</li>
+      <li>verifier 对长任务检查该文件存在且 evidence 列是路径/SHA（不是散文）</li>
+      <li>scene：自审中=放大镜气泡、被审中=盾牌气泡、审查通过=短暂绿闪</li>
+      <li>面板 KPI 增加「审查通过率 / 平均 findings / dropped 误报率」</li>
+    </ul>
+  </div>
+
+  <!-- ================= 5. 界面变化 ================= -->
+  <h2>五、CLI / 插件 / 配置变化 <span class="tag">SURFACE</span></h2>
+  <table>
+    <tr><th>面</th><th>变化</th></tr>
+    <tr><td>CLI</td><td><code>tower review &lt;task&gt;</code>（手动触发对抗审查）；<code>tower status</code> 显示 review 列；<code>tower principles</code> 增审清单卡</td></tr>
+    <tr><td>插件</td><td><code>tower_review { task }</code> 新工具（17 个）；<code>tower_dispatch</code> 返回里带 review 摘要</td></tr>
+    <tr><td>配置</td><td><code>self_review: true</code> · <code>review_roles: [auditor]</code> · <code>review_budget: 1</code> · <code>decision_trail: auto</code></td></tr>
+    <tr><td>报告合同</td><td>新增 <code>## Self-review</code> 必填段；长任务加 <code>&lt;id&gt;-decisions.tsv</code></td></tr>
+  </table>
+
+  <!-- ================= 6. 排期 ================= -->
+  <h2>六、排期与工作量 <span class="tag">SCHEDULE</span></h2>
+  <table>
+    <tr><th>期</th><th>内容</th><th>预估</th><th>版本</th></tr>
+    <tr><td class="pill v">P0</td><td>自审闸门（合同 + verifier + scaffold）</td><td>0.5 天</td><td>0.10.0</td></tr>
+    <tr><td class="pill r">P1</td><td>对抗审查回路（ADVERSARIAL_CONTRACT + triage 集成 + async）</td><td>1 天</td><td>0.10.0</td></tr>
+    <tr><td class="pill a">P2</td><td>反审计 + 信誉分</td><td>0.5 天</td><td>0.10.1</td></tr>
+    <tr><td class="pill g">P3</td><td>reflect 自动沉淀 skill 草稿</td><td>0.5 天</td><td>0.10.1</td></tr>
+    <tr><td class="pill b">P4</td><td>决策轨迹 + scene 可见性 + KPI</td><td>0.5 天</td><td>0.10.2</td></tr>
+  </table>
+  <p class="small">每期独立提交 + 推送 + 本地插件重装（与 0.9.x 相同流程）；P0/P1 合入一个版本交付最小可用闭环。</p>
+
+  <!-- ================= 7. 风险 ================= -->
+  <h2>七、风险与回滚 <span class="tag">RISKS</span></h2>
+  <table>
+    <tr><th>风险</th><th>对策</th></tr>
+    <tr><td>审查派单消耗 token/时间翻倍</td><td>review_budget=1；只对 diff 审；mock/小任务可 <code>review_roles: []</code> 关闭</td></tr>
+    <tr><td>审查者误报洪水</td><td>反审计（P2）+ 信誉分 + "必须跑出来"门槛从源头过滤</td></tr>
+    <tr><td>循环依赖（审查触发的 rework 再触发审查…）</td><td>review 预算只算 1 轮；rework 由 triage 正常预算管</td></tr>
+    <tr><td>自审流于形式（全写 no findings）</td><td>verifier 抽查 + 对抗审查兜底（两道闸，不是自觉）</td></tr>
+    <tr><td>回滚</td><td>三项配置全部默认可关：<code>self_review: false</code> / <code>review_roles: []</code> / <code>decision_trail: off</code> 即回到 0.9.2 行为</td></tr>
+  </table>
+
+  <!-- ================= 8. 总验收 ================= -->
+  <h2>八、总验收清单 <span class="tag">ACCEPTANCE</span></h2>
+  <ul class="check">
+    <li>每个任务的报告含 <code>## Self-review</code>；缺失 → verify FAIL（有测试）</li>
+    <li>ready 任务自动触发一次对抗审查；带 repro 的 finding → rework；无 finding → accept（mock 端到端测试）</li>
+    <li>无 repro 的 finding 被丢弃且计数；越界 finding 被治理；误报退回重跑并点名原因（3 条测试）</li>
+    <li>accepted 后同因 rework ≥2 → 自动 skill 草稿；采纳后下轮派单可见（回归）</li>
+    <li>10 任务并发走完「交付→自审→审查→验收」全链无死锁（.lock 压测）</li>
+    <li>scene 与面板能看出"审查中 / 审查通过率"</li>
+    <li>全部开关关闭 = 0.9.2 行为，回归全绿</li>
+  </ul>
+
+  <div class="card ok" style="margin-top:34px">
+    <b>设计哲学对齐：</b>pstack 的自我审查之所以强，是因为它<b>不信任任何"说完成了"的声音</b>——
+    包括它自己派出去的审查者。我们照搬的不是 skill 文件，是这个立场：
+    <b>每一层都要拿出跑得出来的证据，每一层都 accept 下一层、audit 上一层。</b>
+    塔台的台账、verifier、Attention、skill 沉淀正好是承载它的地基——这次是把回路接通。
+  </div>
+
+  <p class="small" style="margin-top:30px">参考：pstack（Lauren Tan，MIT）· michael-denyer/pstack-claude（移植）·
+  本计划对应的实现仓库 agent-control-tower（当前 v0.9.2）· 2026-11-08</p>
+</div>
+</body>
+</html>
