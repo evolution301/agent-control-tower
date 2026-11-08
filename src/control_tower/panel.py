@@ -11,7 +11,11 @@ what, then the ledger. A healthy tower shows almost nothing above the fold.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -384,8 +388,12 @@ def make_handler(cfg: TowerConfig):
                 self._send(200, json.dumps(report, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8")
                 return
-            if path == "/healthz":
-                self._send(200, b'{"ok":true}', "application/json")
+            if path in ("/healthz", "/api/health"):
+                from . import __version__
+
+                body = json.dumps({"ok": True, "version": __version__, "instance": INSTANCE,
+                                   "started_at": STARTED_AT, "pid": os.getpid()})
+                self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
                 return
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
@@ -407,12 +415,150 @@ def make_handler(cfg: TowerConfig):
     return Handler
 
 
-def serve(cfg: TowerConfig, host: str = "127.0.0.1", port: int = 8787, open_browser: bool = False) -> None:
+class PanelServer(ThreadingHTTPServer):
+    """One panel per port, strictly.
+
+    `allow_reuse_address` is what lets a second process bind a port that is already
+    serving; on Windows that silently produced two panels on 8787, and requests
+    were answered by whichever process won the race — including an old build after
+    an upgrade. Refusing the second bind is the honest behaviour.
+    """
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+
+INSTANCE = uuid.uuid4().hex[:8]
+STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
+SOURCE_FILES = ("panel.py", "panel_hq.py", "snapshot.py", "registry.py", "analytics.py",
+                "board.py", "config.py", "verify.py")
+
+
+def source_fingerprint(directory: Path | None = None) -> str:
+    """Cheap 'is this still the code I booted with?' marker."""
+    import hashlib
+
+    base = Path(directory or Path(__file__).parent)
+    digest = hashlib.sha256()
+    for name in SOURCE_FILES:
+        path = base / name
+        try:
+            stat = path.stat()
+            digest.update(f"{name}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+        except OSError:
+            digest.update(f"{name}:missing".encode())
+    return digest.hexdigest()[:16]
+
+
+def should_restart(booted: str, current: str) -> bool:
+    """The whole rule, in one testable line."""
+    return bool(booted) and booted != current
+
+
+def restart_argv() -> list[str]:
+    """argv to come back with, minus the interpreter."""
+    argv = list(sys.argv[1:])
+    return argv or []
+
+
+def _watch_and_restart(booted: str, interval: float = 2.0) -> None:
+    """Re-exec ourselves when the installed code changes under us."""
+
+    def loop() -> None:
+        while True:
+            time.sleep(interval)
+            if should_restart(booted, source_fingerprint()):
+                try:
+                    os.execv(sys.executable, [sys.executable, "-m", "control_tower", *restart_argv()])
+                except OSError:
+                    return
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+DEFAULT_PORT = 8787
+PORT_SCAN = 20          # how many ports to try before giving up
+PORT_MEMO = "panel-port"  # remembered inside .tower/
+
+
+def port_free(port: int, host: str = "127.0.0.1") -> bool:
+    """Can we bind there right now?"""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def remembered_port(cfg: TowerConfig) -> int | None:
+    path = cfg.state_dir / PORT_MEMO
+    try:
+        value = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return value if 1 <= value <= 65535 else None
+
+
+def remember_port(cfg: TowerConfig, port: int) -> None:
+    try:
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.state_dir / PORT_MEMO).write_text(str(port), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def choose_port(cfg: TowerConfig, requested: int | None = None,
+                host: str = "127.0.0.1") -> int:
+    """Pick the port the panel should own — and remember it.
+
+    Order, because a board a person bookmarked must keep working:
+
+    1. an explicit `--port`: that exact port, no surprises (the DSH bundle passes
+       its configured port and reads it back);
+    2. the port this workspace used last time (`.tower/panel-port`);
+    3. 8787;
+    4. 8787+1 … 8787+19, the first free one.
+
+    The chosen port is written back, so the next run lands on the same URL instead
+    of drifting every time somebody else's tool grabs the default.
+    """
+    if requested:
+        remember_port(cfg, requested)
+        return requested
+    candidates = []
+    last = remembered_port(cfg)
+    if last:
+        candidates.append(last)
+    candidates.append(DEFAULT_PORT)
+    candidates.extend(DEFAULT_PORT + i for i in range(1, PORT_SCAN))
+    for port in candidates:
+        if port_free(port, host):
+            remember_port(cfg, port)
+            return port
+    raise OSError(f"ports {DEFAULT_PORT}..{DEFAULT_PORT + PORT_SCAN - 1} are all in use")
+
+
+def serve(cfg: TowerConfig, host: str = "127.0.0.1", port: int | None = None,
+          open_browser: bool = False) -> None:
     """Block on the panel server. Ctrl-C stops it."""
-    httpd = ThreadingHTTPServer((host, port), make_handler(cfg))
-    url = f"http://{host}:{port}/"
+    chosen = choose_port(cfg, port, host)
+    try:
+        httpd = PanelServer((host, chosen), make_handler(cfg))
+    except OSError as exc:
+        raise SystemExit(
+            f"port {chosen} is taken on {host} ({exc}). Pass another one: tower panel --port {chosen + 1}"
+        ) from exc
+    url = f"http://{host}:{chosen}/"
+    from . import __version__
+
     print(f"tower panel → {url}  (workspace: {cfg.workspace})")
-    print("Ctrl-C to stop. The panel is read-only; use the CLI to accept or rework.")
+    print(f"v{__version__} · instance {INSTANCE} · port {chosen} remembered for this workspace")
+    print("Ctrl-C to stop. This page is read-only; it reloads itself when the code changes.")
+    booted = source_fingerprint()
+    _watch_and_restart(booted)
     if open_browser:
         try:
             import webbrowser

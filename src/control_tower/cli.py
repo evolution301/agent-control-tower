@@ -329,7 +329,11 @@ def cmd_board(args) -> int:
 
 
 def cmd_panel(args) -> int:
-    """Local web panel (read-only), bound to 127.0.0.1 by default."""
+    """Local web panel (read-only), bound to 127.0.0.1 by default.
+
+    No `--port`: the panel keeps a stable URL — it reuses the port this workspace
+    used last time, else 8787, else the next free one, and remembers the result.
+    """
     from .panel import serve
 
     cfg = _cfg(args)
@@ -1105,9 +1109,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_board)
 
-    s = sub.add_parser("panel", help="local web panel on 127.0.0.1")
-    s.add_argument("--port", type=int, default=8787)
+    s = sub.add_parser("panel", help="local web panel on 127.0.0.1 (stable URL)")
+    s.add_argument("--port", type=int, default=None,
+                   help="force one port; by default the panel reuses its remembered port, else 8787, else +1")
     s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--workspace", default=None, help="tower workspace (same as the global flag)")
     s.add_argument("--open-browser", action="store_true")
     s.set_defaults(func=cmd_panel)
 

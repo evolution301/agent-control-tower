@@ -286,7 +286,19 @@ function bot(state, colour, size) {
     <circle class="cheek" cx="13" cy="32" r="2.6"/><circle class="cheek" cx="35" cy="32" r="2.6"/></g></svg>`;
 }
 
-let state = { project: QS.get("project") || "", projects: [], overview: null, snapshot: null, stats: null };
+let state = { project: QS.get("project") || "", projects: [], overview: null, snapshot: null, stats: null, instance: "" };
+
+// The panel restarts itself when the installed code changes; the page follows it
+// instead of showing numbers from the previous build.
+async function checkInstance() {
+  try {
+    const h = await (await fetch("/api/health", { cache: "no-store" })).json();
+    if (state.instance && h.instance && h.instance !== state.instance) location.reload();
+    state.instance = h.instance || state.instance;
+  } catch (err) {
+    // mid-restart: the next tick picks the new instance up
+  }
+}
 let nowTimer = null, nowIndex = 0;
 
 function dotString(project) {
@@ -600,6 +612,7 @@ function drawTerm() {
 }
 
 async function load() {
+  checkInstance();
   try {
     const overview = await (await fetch("/api/projects", { cache: "no-store" })).json();
     state.overview = overview;
