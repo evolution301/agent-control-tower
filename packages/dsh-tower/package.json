@@ -1,6 +1,6 @@
 {
   "name": "dsh-tower",
-  "version": "0.7.10",
+  "version": "0.8.0",
   "description": "Control tower tools for DeepSeek Harness: dispatch a task to a role, read the inbox, verify and accept or send back a report.",
   "type": "module",
   "main": "index.js",
