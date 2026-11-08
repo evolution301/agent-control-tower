@@ -32,6 +32,7 @@ from .huddle import huddle as run_huddle
 from .onboard import onboard as run_onboard
 from .skills import rebuild_index, save_skill, skill_index_lines
 from .supervise import due_human, overdue_tasks, parse_due, supervise
+from .triage import triage as run_triage, triage_task
 from .snapshot import build_snapshot
 from .verify import verify_report
 
@@ -228,6 +229,8 @@ def cmd_dispatch(args) -> int:
         return 0
     task = dispatch(cfg, board, task, dry_run=args.dry_run)
     relayed = [] if args.dry_run else relay_report_messages(cfg, board, task)
+    if not args.dry_run and not getattr(args, "no_auto", False):
+        _auto_triage(cfg, board, task)
     if args.json:
         # Machine mode: stdout carries exactly one JSON document and nothing else
         # so adapters (the DSH bundle) can parse it. The human report below must
@@ -284,6 +287,8 @@ def cmd_batch(args) -> int:
         board.save(task)
         task = dispatch(cfg, board, task, dry_run=args.dry_run)
         relay_report_messages(cfg, board, task)
+        if not args.dry_run and not getattr(args, "no_auto", False):
+            _auto_triage(cfg, board, task)
         print(f"{task.id} {role} -> {task.status}")
         if cfg.serial_requests and i < len(roles) - 1:
             import time
@@ -580,6 +585,45 @@ def cmd_stats(args) -> int:
         _print(report, as_json=True)
         return 0
     print(render_bi_text(report))
+    return 0
+
+
+def _triage_dispatch(cfg, board, task, reasons: str):
+    """Re-dispatch a rejected job with its own failure reasons attached."""
+    task.brief = (task.brief + "\n\n## Rework: the previous attempt failed verification\n"
+                  + reasons)[:8000]
+    board.save(task)
+    dispatch(cfg, board, task)
+
+
+def _auto_triage(cfg, board, task):
+    """Close the ordinary loop for one task: verify + accept, or rework, or escalate."""
+    if not getattr(cfg, "auto_triage", True):
+        return None
+    return triage_task(cfg, board, task, dispatch_fn=_triage_dispatch)
+
+
+def cmd_triage(args) -> int:
+    """The tower's own follow-up pass: verify, accept, retry — escalate only when stuck."""
+    cfg = _cfg(args)
+    board = Board(cfg)
+    result = run_triage(cfg, board, dispatch_fn=_triage_dispatch)
+    if getattr(args, "json", False):
+        _print(result, as_json=True)
+        return 0
+    if not result["touched"]:
+        print("nothing to triage — the queue is empty")
+        return 0
+    print(f"triaged {result['touched']} item(s): "
+          + ", ".join(f"{k} {v}" for k, v in sorted(result["outcomes"].items())))
+    for item in result["results"]:
+        if item["outcome"] not in ("done", "waiting"):
+            print(f"  {item['task']}  {item['outcome']}"
+                  + (f"  round {item['round']}" if item.get("round") else ""))
+    if result["needs_person"]:
+        print(f"\nstill needs a person: {', '.join(result['needs_person'])}")
+    else:
+        print("\nnothing needs a person")
     return 0
 
 
@@ -957,6 +1001,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="explicit (a person asked) or inferred (a rule allowed it)")
     s.add_argument("--restate", action="store_true",
                    help="ask the role to restate the brief first; no work runs until `tower restate ok`")
+    s.add_argument("--no-auto", action="store_true",
+                   help="do not auto-triage (leave the report for a human to accept)")
     s.add_argument("--due", default="",
                    help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; a silent overrun gets chased by `tower supervise`")
     s.set_defaults(func=cmd_dispatch)
@@ -979,6 +1025,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("triage", help="the tower's own follow-up pass: verify, accept, retry, escalate")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_triage)
 
     s = sub.add_parser("stats", help="business view: throughput, verified rate, lead time, roles")
     s.add_argument("--days", type=int, default=14, help="throughput window in days (default 14)")
@@ -1032,6 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("task")
     rs.add_argument("--note", default="")
     rs.add_argument("--json", action="store_true")
+    rs.add_argument("--no-auto", action="store_true")
     rs.set_defaults(func=cmd_restate)
 
     s = sub.add_parser("batch", help="dispatch one brief to several roles")
@@ -1040,6 +1091,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--batch", default="")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--due", default="", help="deadline for every task in the batch")
+    s.add_argument("--no-auto", action="store_true", help="do not auto-triage after each dispatch")
     s.set_defaults(func=cmd_batch)
 
     s = sub.add_parser("inbox", help="show reports filed by roles")

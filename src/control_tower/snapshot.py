@@ -71,6 +71,7 @@ class Snapshot:
     generated_at: str = ""
     counts: dict[str, int] = field(default_factory=dict)
     attention: list[dict[str, Any]] = field(default_factory=list)
+    triage: list[dict[str, Any]] = field(default_factory=list)
     in_flight: list[dict[str, Any]] = field(default_factory=list)
     roles: list[dict[str, Any]] = field(default_factory=list)
     recent: list[dict[str, Any]] = field(default_factory=list)
@@ -82,6 +83,7 @@ class Snapshot:
             "generated_at": self.generated_at,
             "counts": self.counts,
             "attention": self.attention,
+            "triage": self.triage,
             "in_flight": self.in_flight,
             "roles": self.roles,
             "recent": self.recent,
@@ -97,7 +99,13 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         by_state[key] = by_state.get(key, 0) + 1
 
     attention = []
+    triage = []
     in_flight = []
+    # One source of truth: the Board decides who owns a task, the snapshot only
+    # renders that decision. Anything else drifts (a restating task carrying an
+    # attention question once counted as "needs you" while the badge said "tower").
+    person_ids = {t.id for t in board.needs_person()}
+    lead_ids = {t.id for t in board.needs_lead()}
     for t in tasks:
         state = t.state or ""
         question = (t.attention or {}).get("question", "")
@@ -115,9 +123,13 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
             "due": due_human(t),
             "overdue": bool(t.overdue) or due_human(t).startswith("overdue"),
         }
-        if state in PERSON_STATES or (question and state != "dropped"):
-            attention.append(item)
-        elif t.status in ("pending", "claimed", "in_progress", "reported", "rework"):
+        if t.status == "accepted":
+            continue  # done is done: an accepted task must never sit in a queue
+        if t.id in person_ids:
+            attention.append(item)          # a human really has to decide
+        elif t.id in lead_ids:
+            triage.append(item)             # the tower/lead can close this itself
+        elif t.status in ("pending", "claimed", "in_progress"):
             in_flight.append(item)
 
     # Role view: what is this role doing right now?
@@ -162,6 +174,7 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
     counts = {
         "total": len(tasks),
         "attention": len(attention),
+        "triage": len(triage),
         "in_flight": len(in_flight),
         **{k: v for k, v in sorted(by_state.items())},
     }
@@ -172,6 +185,7 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         counts=counts,
         attention=attention,
+        triage=triage,
         in_flight=in_flight,
         roles=roles,
         recent=recent_items,

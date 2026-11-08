@@ -38,6 +38,10 @@ class TowerConfig:
     adapter_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     serial_requests: bool = False
     request_gap_s: float = 1.5
+    # The tower closes the ordinary follow-up loop itself (verify → accept, or
+    # rework with its own failure reasons). A person is asked only when the tower
+    # has run out of moves.
+    auto_triage: bool = True
     accept_requires: list[str] = field(
         default_factory=lambda: ["summary", "files", "checks"]
     )
@@ -150,6 +154,7 @@ def parse_config(path: Path) -> TowerConfig:
         adapter_options=adapter_options,
         serial_requests=bool(raw.get("serial_requests", False)),
         request_gap_s=float(raw.get("request_gap_s", 1.5)),
+        auto_triage=bool(raw.get("auto_triage", True)),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )

@@ -41,12 +41,18 @@ OPEN_STATES = {
 REPORT_STATES = {
     "progress": "working",        # still going, nothing needed
     "waiting": "idle",            # turn finished, waiting for a trigger
-    "ready": "person/review",     # deliverable is ready for a human to look at
+    "ready": "lead/review",       # deliverable is ready — the tower verifies it
     "blocked": "person/blocked",  # cannot continue without a human decision
     "failed": "person/failed",    # gave up; needs a human
     "dropped": "idle",            # nothing to do
 }
-PERSON_STATES = {"ready", "blocked", "failed"}
+# Only these two belong to a human. Everything else is work the tower itself can
+# move: verifying a report, confirming a restatement, retrying a rework. Counting
+# `ready` here was what made "needs you" show 32 items when 30 of them were
+# already accepted — the human queue must stay honest or it stops being read.
+PERSON_STATES = {"blocked", "failed"}
+# States the lead (the tower, or an agent driving it) is expected to act on.
+LEAD_STATES = {"ready", "restating", "rework", "progress", "waiting"}
 
 
 def now_ts() -> str:
@@ -186,8 +192,37 @@ class Board:
         return task
 
     def needs_person(self) -> list[Task]:
-        """Tasks waiting on a human, most recent first (the attention queue)."""
-        out = [t for t in self.all() if t.state in PERSON_STATES or (t.attention and t.state != "dropped")]
+        """Tasks that genuinely require a human decision.
+
+        A task is *not* here just because it is done, reported or overdue: those
+        are the tower's own work (verify, accept, retry). Only `blocked`/`failed`
+        states — and an adapter-level failure nothing else can retry — belong to a
+        person.
+        """
+        out = [
+            t for t in self.all()
+            if t.status != STATUS_ACCEPTED
+            and (t.state in PERSON_STATES or (t.status == STATUS_FAILED and not (t.state or "")))
+        ]
+        return sorted(out, key=lambda t: t.updated_at, reverse=True)
+
+    def needs_lead(self) -> list[Task]:
+        """Work the tower can still move on its own: verify, retry, confirm.
+
+        A task that is *currently running* is not queue work: the bot owns it and
+        nobody — person or lead — should be told to act on it.
+        """
+        person_ids = {t.id for t in self.needs_person()}
+        idle_hands = {STATUS_CLAIMED, STATUS_IN_PROGRESS, STATUS_PENDING}
+        out = [
+            t for t in self.all()
+            if t.status != STATUS_ACCEPTED
+            and t.status not in idle_hands
+            and t.id not in person_ids
+            and (t.status in (STATUS_REPORTED, STATUS_REWORK, STATUS_RESTATING)
+                 or t.state in ("ready", "waiting")
+                 or t.overdue)
+        ]
         return sorted(out, key=lambda t: t.updated_at, reverse=True)
 
     def transition(self, task: Task, status: str, note: str = "", **extra: Any) -> Task:
