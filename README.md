@@ -11,7 +11,7 @@ DSH-first, adapter-portable, no SaaS, no database, no daemon.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-246%20python%20%2B%2027%20node-brightgreen?style=flat)](tests)
+[![Tests](https://img.shields.io/badge/tests-249%20python%20%2B%2027%20node-brightgreen?style=flat)](tests)
 [![CI](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml/badge.svg)](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/evolution301/agent-control-tower?style=flat&label=release)](https://github.com/evolution301/agent-control-tower/releases)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-PyYAML%20only-lightgrey?style=flat)](pyproject.toml)
