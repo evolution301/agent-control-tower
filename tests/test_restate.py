@@ -87,10 +87,11 @@ def test_dispatch_restate_records_a_restatement_and_runs_no_work(tower, capsys):
     assert "restatement" in _events(tower)
 
 
-def test_a_restating_task_needs_a_person(tower):
+def test_a_restating_task_is_lead_work_not_human_work(tower):
     cli.main(["dispatch", "backend", "needs a decision", "--restate"])
-    ids = [t.id for t in Board(tower).needs_person()]
-    assert "T-0001" in ids
+    board = Board(tower)
+    assert "T-0001" in [t.id for t in board.needs_lead()]
+    assert "T-0001" not in [t.id for t in board.needs_person()]
 
 
 def test_restate_ok_dispatches_the_work_with_the_confirmed_understanding(tower, capsys):
@@ -145,7 +146,8 @@ def test_restate_gate_fails_closed_without_a_restatement_section(tower, monkeypa
     assert task.status == STATUS_FAILED
     assert not task.restatement
     assert task.attention is None
-    assert "T-0001" not in [t.id for t in Board(tower).needs_person()]
+    # a gate that failed closed is a real decision: a person sees it
+    assert "T-0001" in [t.id for t in Board(tower).needs_person()]
 
 
 def test_restate_gate_fails_closed_on_an_adapter_error(tower, monkeypatch):

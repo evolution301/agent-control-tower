@@ -273,8 +273,8 @@ def test_batch_takes_a_trailing_brief_instead_of_skipping_it(tower, capsys):
     rc = cli.main(["batch", "backend", "qa", "ship the landing page"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "backend -> reported" in out
-    assert "qa -> reported" in out
+    assert "backend -> accepted" in out
+    assert "qa -> accepted" in out
     assert "skip unknown role" not in out
     board = Board(tower)
     assert board.load("T-0002").brief == "ship the landing page"

@@ -163,7 +163,7 @@ def test_panel_stats_endpoint_serves_json(tower):
         assert "rates" in data and "throughput" in data
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
             page = response.read().decode("utf-8")
-        assert "/api/stats" in page and "Business" in page
+        assert "/api/stats" in page and ("统计 STATS" in page or "STATS" in page)
     finally:
         httpd.shutdown()
         httpd.server_close()

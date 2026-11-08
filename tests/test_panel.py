@@ -51,8 +51,10 @@ def _seed(cfg):
 def test_snapshot_orders_attention_first_and_tracks_roles(tower):
     _seed(tower)
     snap = build_snapshot(tower)
-    assert [a["id"] for a in snap.attention] == ["T-0001", "T-0002"]
-    assert snap.counts["attention"] == 2
+    # only a decision belongs to a person; reported work is the tower's queue
+    assert [a["id"] for a in snap.attention] == ["T-0002"]
+    assert [t["id"] for t in snap.triage] == ["T-0001"]
+    assert snap.counts["attention"] == 1 and snap.counts["triage"] == 1
     assert snap.counts["in_flight"] == 1
     roles = {r["name"]: r for r in snap.roles}
     assert roles["backend"]["doing"] == "working"
@@ -84,8 +86,9 @@ def test_panel_serves_html_and_snapshot(tower):
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/snapshot", timeout=5) as r:
             data = json.loads(r.read().decode("utf-8"))
-        assert data["counts"]["attention"] == 2
-        assert data["attention"][0]["id"] == "T-0001"
+        assert data["counts"]["attention"] == 1
+        assert data["counts"]["triage"] == 1
+        assert data["attention"][0]["id"] == "T-0002"
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as r:
             assert json.loads(r.read().decode("utf-8"))["ok"] is True
