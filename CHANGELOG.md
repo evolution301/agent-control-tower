@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.7.8] - 2026-11-08
+
+### Added
+
+- **The panel owns a stable URL.** `tower panel` reuses the port this workspace used last time
+  (`.tower/panel-port`), else 8787, else the next free port, and remembers the result — so a
+  bookmarked board keeps working instead of dying when the default port is taken. `--port` still
+  forces an exact port (the DSH bundle passes one and reads it back).
+- **The panel restarts itself when the installed code changes.** It fingerprints its own sources on
+  boot and re-execs when they move, and `/api/health` now carries `version`, `instance` and `pid`; the
+  page polls it and reloads when the instance changes. A plugin update can no longer leave a board
+  running yesterday's build.
+- **`--workspace` works on the `panel` subcommand** (`tower panel --workspace <dir>`), the way a person
+  naturally types it; the global flag still works.
+
+### Fixed
+
+- **Two panels could share one port.** `ThreadingHTTPServer` sets `allow_reuse_address`, which on
+  Windows lets a second process bind a port that is already serving — requests then hit whichever
+  process won the race, including a stale build. The panel server now refuses the second bind with an
+  actionable message.
+
 ## [0.7.7] - 2026-11-08
 
 ### Added

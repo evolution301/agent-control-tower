@@ -170,6 +170,13 @@ active one — the panel defaults to it, and the DSH bundle's `tower_*` tools fo
 
 Deep links: `?lang=zh`, `?theme=dark`, `?project=<name>`, `?project=__all__`.
 
+`tower panel` keeps a **stable URL**: it reuses the port this workspace used last
+time (`.tower/panel-port`), else 8787, else the next free port — and remembers the
+choice, so a bookmarked page keeps working. Two panels can no longer share one port.
+When the installed code changes (a plugin update), the running panel detects it and
+**restarts itself**, and the page reloads once the new instance answers — no more
+"the board is silently showing yesterday's build".
+
 **Every number has a written formula.** The board is for people, so the model is
 specified once — [docs/board-model.md](docs/board-model.md) — and the page, the CLI
 and the panel all read the same decisions:
