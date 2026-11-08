@@ -638,6 +638,30 @@ def cmd_relay(args) -> int:
     return 0
 
 
+def cmd_review(args) -> int:
+    """Trigger one adversarial review pass over a task (default: automatic)."""
+    from .worker import enqueue, ensure_worker
+
+    cfg = _cfg(args)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    task = board.load(args.task)
+    reviewer = ""
+    for name in getattr(cfg, "review_roles", []) or []:
+        if name in cfg.roles and name != task.role:
+            reviewer = name
+            break
+    if not reviewer:
+        _say(args, "no reviewer configured (review_roles) for this tower")
+        return 2
+    job = enqueue(cfg, "adversarial", task.id, payload={"reviewer": reviewer})
+    ensure_worker(cfg)
+    board.event("review_queued", task=task.id, reviewer=reviewer, manual=True)
+    print(f"queued adversarial review {job['id']} — {reviewer} breaks {task.id}; "
+          "verdict lands in `tower inbox`")
+    return 0
+
+
 def cmd_principles(args) -> int:
     """The work-discipline cards injected into every dispatch (pstack-derived)."""
     from .principles import ORDER, PRINCIPLES, show
@@ -1141,6 +1165,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("supervise", help="chase every open task past its deadline")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_supervise)
+
+    s = sub.add_parser("review", help="trigger one adversarial review pass over a task")
+    s.add_argument("task", help="task id, e.g. T-0001")
+    s.set_defaults(func=cmd_review)
 
     s = sub.add_parser("principles", help="the work-discipline cards every dispatch follows")
     s.add_argument("name", nargs="?", default="", help="show one full card (default: list)")

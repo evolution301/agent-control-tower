@@ -90,6 +90,10 @@ class Task:
     waiter: dict[str, Any] = field(default_factory=dict)  # {"kind": "inbox"|"lead_session"|"file", "target": …}
     settled_at: str = ""                             # stamped when the worker settles the task
     notified: bool = False                           # the settlement notice went out
+    # v0.10 — adversarial review (pstack thermo/interrogate): one independent
+    # reviewer pass with "break it, prove by run" before the tower accepts.
+    review_of: str = ""                              # origin task id when this task IS a review
+    review: dict[str, Any] = field(default_factory=dict)  # {rounds, verdict, reviewer, findings…}
     # v0.8 — supervision: a task is a job with a due date, and a role that misses
     # it gets pulled up by the lead instead of quietly rotting.
     due_at: str = ""

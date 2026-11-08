@@ -510,6 +510,7 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(statusTool(cfg)),
     ctx.tools.register(sayTool(cfg)),
     ctx.tools.register(relayTool(cfg)),
+    ctx.tools.register(reviewTool(cfg)),
     ctx.tools.register(huddleTool(cfg)),
     ctx.tools.register(superviseTool(cfg)),
     ctx.tools.register(skillSaveTool(cfg)),
@@ -625,6 +626,32 @@ export function relayTool(cfg) {
     },
     presentCall(args) {
       return { card: 'command', title: `tower relay ${args.to ?? ''}`, kind: 'other' }
+    },
+  })
+}
+
+/** `tower_review`: trigger one adversarial "break it" pass over a task. */
+export function reviewTool(cfg) {
+  return tool({
+    name: 'tower_review',
+    description:
+      'Queue one adversarial review pass over a task: an independent reviewer role gets a "break this change, prove each finding with a run" brief; proved findings rework the origin task, zero findings accept it. The verdict lands in tower_inbox.',
+    parameters: {
+      task: { type: 'string', required: true, description: 'Task id to review, e.g. T-0001.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties:
+        { ok: { type: 'boolean', required: true }, text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const { data } = await runTower(cfg, ['review', String(args.task ?? '')])
+      const text = typeof data === 'string' ? data : `Queued adversarial review of ${args.task ?? ''}.`
+      return { ok: true, text }
+    },
+    presentCall(args) {
+      return { card: 'command', title: `tower review ${args.task ?? ''}`, kind: 'other' }
     },
   })
 }

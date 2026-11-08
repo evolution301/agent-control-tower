@@ -34,7 +34,7 @@ def tower(tmp_path, monkeypatch):
 
 def _good_report(task, root):
     (root / "roles" / task.role / "out.txt").write_text("x", encoding="utf-8")
-    return {"state": "ready", "summary": "did it",
+    return {"state": "ready", "summary": "did it", "self_review": "no findings — checks re-run",
             "files": [f"roles/{task.role}/out.txt"], "checks": ["pytest → 3 passed"]}
 
 
@@ -55,7 +55,7 @@ def test_a_passing_report_is_accepted_without_a_human(tower, tmp_path):
 def test_a_failing_report_is_reworked_with_its_own_reasons(tower, tmp_path):
     board = Board(tower)
     task = board.create("backend", "ship it badly")
-    task.report = {"state": "ready", "summary": "did it", "files": ["roles/backend/ghost.txt"],
+    task.report = {"state": "ready", "summary": "did it", "self_review": "no findings — checks re-run", "files": ["roles/backend/ghost.txt"],
                    "checks": ["nothing"]}
     board.save(task)
     board.transition(task, STATUS_REPORTED, note="report filed", report=task.report)
@@ -75,7 +75,7 @@ def test_a_failing_report_is_reworked_with_its_own_reasons(tower, tmp_path):
 def test_rounds_exhausted_escalates_to_a_person(tower, tmp_path):
     board = Board(tower)
     task = board.create("qa", "no budget for retries")   # max_rounds 0 on qa
-    task.report = {"state": "ready", "summary": "s", "files": ["roles/qa/none.txt"],
+    task.report = {"state": "ready", "summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/qa/none.txt"],
                    "checks": ["x"]}
     board.save(task)
     board.transition(task, STATUS_REPORTED, note="report filed", report=task.report)

@@ -47,12 +47,23 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
         problems.append(f"unknown status '{state}' — expected one of {sorted(REPORT_STATES)}")
     elif state in ("blocked", "failed") and not (report.get("attention") or {}).get("question"):
         problems.append(f"status '{state}' requires one concrete question under '## Attention'")
+    requirements["self_review"] = lambda r: bool((r.get("self_review") or "").strip())
+
     for need in cfg.accept_requires:
         check = requirements.get(need)
         if check is None:
             continue
         if not check(report):
             problems.append(f"report is missing '{need}'")
+
+    # v0.10 — the self-review gate (pstack: 写完 ≠ 完成). When the tower turns it
+    # on, a report without a substantive `## Self-review` line cannot pass, no
+    # matter what accept_requires says.
+    if getattr(cfg, "self_review", True) and not requirements["self_review"](report):
+        problems.append(
+            "report is missing '## Self-review' — re-read your own changes and fix "
+            "issues BEFORE filing; one line on what you reviewed and fixed, or "
+            "'no findings — checks re-run'")
 
     # A report that lists a check but never says what happened is not a check.
     weak = [c for c in report.get("checks", []) if "→" not in c and "->" not in c]

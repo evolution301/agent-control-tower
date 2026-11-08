@@ -54,6 +54,14 @@ You are the **{role}** role inside a control-tower workflow.
    ## Open issues
    - <anything unfinished, or "none">
 
+   ## Self-review
+   <mandatory. BEFORE filing this report, re-read ONLY what you added or changed
+    and fix what you find: side effects on importers/callers; every Checks line
+    re-run with real output; AI slop removed (extra comments, defensive
+    try/except, deep nesting — constraints belong in structure, not prose).
+    Write one line: what you reviewed and what you fixed, or exactly
+    "no findings — checks re-run".>
+
    ## Attention
    <only when Status is blocked/failed: exactly one concrete question a person can answer>
    ```
@@ -362,6 +370,8 @@ def parse_report(text: str) -> dict[str, Any]:
             continue
         attention_lines.append(s2)
     question = attention_lines[0] if attention_lines else ""
+    findings = items("findings")
+    self_review_lines = [l.strip() for l in buckets.get("self-review", []) if l.strip()]
     return {
         "state": state,
         "summary": " ".join(summary_lines),
@@ -369,6 +379,10 @@ def parse_report(text: str) -> dict[str, Any]:
         "checks": items("checks"),
         "open_issues": items("open issues"),
         "attention": {"question": question} if question else None,
+        # v0.10 — the self-review gate (pstack: 写完 ≠ 完成，审查通过才算) and the
+        # adversarial findings format (each entry must carry a command + its output)
+        "self_review": " ".join(self_review_lines),
+        "findings": findings,
         "raw": text,
     }
 

@@ -85,7 +85,7 @@ def test_verify_rejects_report_without_checks(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"summary": "did it", "files": ["roles/backend/f.txt"], "checks": []}
+    task.report = {"summary": "did it", "self_review": "no findings — checks re-run", "files": ["roles/backend/f.txt"], "checks": []}
     result = verify_report(tower, task)
     assert not result.ok
     assert any("checks" in p for p in result.problems)
@@ -95,7 +95,7 @@ def test_verify_rejects_check_without_result(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"summary": "s", "files": ["roles/backend/f.txt"], "checks": ["pytest"]}
+    task.report = {"summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/backend/f.txt"], "checks": ["pytest"]}
     result = verify_report(tower, task)
     assert not result.ok
     assert any("→" in p for p in result.problems)
@@ -104,7 +104,7 @@ def test_verify_rejects_check_without_result(tower):
 def test_verify_rejects_missing_files(tower):
     board = Board(tower)
     task = board.create("backend", "x")
-    task.report = {"summary": "s", "files": ["roles/backend/ghost.txt"], "checks": ["ls → ok"]}
+    task.report = {"summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/backend/ghost.txt"], "checks": ["ls → ok"]}
     result = verify_report(tower, task)
     assert not result.ok
     assert any("do not exist" in p for p in result.problems)
@@ -114,7 +114,7 @@ def test_verify_accepts_good_report_and_runs_commands(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"state": "ready", "summary": "s", "files": ["roles/backend/f.txt"],
+    task.report = {"state": "ready", "summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/backend/f.txt"],
                    "checks": ["pytest → 9 passed"]}
     result = verify_report(tower, task)
     assert result.ok, result.problems
@@ -127,6 +127,9 @@ Did the work.
 
 ## Files
 - `a.py` — added
+
+## Self-review
+no findings — checks re-run
 
 ## Checks
 - `pytest` → 3 passed
@@ -163,6 +166,9 @@ Cannot proceed without the API key.
 ## Files
 - none
 
+## Self-review
+no findings — checks re-run
+
 ## Checks
 - `curl /health` → 401
 
@@ -178,7 +184,7 @@ def test_verify_rejects_unknown_status(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"state": "done-ish", "summary": "s", "files": ["roles/backend/f.txt"],
+    task.report = {"state": "done-ish", "summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/backend/f.txt"],
                    "checks": ["pytest → ok"]}
     result = verify_report(tower, task)
     assert not result.ok
@@ -189,7 +195,7 @@ def test_verify_requires_attention_when_blocked(tower):
     board = Board(tower)
     task = board.create("backend", "x")
     (tower.workspace / "roles" / "backend" / "f.txt").write_text("x", encoding="utf-8")
-    task.report = {"state": "blocked", "summary": "s", "files": ["roles/backend/f.txt"],
+    task.report = {"state": "blocked", "summary": "s", "self_review": "no findings — checks re-run", "files": ["roles/backend/f.txt"],
                    "checks": ["pytest → failed"], "attention": None}
     result = verify_report(tower, task)
     assert not result.ok

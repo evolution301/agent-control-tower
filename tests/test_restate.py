@@ -145,8 +145,8 @@ def test_restate_gate_fails_closed_without_a_restatement_section(tower, monkeypa
     task = Board(tower).load("T-0001")
     assert task.status == STATUS_FAILED
     assert not task.restatement
-    assert task.attention is None
-    # a gate that failed closed is a real decision: a person sees it
+    # a gate that failed closed is a real decision: a person sees one concrete question
+    assert task.attention and "rewrite the brief" in task.attention["question"].lower()
     assert "T-0001" in [t.id for t in Board(tower).needs_person()]
 
 

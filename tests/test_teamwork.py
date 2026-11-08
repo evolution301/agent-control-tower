@@ -148,7 +148,7 @@ def test_relay_delivers_report_messages_and_skips_bad_targets(tower):
     board = Board(tower)
     task = board.create("backend", "work with a handoff")
     task.report = {
-        "state": "ready", "summary": "s", "files": [], "checks": [],
+        "state": "ready", "summary": "s", "self_review": "no findings — checks re-run", "files": [], "checks": [],
         "raw": "## Message to frontend\nalign with me\n\n## Message to backend\nnote to self\n\n## Message to ghost\nnobody home\n",
     }
     delivered = relay_report_messages(tower, board, task)

@@ -71,9 +71,34 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
     if task.status == STATUS_RESTATING:
         return {"task": task.id, "outcome": "awaiting_restatement_ok"}
 
+    # an adversarial review in flight owns the task: nobody else may act on it
+    if (task.review or {}).get("verdict") == "pending":
+        return {"task": task.id, "outcome": "awaiting_review"}
+
+    def _pick_reviewer() -> str:
+        """First configured reviewer that exists here; the author never reviews itself."""
+        for name in getattr(cfg, "review_roles", []) or []:
+            if name in cfg.roles and name != task.role:
+                return name
+        return ""
+
     if task.status == STATUS_REPORTED:
         verdict = verify_report(cfg, task)
         if verdict.ok:
+            reviewer = _pick_reviewer()
+            rounds = int((task.review or {}).get("rounds", 0))
+            if reviewer and rounds < int(getattr(cfg, "review_budget", 1)):
+                # pstack thermos/interrogate: an independent reviewer gets a
+                # "break it, prove by run" pass before the tower accepts.
+                task.review = {"rounds": rounds, "verdict": "pending",
+                               "reviewer": reviewer, "findings": 0, "proved": 0}
+                board.save(task)
+                from .worker import enqueue
+
+                enqueue(cfg, "adversarial", task.id, payload={"reviewer": reviewer})
+                board.event("review_queued", task=task.id, reviewer=reviewer)
+                board.log("review_queued", task=task.id, reviewer=reviewer)
+                return {"task": task.id, "outcome": "review_queued"}
             board.transition(task, STATUS_ACCEPTED, note="auto-accepted: verification passed",
                              verification=verdict.as_dict())
             board.log("auto_accepted", task=task.id, role=task.role)

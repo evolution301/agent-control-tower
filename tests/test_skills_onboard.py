@@ -42,7 +42,7 @@ def _accepted_task(tower, brief="write the deploy script"):
     board = Board(tower)
     task = board.create("backend", brief)
     (tower.workspace / "roles" / "backend" / "out.txt").write_text("x", encoding="utf-8")
-    task.report = {"state": "ready", "summary": "wrote the deploy script",
+    task.report = {"state": "ready", "summary": "wrote the deploy script", "self_review": "no findings — checks re-run",
                    "files": ["roles/backend/out.txt"], "checks": ["bash deploy.sh → ok"]}
     board.save(task)
     board.transition(task, STATUS_ACCEPTED, note="verified")

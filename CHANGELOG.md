@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.10.0] - 2026-11-09
+
+### Added — the self-review loop (写完 ≠ 完成，审查通过才算)
+
+Per `docs/upgrade-self-review.html` (P0+P1), distilled from pstack's review machinery:
+
+- **The self-review gate.** The report contract gains a mandatory `## Self-review`
+  section: before filing, the bot re-reads ONLY its own additions/changes — side
+  effects on importers, Checks re-run with real output, AI slop removed — and
+  writes one line on what it fixed, or exactly "no findings — checks re-run".
+  `verify_report` fails a report without it (`self_review: true` by default;
+  the mock adapter and every docs example carry the section now).
+- **The adversarial review loop.** When a verified report is ready to accept, the
+  tower queues one independent "break it" pass to a configured reviewer
+  (`review_roles: [auditor]`, never the author itself, `review_budget` caps the
+  rounds). The reviewer's brief demands findings **proved by a run** (command →
+  output, one line each; style is out of scope; "no findings" is valid). Proved
+  findings rework the origin task with the proof attached; zero proved findings
+  accept it. A pending review blocks other triage; the verdict —
+  `[tower] T-00xx review verdict: pass|rework | findings=N proved=M` — lands in
+  the tower inbox, the lead session (when configured) and `events.jsonl`.
+- **`tower review <task>`** and the plugin's **`tower_review`** tool (17 tools)
+  trigger a manual pass.
+- Config: `self_review`, `review_roles`, `review_budget`.
+
 ## [0.9.2] - 2026-11-08
 
 ### Added — work discipline distilled from pstack

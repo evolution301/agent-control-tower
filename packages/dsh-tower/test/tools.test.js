@@ -49,7 +49,9 @@ test('apply registers every tower tool and is unloadable', () => {
       'tower_huddle',
       'tower_inbox',
       'tower_projects',
+      'tower_relay',
       'tower_restate_ok',
+      'tower_review',
       'tower_rework',
       'tower_role_add',
       'tower_role_remove',
@@ -62,7 +64,7 @@ test('apply registers every tower tool and is unloadable', () => {
     ],
   )
   dispose()
-  assert.equal(disposed.length, 15)
+  assert.equal(disposed.length, 17)
 })
 
 test('a missing tower CLI cannot crash the host with an unhandled spawn error', async () => {

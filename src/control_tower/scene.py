@@ -148,7 +148,9 @@ def build_scene(cfg: TowerConfig, board: Board | None = None,
         })
 
     pending = []
-    for task in board.needs_person():
+    for task in tasks:
+        if task.status == STATUS_ACCEPTED:
+            continue
         if task.state not in ("blocked", "failed") and task.status != STATUS_FAILED:
             continue
         question = (task.attention or {}).get("question", "")

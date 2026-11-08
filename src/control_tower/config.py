@@ -57,6 +57,11 @@ class TowerConfig:
     async_roles: list[str] = field(default_factory=list)
     # inject the pstack-derived work-discipline index into every dispatch prompt
     principles: bool = True
+    # v0.10 — the self-review loop (pstack): reports must carry `## Self-review`,
+    # and accepted-quality reports face an adversarial review pass before accept.
+    self_review: bool = True
+    review_roles: list[str] = field(default_factory=lambda: ["auditor"])
+    review_budget: int = 1
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     accept_requires: list[str] = field(
@@ -193,6 +198,9 @@ def parse_config(path: Path) -> TowerConfig:
         notify_session=str((raw.get("notify") or {}).get("session", "")),
         async_roles=[str(r) for r in (raw.get("async_roles") or [])],
         principles=bool(raw.get("principles", True)),
+        self_review=bool(raw.get("self_review", True)),
+        review_roles=[str(r) for r in (raw.get("review_roles") or ["auditor"])],
+        review_budget=max(0, int(raw.get("review_budget", 1))),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
     )

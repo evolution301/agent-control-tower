@@ -253,6 +253,87 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     return result
 
 
+def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
+    """One independent "break it" pass over a ready task (pstack thermos/interrogate).
+
+    The reviewer's findings only count when they carry a run's proof (command →
+    output marker, same bar as Checks). Proved findings rework the origin task
+    with the evidence attached; zero proved findings accept it.
+    """
+    from .converse import relay_report_messages
+    from .dispatch import dispatch
+    from .triage import redispatch_with_reasons, triage_task
+    from .verify import verify_report
+
+    origin_id = job["task"]
+    reviewer = str((job.get("payload") or {}).get("reviewer", ""))
+    origin = board.load(origin_id)
+
+    review_task = board.create(
+        reviewer,
+        f"[adversarial review of {origin_id}] Break this change.\n\n"
+        f"Scope: ONLY what the report and files below added or changed.\n"
+        f"Each finding must carry a run's proof — a command plus the actual output "
+        f"that shows wrong behavior — written as one line:\n"
+        f"- <what is wrong> | command: <cmd> → output: <output the intent requires>\n"
+        f"Leave out anything you did not run. Style is out of scope.\n"
+        f"No findings is a valid result. Never misreport severity.\n\n"
+        f"Origin brief:\n{origin.brief[:1500]}\n\n"
+        f"Origin report summary: {(origin.report or {}).get('summary', '')[:400]}\n"
+        f"Origin files: {', '.join((origin.report or {}).get('files', [])[:12])}",
+    )
+    review_task.review_of = origin_id
+    board.save(review_task)
+    board.event("adversarial_started", origin=origin_id, review=review_task.id,
+                reviewer=reviewer)
+
+    dispatch(cfg, board, review_task)
+    relay_report_messages(cfg, board, review_task)
+    review_task = board.load(review_task.id)
+    triage_task(cfg, board, review_task)          # the reviewer's own report settles
+    review_task = board.load(review_task.id)
+
+    raw = review_task.report or {}
+    findings = [str(f).strip() for f in (raw.get("findings") or []) if str(f).strip()]
+    proved = [f for f in findings if ("→" in f or "->" in f or "`" in f)]
+    rounds = int((origin.review or {}).get("rounds", 0)) + 1
+
+    with tower_lock(cfg):
+        origin = board.load(origin_id)
+        verdict = "pass"
+        if proved:
+            verdict = "rework"
+            redispatch_with_reasons(cfg, board, origin, "; ".join(proved)[:400])
+        elif not verify_report(cfg, origin).ok:
+            verdict = "rework"
+            redispatch_with_reasons(cfg, board, origin, "review pass: verification regressed")
+        else:
+            board.transition(origin, STATUS_ACCEPTED,
+                             note=f"adversarial review passed ({review_task.id})",
+                             verification=verify_report(cfg, origin).as_dict())
+        origin.review = {"rounds": rounds, "verdict": verdict, "reviewer": reviewer,
+                         "findings": len(findings), "proved": len(proved),
+                         "review_task": review_task.id}
+        notice = {
+            "event": "review_verdict",
+            "task": origin_id,
+            "reviewer": reviewer,
+            "verdict": verdict,
+            "summary": (f"[tower] {origin_id} review verdict: {verdict} | role={origin.role} "
+                        f"| findings={len(findings)} proved={len(proved)} "
+                        f"| reviewer={reviewer} ({review_task.id})"),
+        }
+        board.notify(notice)
+        origin.notified = _deliver_lead_push(cfg, board, origin, notice["summary"])
+        origin.settled_at = now_ts()
+        board.save(origin)
+    board.event("adversarial_verdict", origin=origin_id, review=review_task.id,
+                verdict=verdict, findings=len(findings), proved=len(proved))
+    board.log("adversarial_done", origin=origin_id, review=review_task.id,
+              verdict=verdict, proved=len(proved))
+    return {"outcome": verdict, "findings": len(findings), "proved": len(proved)}
+
+
 def _settle_restate(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .dispatch import dispatch_restate
 
@@ -394,6 +475,8 @@ def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
     try:
         if job.get("kind") == "dispatch":
             result = _settle_dispatch(cfg, board, job)
+        elif job.get("kind") == "adversarial":
+            result = _run_adversarial(cfg, board, job)
         elif job.get("kind") == "restate":
             result = _settle_restate(cfg, board, job)
         elif job.get("kind") == "relay_watch":

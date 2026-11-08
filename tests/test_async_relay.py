@@ -134,7 +134,7 @@ def test_relay_receipt_watch_forwarded_to_the_lead(tower):
     # the peer answers through the same channel, carrying the relay id
     board.notify({"event": "relay_message", "relay": entry["id"], "reply": entry["id"],
                   "from": "outside-bot",
-                  "message": "here is the answer", "report": {"summary": "here is the answer"}})
+                  "message": "here is the answer", "report": {"summary": "here is the answer", "self_review": "no findings — checks re-run"}})
 
     assert worker.run_worker(tower, once=True) == 0
     receipts = [e for e in board.inbox() if e.get("event") == "relay_receipt"]

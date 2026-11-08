@@ -36,7 +36,7 @@ def _report(task, tmp_path, name="out.txt"):
     rel = f"roles/{task.role}/{name}"
     (tmp_path / "roles" / task.role).mkdir(parents=True, exist_ok=True)
     (tmp_path / rel).write_text("x", encoding="utf-8")
-    return {"state": "ready", "summary": "done", "files": [rel], "checks": ["pytest → 3 passed"]}
+    return {"state": "ready", "summary": "done", "self_review": "no findings — checks re-run", "files": [rel], "checks": ["pytest → 3 passed"]}
 
 
 def test_floors_are_the_roles_and_agents_map_one_to_one(tower):
