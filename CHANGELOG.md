@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.10.3] - 2026-11-09
+
+### Changed — auto-compaction is a native knob, not a plugin (context-guard cancelled)
+
+John found the native answer to the "global 50% auto-compact" request before the
+context-guard client plugin was written: DSH ships
+`@deepseek-ai/dsh-compaction-basic` mounted by default, and its
+`thresholdRatio` (default **0.8**) is the auto-compact threshold. Set it to
+**0.5** in the cordis patch and every session compacts itself at 50% — no
+plugin, no extra turn. The READMEs now document the knob next to the plugin's
+manual `tower_compact` / `tower ctx` helpers, which stay as the one-shot and
+visibility tools.
+
+The previously scheduled context-guard client plugin is cancelled. The triage
+fix (0.8.3) and async dispatch + relay (0.9.0–0.9.1) were already shipped with
+regression tests; nothing pending from that queue.
+
 ## [0.10.2] - 2026-11-09
 
 ### Added — programmatic context compaction (John's 50% rule)

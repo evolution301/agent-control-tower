@@ -56,6 +56,14 @@ notify:
 
 `tower ctx` 打印各会话 contextPressure（≥50% 标 ⚠，John 规则：50% 必须压缩）；DSH 插件 `tower_compact { session }` 在宿主进程内直接调用压缩服务（等价原生 /compact，不多花一个 turn），支持 `role:<角色名>` 定位。
 
+DSH 自带自动压缩（`@deepseek-ai/dsh-compaction-basic`，base 默认挂载）。阈值在 `compaction-basic.thresholdRatio`（默认 **0.8**）；在 cordis patch 里改成 **0.5** 即全局「50% 自动压缩」，无需任何插件：
+```yaml
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.5
+```
+插件的 `tower_compact { session }` 保留为手动一键触发；`tower ctx` 照常打印各会话实时压力。
+
 ## 场景看板（0.8+）
 
 `tower panel` 起来后访问 **`/scene`**：等轴测玻璃塔楼，每个角色一台机器人、每层一个部门、

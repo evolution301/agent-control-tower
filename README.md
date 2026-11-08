@@ -398,3 +398,11 @@ MIT — see [LICENSE](LICENSE).
 
 
 Context hygiene: `tower ctx` prints each session's contextPressure (⚠ at ≥50%, John's rule) and the DSH plugin's `tower_compact { session }` forces the native /compact machinery in-process — no extra turn.
+
+DSH ships built-in auto-compaction (`@deepseek-ai/dsh-compaction-basic`, mounted by default). Its threshold lives in `compaction-basic.thresholdRatio` (default **0.8**); set it to **0.5** in your cordis patch for a global auto-compact-at-50% rule — no plugin needed:
+```yaml
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.5
+```
+The plugin's `tower_compact { session }` tool remains the manual one-shot trigger; `tower ctx` still prints live pressure per session.
