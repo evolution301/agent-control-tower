@@ -353,6 +353,14 @@ def make_handler(cfg: TowerConfig):
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
             query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            if path == "/scene":
+                from .panel_scene import render as render_scene
+
+                lang = pick_lang(self.path.split("?", 1)[1] if "?" in self.path else "",
+                                 self.headers.get("Accept-Language", ""))
+                self._send(200, render_scene(cfg, lang).encode("utf-8"),
+                           "text/html; charset=utf-8")
+                return
             if path in ("/", "/index.html", "/hq"):
                 lang = pick_lang(self.path.split("?", 1)[1] if "?" in self.path else "",
                                  self.headers.get("Accept-Language", ""))
@@ -388,6 +396,25 @@ def make_handler(cfg: TowerConfig):
                 self._send(200, json.dumps(report, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8")
                 return
+            if path == "/api/scene":
+                from .scene import build_scene
+
+                target = self._cfg_for(query, cfg)
+                if target is None:
+                    self._send(404, b'{"error":"unknown project"}', "application/json")
+                    return
+                try:
+                    from . import registry
+
+                    name = getattr(target, "name", "")
+                    colour = next((item.get("color") for item in registry.load_projects()
+                                   if item.get("name") == name), "#ea7a0c")
+                except Exception:
+                    colour = "#ea7a0c"
+                payload = build_scene(target, Board(target), project_color=colour or "#ea7a0c")
+                self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             if path in ("/healthz", "/api/health"):
                 from . import __version__
 
@@ -396,6 +423,37 @@ def make_handler(cfg: TowerConfig):
                 self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
                 return
             self._send(404, b"not found", "text/plain; charset=utf-8")
+
+        def do_POST(self):  # noqa: N802
+            path = self.path.split("?")[0]
+            if path != "/api/actions":
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            try:
+                length = min(int(self.headers.get("Content-Length", "0")), 64 * 1024)
+                body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except (ValueError, OSError):
+                self._send(400, b'{"ok":false,"error":"bad json"}', "application/json")
+                return
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            target = self._cfg_for(query, cfg)
+            board = Board(target)
+            try:
+                from .scene_actions import perform
+
+                result = perform(target, board, str(body.get("action", "")),
+                                 str(body.get("task", "")), str(body.get("note", "")))
+            except KeyError as exc:
+                self._send(400, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                return
+            except ValueError as exc:
+                self._send(409, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                return
+            except FileNotFoundError as exc:
+                self._send(404, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                return
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
 
         def _cfg_for(self, query: dict, fallback: TowerConfig):
             """Project from `?project=`, else the workspace the panel was started in.
@@ -431,7 +489,8 @@ class PanelServer(ThreadingHTTPServer):
 INSTANCE = uuid.uuid4().hex[:8]
 STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
 SOURCE_FILES = ("__init__.py", "panel.py", "panel_hq.py", "snapshot.py", "registry.py",
-                "analytics.py", "board.py", "config.py", "verify.py")
+                "analytics.py", "board.py", "config.py", "verify.py",
+                "scene.py", "scene_actions.py", "panel_scene.py")
 
 
 def source_fingerprint(directory: Path | None = None) -> str:
