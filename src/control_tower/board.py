@@ -194,23 +194,21 @@ class Board:
     def needs_person(self) -> list[Task]:
         """Tasks that genuinely require a human decision.
 
-        A task is *not* here just because it is done, reported or overdue: those
-        are the tower's own work (verify, accept, retry). Only `blocked`/`failed`
-        states — and an adapter-level failure nothing else can retry — belong to a
-        person.
+        A task is *not* here just because it failed: an adapter failure with
+        retries left belongs to the tower (`needs_lead`). A task arrives here when
+        its state is `blocked` or `failed` — which only triage escalation sets once
+        the retry budget is spent (docs/board-model.md: blocked/failed 且重试用尽).
         """
-        out = [
-            t for t in self.all()
-            if t.status != STATUS_ACCEPTED
-            and (t.state in PERSON_STATES or (t.status == STATUS_FAILED and not (t.state or "")))
-        ]
+        out = [t for t in self.all() if t.status != STATUS_ACCEPTED and t.state in PERSON_STATES]
         return sorted(out, key=lambda t: t.updated_at, reverse=True)
 
     def needs_lead(self) -> list[Task]:
         """Work the tower can still move on its own: verify, retry, confirm.
 
         A task that is *currently running* is not queue work: the bot owns it and
-        nobody — person or lead — should be told to act on it.
+        nobody — person or lead — should be told to act on it. An adapter-failed
+        task with retry budget left is here too: `triage` retries it and only
+        escalates to a person once the budget is spent.
         """
         person_ids = {t.id for t in self.needs_person()}
         idle_hands = {STATUS_CLAIMED, STATUS_IN_PROGRESS, STATUS_PENDING}
@@ -219,7 +217,7 @@ class Board:
             if t.status != STATUS_ACCEPTED
             and t.status not in idle_hands
             and t.id not in person_ids
-            and (t.status in (STATUS_REPORTED, STATUS_REWORK, STATUS_RESTATING)
+            and (t.status in (STATUS_REPORTED, STATUS_REWORK, STATUS_RESTATING, STATUS_FAILED)
                  or t.state in ("ready", "waiting")
                  or t.overdue)
         ]

@@ -148,3 +148,54 @@ def test_triage_whole_queue_reports_the_person_remainder(tower, tmp_path):
     result = triage(tower, board)
     assert result["outcomes"]["accepted"] == 1
     assert result["needs_person"] == [stuck.id]
+
+
+# ---- regression: the 2026-11-08 dispatch crash (contract mismatch) ----
+
+def _failed_task(tower, board):
+    task = board.create("backend", "browser task that timed out")
+    task.max_rounds = 2
+    board.save(task)
+    board.transition(task, "failed", note="adapter exit 4")
+    return task
+
+
+def test_dispatch_fn_contract_is_three_args(tower):
+    """The documented contract: dispatch_fn(board, task, reasons) — no TypeError."""
+    board = Board(tower)
+    task = _failed_task(tower, board)
+    seen = []
+
+    def contract_callback(board, task, reasons):   # exactly the contract shape
+        seen.append((task.id, reasons))
+
+    result = triage_task(tower, board, board.load(task.id), dispatch_fn=contract_callback)
+    assert result["outcome"] == "retried"
+    assert seen and seen[0][0] == task.id and seen[0][1], "the callback must receive reasons"
+
+
+def test_a_four_arg_callback_is_exactly_what_crashed(tower):
+    """Passing _triage_dispatch directly (4-arg) is the original crash — pinned."""
+    from control_tower import cli
+
+    board = Board(tower)
+    task = _failed_task(tower, board)
+    with pytest.raises(TypeError, match="reasons"):
+        triage_task(tower, board, board.load(task.id), dispatch_fn=cli._triage_dispatch)
+
+
+def test_dispatch_with_a_failed_task_on_the_board_does_not_crash(tower, capsys):
+    """John's repro: dispatch while a failed task sits on the board — must exit 0."""
+    board = Board(tower)
+    _failed_task(tower, board)
+
+    rc = cli.main(["dispatch", "backend", "new work", "--due", "1h"])
+    assert rc == 0, "the next dispatch must survive auto-triage"
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
+
+    # the failed task itself is retried by the queue pass, not by the new dispatch
+    assert cli.main(["triage"]) == 0
+    reloaded = board.load("T-0001")
+    assert reloaded.round == 1, "the failed task must be retried once"
+    assert "auto_retry" in tower.ledger_path.read_text(encoding="utf-8")

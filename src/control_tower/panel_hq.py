@@ -630,6 +630,8 @@ async function load() {
       state.project = "__all__";
       $("clock").textContent = (overview.generated_at || "").slice(11);
       drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm(); drawAuto();
+  const sceneLink = $("sceneLink");
+  if (sceneLink) sceneLink.href = "/scene?lang=" + (QS.get("lang") || "zh");
       return;
     }
     const q = state.project ? "?project=" + encodeURIComponent(state.project) : "";
@@ -641,6 +643,8 @@ async function load() {
     state.stats = stats;
     $("clock").textContent = (snap.generated_at || "").slice(11);
     drawHeader(); drawTeams(); drawCoord(); drawBots(); drawBusiness(); drawLog(); drawDock(); drawTerm(); drawAuto();
+  const sceneLink = $("sceneLink");
+  if (sceneLink) sceneLink.href = "/scene?lang=" + (QS.get("lang") || "zh");
   } catch (err) {
     $("term").textContent = L.disconnected;
   }

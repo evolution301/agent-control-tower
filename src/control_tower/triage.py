@@ -44,7 +44,14 @@ def _escalate(board: Board, task: Task, question: str) -> None:
 
 
 def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) -> dict[str, Any]:
-    """Move one task forward without a human. Returns what happened."""
+    """Move one task forward without a human. Returns what happened.
+
+    Contract for `dispatch_fn` (the re-dispatch callback): it is called as
+    ``dispatch_fn(board, task, reasons)`` — **exactly three positional args, no
+    cfg**. The tower owns the verify/retry decision; the callback closes over its
+    own config (see ``cli._auto_triage``). A 4-arg callable here raises TypeError
+    mid-dispatch, which is exactly the crash this contract wording prevents.
+    """
     if task.status in (STATUS_ACCEPTED,):
         return {"task": task.id, "outcome": "done"}
     if task.status == STATUS_RESTATING:
@@ -97,7 +104,11 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
 
 
 def triage(cfg: TowerConfig, board: Board | None = None, dispatch_fn=None) -> dict[str, Any]:
-    """Work every queue item the tower can move on its own."""
+    """Work every queue item the tower can move on its own.
+
+    `dispatch_fn` contract: called as ``dispatch_fn(board, task, reasons)`` — three
+    positional args, no cfg (see `triage_task`).
+    """
     board = board or Board(cfg)
     results = [triage_task(cfg, board, task, dispatch_fn=dispatch_fn)
                for task in board.needs_lead()]

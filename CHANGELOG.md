@@ -5,6 +5,27 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.8.3] - 2026-11-08
+
+### Fixed
+
+- **`tower dispatch` crashed (exit 1) during auto-triage** when a verified-failed or adapter-failed
+  task sat on the board: `triage.py` calls `dispatch_fn(board, task, reasons)` (three args) while
+  `cli._triage_dispatch(cfg, board, task, reasons)` takes four — `TypeError: missing 1 required
+  positional argument: 'reasons'`. The contract is now written down (`triage.py` docstrings: three
+  positional args, no cfg — the callback closes over its own config), the closure binding in
+  `cli._auto_triage`/`cmd_triage` is the formal shape, and three regression tests pin it: the 3-arg
+  contract works, a 4-arg callable reproduces the original TypeError, and a dispatch with a failed
+  task on the board completes (exit 0) and the queue pass retries that task.
+- **Adapter-failed tasks were owned by the wrong queue.** A failed task with retries left was caught
+  by a `needs_person` catch-all, so the tower's own retry pass never saw it — the human queue got a
+  card for work the tower could (and should) retry itself. Failed tasks with budget now live in
+  `needs_lead`; only an escalation (`state = blocked/failed`, set when the budget is spent) reaches a
+  person. The scene's stuck cards follow the same rule.
+- **A failed restatement gate is explicitly a person decision.** `dispatch_restate` now sets
+  `state = blocked` with a concrete question (rewrite the brief), instead of relying on the removed
+  catch-all.
+
 ## [0.8.2] - 2026-11-08
 
 ### Added

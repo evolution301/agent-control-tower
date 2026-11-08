@@ -270,14 +270,28 @@ def dispatch_restate(
     board.add_assignment(task, adapter.name, result.exit_code)
 
     if result.exit_code != 0:
-        board.transition(
-            task, STATUS_FAILED, note=f"restate adapter exit {result.exit_code}", output=result.text[:2000]
-        )
+        board.transition(task, STATUS_FAILED, note=f"restate adapter exit {result.exit_code}", output=result.text[:2000])
+        # a failed GATE is a person decision (rewrite the brief), not a retry:
+        # auto-triage would re-send the same words and fail the same way.
+        task.state = "blocked"
+        task.attention = {
+            "question": f"Restatement gate failed for {task.id} (adapter exit "
+                        f"{result.exit_code}) — rewrite the brief, then re-dispatch.",
+        }
+        board.save(task)
         return task
 
     parsed = parse_restatement(result.text)
     if not parsed["restatement"]:
         board.transition(task, STATUS_FAILED, note="adapter returned no '## Restatement' section")
+        # same as above: a gate that fails closed is a person decision
+        task.state = "blocked"
+        task.attention = {
+            "question": f"Restatement gate failed for {task.id} — the adapter never "
+                        "answered with a '## Restatement' section. Rewrite the brief, "
+                        "then re-dispatch.",
+        }
+        board.save(task)
         return task
 
     task.restatement = parsed["restatement"]

@@ -593,7 +593,14 @@ def cmd_stats(args) -> int:
 
 
 def _triage_dispatch(cfg, board, task, reasons: str):
-    """Re-dispatch a rejected job with its own failure reasons attached."""
+    """Re-dispatch a rejected job with its own failure reasons attached.
+
+    This takes cfg, so it does NOT match `triage.triage_task`'s 3-arg
+    `dispatch_fn(board, task, reasons)` contract directly — the callers below bind
+    cfg with a closure (the formal fix for the 2026-11-08 exit-1 crash: a failed
+    task on the board made the next dispatch die in auto-triage with
+    "missing 1 required positional argument: reasons").
+    """
     task.brief = (task.brief + "\n\n## Rework: the previous attempt failed verification\n"
                   + reasons)[:8000]
     board.save(task)
@@ -604,14 +611,14 @@ def _auto_triage(cfg, board, task):
     """Close the ordinary loop for one task: verify + accept, or rework, or escalate."""
     if not getattr(cfg, "auto_triage", True):
         return None
-    return triage_task(cfg, board, task, dispatch_fn=_triage_dispatch)
+    return triage_task(cfg, board, task, dispatch_fn=(lambda b, t, r: _triage_dispatch(cfg, b, t, r)))
 
 
 def cmd_triage(args) -> int:
     """The tower's own follow-up pass: verify, accept, retry — escalate only when stuck."""
     cfg = _cfg(args)
     board = Board(cfg)
-    result = run_triage(cfg, board, dispatch_fn=_triage_dispatch)
+    result = run_triage(cfg, board, dispatch_fn=(lambda b, t, r: _triage_dispatch(cfg, b, t, r)))
     if getattr(args, "json", False):
         _print(result, as_json=True)
         return 0
