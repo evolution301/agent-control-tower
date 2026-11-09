@@ -50,6 +50,21 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.13.1] - 2026-11-09
+
+### Fixed — relay contract taught a flag the CLI did not accept (B17)
+
+`RELAY_CONTRACT` (the text delivered to every relayed session) and the module
+docstring said `tower relay --to <target> -m "..."`, while the CLI only parsed a
+positional target. A peer following the contract got `unrecognized arguments:
+--to` and never answered, so `--await-receipt` waits could hang for nothing.
+
+- The CLI now **accepts both**: `tower relay <target> -m "…"` (canonical) and
+  `tower relay --to <target> -m "…"` (alias). A missing target is a clear exit-2.
+- The contract and docstring now teach the positional form (with `--to` named as
+  an accepted alias), so either style a peer copies works.
+- Regression test covers both forms and the contract wording.
+
 ## [0.13.0] - 2026-11-09
 
 ### Fixed — prl-ops field batch B11–B16

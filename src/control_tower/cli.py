@@ -730,10 +730,14 @@ def cmd_relay(args) -> int:
     wait_file = str(getattr(args, "wait", "") or "")
     timeout_raw = str(getattr(args, "timeout", "") or "")
     timeout_s = duration_seconds(timeout_raw) if timeout_raw else int(getattr(args, "timeout_s", 300))
+    if not ((getattr(args, "to", "") or getattr(args, "to_flag", "")).strip()):
+        _say(args, 'missing target: tower relay <target> -m "..." (or --to <target>)')
+        return 2
     try:
         entry = send_relay(
             cfg, board, adapter,
-            to=args.to, message=args.message,
+            to=(getattr(args, "to", "") or getattr(args, "to_flag", "")).strip(),
+            message=args.message,
             sender=getattr(args, "from_", "") or "",
             reply=getattr(args, "reply", "") or "",
             await_receipt=getattr(args, "await_receipt", False) or bool(wait_file),
@@ -1457,7 +1461,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_ctx)
 
     s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
-    s.add_argument("to", help="target: session id, unique title substring, or the alias 'tower'")
+    s.add_argument("to", nargs="?", default="",
+                   help="target: session id, unique title substring, or the alias 'tower'")
+    s.add_argument("--to", dest="to_flag", default="",
+                   help="same as the positional target (the contract used to say --to)")
     s.add_argument("-m", "--message", required=True, help="the message text")
     s.add_argument("--from", dest="from_", default="", help="label the sender (default: the tower name)")
     s.add_argument("--reply", default="", help="mark this as the answer to relay <id>")

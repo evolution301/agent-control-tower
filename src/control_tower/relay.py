@@ -2,7 +2,7 @@
 
 Semantics — "dial, hang up, wait for the call back":
 
-* `tower relay --to <target> -m "..."` resolves the target (a session id, a
+* `tower relay <target> -m "..."` resolves the target (a session id, a
   title substring, or the reserved alias `tower` meaning this tower's own
   inbox), queues the note, files it in `.tower/relay/`, and returns at once.
 * `--await-receipt` enqueues a `relay_watch` job: the worker polls the tower
@@ -33,10 +33,11 @@ RELAY_CONTRACT = """## Relayed message from the {tower} control tower
 This was delivered by the tower's relay, not by a role. If a reply is expected,
 answer from this session with:
 
-    tower relay --to tower --reply {relay_id} -m "<your answer>"
+    tower relay tower --reply {relay_id} -m "<your answer>"
 
-(you can also use `tower relay --to tower --reply {relay_id} -m "..."` from any
-machine where the `tower` CLI is installed and pointed at the same workspace).
+(the target is a positional argument; `tower relay --to tower --reply {relay_id}`
+is accepted as an alias too). Run it from any machine where the `tower` CLI is
+installed and pointed at the same workspace.
 The tower forwards your answer to whoever sent this.
 """
 

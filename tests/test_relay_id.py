@@ -4,11 +4,13 @@ import json
 import pytest
 
 from control_tower.config import ensure_layout, parse_config
+from control_tower import cli
 from control_tower.relay import resolve_target
 
 
 @pytest.fixture()
-def tower(tmp_path):
+def tower(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     config = {
         "name": "relay-id-tower",
         "workspace": str(tmp_path),
@@ -52,3 +54,20 @@ def test_plugin_declares_agents_inject_and_compaction_stays_optional():
     src = pathlib.Path("packages/dsh-tower/index.js").read_text(encoding="utf-8")
     assert "export const inject = ['tools', 'agents']" in src
     assert "compaction" not in src.split("export const inject")[1].split("\n")[0]
+
+
+def test_relay_accepts_both_to_forms_and_contract_matches_the_cli(tower, capsys):
+    """B17: the contract told peers `--to`, the CLI only took a positional."""
+    from control_tower.relay import RELAY_CONTRACT
+
+    # the contract now teaches the positional form (and names --to as alias)
+    assert "tower relay tower --reply" in RELAY_CONTRACT
+    assert "--to tower --reply" in RELAY_CONTRACT, "alias documented"
+
+    assert cli.main(["relay", "--to", "tower", "-m", "via --to"]) == 0
+    out = capsys.readouterr().out
+    assert "delivered" in out
+    assert cli.main(["relay", "tower", "-m", "via positional"]) == 0
+    out = capsys.readouterr().out
+    assert "delivered" in out
+    assert cli.main(["relay", "-m", "missing target"]) == 2
