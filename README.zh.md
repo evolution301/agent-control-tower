@@ -11,7 +11,7 @@ DSH 优先，适配器可换，无 SaaS、无数据库、无守护进程。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-261%20python%20%2B%2027%20node-brightgreen?style=flat)](tests)
+[![Tests](https://img.shields.io/badge/tests-269%20python%20%2B%2027%20node-brightgreen?style=flat)](tests)
 [![CI](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml/badge.svg)](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/evolution301/agent-control-tower?style=flat&label=release)](https://github.com/evolution301/agent-control-tower/releases)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-D97757?style=flat)](packages/dsh-tower)
