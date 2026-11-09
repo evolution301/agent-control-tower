@@ -50,6 +50,36 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.11.0] - 2026-11-09
+
+### Fixed — the prl-ops field batch (B1–B3, B9, B10)
+
+- **B1 — a long-running worker dispatched with a stale tower.toml** (swapped role
+  session ids, tasks still went to the old sessions). Two layers: the worker
+  re-parses config per job (0.10.4) **and** the heartbeat now carries a config
+  hash — `ensure_worker` retires a worker whose tower.toml changed and spawns a
+  fresh one.
+- **B2 — pytest leaked detached workers** (44 immortal `pytest-of-Administrator`
+  workers at full CPU). The autouse `never_spawn_worker` fixture blocks real
+  spawns in every test; workers also exit when their workspace disappears.
+- **B3 — tasks stuck in `claimed`/`in_progress` with no live worker had no
+  escape hatch.** New `tower unstick <task> [--as pending|dropped]` (pending
+  re-queues, dropped closes as failed; ledgered), plus a `⧗stale` marker on
+  `tower status` when a claim sits longer than `staleness_minutes` (default 30).
+- **B9 — `tower inbox` crashed with `error: 'role'`** on entries that predate
+  the role field: the printer now defaults missing ts/task/role and falls back
+  to a top-level `summary`.
+- **B10 — long briefs fought PowerShell quoting.** `tower dispatch --brief-file
+  <path>` (UTF-8) — `'<'`/`'>'` no longer get eaten as redirects.
+
+### Noted — DSH-side gaps (B7/B8, documented, not tower bugs)
+
+`session/create` accepting only `cwd` leaves sessions ungrouped and
+`workspace/move-invalid` has no `workspace/accountSession` escape; empty-arg
+`session/create` returns ok and creates a stray session; no `session/archive`/
+`session/delete`/`workspace/list`. Workarounds recorded in
+`docs/bug-report-protocol.md`.
+
 ## [0.10.9] - 2026-11-09
 
 ### Fixed — `tower_*` 中文乱码（plugin channel forced cp936 → UTF-8 decode）

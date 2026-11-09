@@ -14,3 +14,25 @@ def isolated_tower_home(tmp_path, monkeypatch):
     home = tmp_path / "tower-home"
     monkeypatch.setenv("TOWER_HOME", str(home))
     return home
+
+
+@pytest.fixture(autouse=True)
+def never_spawn_worker(monkeypatch):
+    """B2: `dispatch --async` must never leave a detached worker behind.
+
+    Tests enqueue jobs and drain them with `worker.run_worker(once=True)`
+    in-process; a real detached spawn here piled up 44 immortal workers that
+    polled deleted tmp dirs at full CPU (2026-11-09 field report).
+    """
+    from control_tower import worker as worker_mod
+
+    spawns = []
+
+    def fake_ensure(cfg):
+        spawns.append(str(cfg.workspace))
+        return True
+
+    real = worker_mod.ensure_worker
+    monkeypatch.setattr(worker_mod, "_real_ensure_worker", real, raising=False)
+    monkeypatch.setattr(worker_mod, "ensure_worker", fake_ensure)
+    yield spawns

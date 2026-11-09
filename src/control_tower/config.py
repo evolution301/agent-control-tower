@@ -69,6 +69,9 @@ class TowerConfig:
     self_review: bool = True
     review_roles: list[str] = field(default_factory=lambda: ["auditor"])
     review_budget: int = 1
+    # B3: a claimed/in_progress task older than this (minutes) is marked
+    # ⧗stale on `tower status` — free it with `tower unstick <id>`.
+    staleness_minutes: int = 30
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     # where the tower file lives — the worker re-parses it per job so role edits
@@ -217,6 +220,7 @@ def parse_config(path: Path) -> TowerConfig:
         self_review=bool(raw.get("self_review", True)),
         review_roles=[str(r) for r in (raw.get("review_roles") or ["auditor"])],
         review_budget=max(0, int(raw.get("review_budget", 1))),
+        staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
         config_path=str(path),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),

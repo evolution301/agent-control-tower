@@ -190,7 +190,13 @@ def cmd_dispatch(args) -> int:
     if role not in cfg.roles:
         _say(args, f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
         return 2
-    brief = args.brief or sys.stdin.read()
+    brief = args.brief or ""
+    brief_file = getattr(args, "brief_file", "") or ""
+    if brief_file:
+        bpath = Path(brief_file)
+        brief = bpath.read_text(encoding="utf-8")
+    if not brief.strip():
+        brief = sys.stdin.read()
     if not brief.strip():
         _say(args, "empty brief")
         return 2
@@ -333,8 +339,8 @@ def cmd_inbox(args) -> int:
         return 0
     for e in entries:
         r = e.get("report") or {}
-        print(f"[{e['ts']}] {e['task']} ({e['role']})")
-        print(f"  summary: {(r.get('summary') or '')[:200]}")
+        print(f"[{e.get('ts', '')}] {e.get('task', '-')} ({e.get('role', '-')})")
+        print(f"  summary: {((r.get('summary') or e.get('summary') or '')[:200])}")
         print(f"  files: {len(r.get('files') or [])} | checks: {len(r.get('checks') or [])}")
     if args.read:
         n = board.mark_inbox_read()
@@ -687,6 +693,32 @@ def cmd_reflect(args) -> int:
     return 1
 
 
+def cmd_unstick(args) -> int:
+    """Free a task stuck in claimed/in_progress with no live worker (B3).
+
+    The default re-queues it as pending so the next dispatch/worker pass owns it
+    again; `--as dropped` closes it instead. Always recorded in the ledger.
+    """
+    from .board import STATUS_FAILED, STATUS_PENDING
+
+    cfg = _cfg(args)
+    board = Board(cfg)
+    task = board.load(args.task)
+    target = getattr(args, "as_", "pending")
+    # "dropped" is a report *state*, not a task status: a stuck task closes as
+    # failed (= gave up) so REPORT_STATES vocabulary stays intact.
+    new_status = STATUS_FAILED if target == "dropped" else STATUS_PENDING
+    board.transition(task, new_status,
+                     note=f"unstuck from {task.status} by operator "
+                          f"(no live worker心跳, {task.updated_at})")
+    task.state = ""
+    task.attention = None
+    board.save(task)
+    board.event("unstuck", task=task.id, frm=task.status, to=new_status)
+    print(f"{task.id}: {task.status} -> {new_status}")
+    return 0
+
+
 def cmd_review(args) -> int:
     """Trigger one adversarial review pass over a task (default: automatic)."""
     from .worker import enqueue, ensure_worker
@@ -888,6 +920,16 @@ def cmd_onboard(args) -> int:
     return 0
 
 
+def _age_minutes(ts: str) -> float:
+    from datetime import datetime
+
+    try:
+        parsed = datetime.strptime((ts or "").strip(), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return 0.0
+    return max(0.0, (datetime.now(parsed.tzinfo) - parsed).total_seconds() / 60)
+
+
 def cmd_status(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
@@ -918,6 +960,12 @@ def cmd_status(args) -> int:
             flag += " ⧗review"
         elif (t.review or {}).get("verdict"):
             flag += f" ✓{t.review['verdict']}"
+        # B3: a claimed/in_progress task with no movement for staleness_minutes
+        # is probably orphaned (dead worker) — surface it, then `tower unstick`.
+        if t.status in ("claimed", "in_progress"):
+            age_min = _age_minutes(t.updated_at)
+            if age_min >= getattr(cfg, "staleness_minutes", 30):
+                flag += " ⧗stale"
         print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {due:<14}{flag} {t.brief[:60]}")
     return 0
 
@@ -1268,6 +1316,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--async", dest="async_", action="store_true",
                    help="queue the task and return its id in under a second; a tower worker "
                         "runs the adapter and the settlement lands in `tower inbox`")
+    s.add_argument("--brief-file", default="", metavar="PATH",
+                   help="read the brief from a file (long briefs, '<'/'>' redirect hazard)")
     s.add_argument("--notify", default="", metavar="KIND",
                    help="where the settlement notice goes: 'inbox' (default) or 'session:<id>' "
                         "to also push one message to the lead's DSH session")
@@ -1297,6 +1347,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("review", help="trigger one adversarial review pass over a task")
     s.add_argument("task", help="task id, e.g. T-0001")
     s.set_defaults(func=cmd_review)
+    s = sub.add_parser("unstick", help="free a task stuck in claimed/in_progress (B3)")
+    s.add_argument("task", help="task id, e.g. T-0001")
+    s.add_argument("--as", dest="as_", choices=["pending", "dropped"], default="pending",
+                   help="re-queue as pending (default) or close as dropped")
+    s.set_defaults(func=cmd_unstick)
     s = sub.add_parser("reflect", help="distil a task's rework history into a draft skill")
     s.add_argument("task", help="task id, e.g. T-0001")
     s.set_defaults(func=cmd_reflect)

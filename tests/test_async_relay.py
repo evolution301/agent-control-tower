@@ -103,6 +103,8 @@ def test_ensure_worker_spawns_detached_only_when_no_heartbeat(tower, monkeypatch
     calls = []
     monkeypatch.setattr(worker.subprocess, "Popen",
                         lambda argv, **kw: calls.append(argv) or object())
+    # undo the conftest no-spawn guard: this test IS about spawning
+    monkeypatch.setattr(worker, "ensure_worker", worker._real_ensure_worker)
     assert worker.ensure_worker(tower) is True
     assert calls and calls[0][-1] == "worker" and "-m" in calls[0], "spawned: -m control_tower ... worker"
     # a fresh heartbeat means no second spawn

@@ -129,7 +129,7 @@ def ensure_worker(cfg: TowerConfig) -> bool:
             info = json.loads(heart.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             info = {}
-        if info.get("v") == __version__:
+        if info.get("v") == __version__ and info.get("cfg_sha") in (None, _config_hash(cfg)):
             return False
         # code moved under a live worker: retire it and take over
         pid = int(info.get("pid", 0) or 0)
@@ -165,13 +165,25 @@ def ensure_worker(cfg: TowerConfig) -> bool:
         return False
 
 
+def _config_hash(cfg: TowerConfig) -> str:
+    """B1: the worker must never dispatch with a stale tower.toml."""
+    import hashlib
+
+    path = Path(getattr(cfg, "config_path", "") or "")
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def _heartbeat(cfg: TowerConfig) -> None:
     from . import __version__
 
     heart = cfg.queue_dir / "worker.json"
     heart.parent.mkdir(parents=True, exist_ok=True)
     heart.write_text(json.dumps({"pid": os.getpid(), "unix_ts": time.time(),
-                                 "v": __version__},
+                                 "v": __version__,
+                                 "cfg_sha": _config_hash(cfg)},
                                 ensure_ascii=False), encoding="utf-8")
 
 
@@ -591,8 +603,11 @@ def run_worker(cfg: TowerConfig, once: bool = False) -> int:
 
     Each thread claims jobs via the atomic `os.replace`; per-role serialisation is
     enforced with `serial_requests` by a semaphore map so the same role never runs
-    two adapter turns at once, while different roles go in parallel.
+    two adapter turns at once, while different roles go in parallel. A worker
+    whose workspace has been deleted (test tmp dirs!) exits instead of polling
+    forever — B2 field report, 2026-11-09.
     """
+    root_existed = cfg.workspace.exists()
     _dirs(cfg)
     _requeue_stale(cfg)
     pool = max(1, int(getattr(cfg, "workers", 4) or 1))
@@ -607,6 +622,8 @@ def run_worker(cfg: TowerConfig, once: bool = False) -> int:
 
     def loop() -> None:
         while True:
+            if root_existed and not cfg.workspace.exists():
+                return  # the workspace was deleted under us (tests/tmp cleanup)
             _heartbeat(cfg)
             pair = _claim_next(cfg)
             if pair is None:
