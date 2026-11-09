@@ -50,6 +50,31 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.13.0] - 2026-11-09
+
+### Fixed — prl-ops field batch B11–B16
+
+- **B11 「待总控」虚高**: queue tasks older than `stale_hours` (default 12) are
+  now 陈旧 — excluded from `needs_lead()`/「待总控」, counted as `stale` and listed
+  separately (`/api/snapshot.stale`, HQ line 「陈旧 N（不在待总控内）」). Terminal
+  tasks (`accepted`, `status/state = dropped`) appear in no queue at all. Field
+  check on prl-tower: 待总控 11 → 6, 陈旧 0 (15 hand-dropped tasks closed).
+- **B12 `tower triage` hung on stale/failed re-dispatches**: re-dispatching is now
+  opt-in (`tower triage --retry`); the default pass only verifies/accepts. A retry
+  turn is capped by `--budget` seconds (default 300) instead of the role's full
+  timeout, so one adapter cannot hang the lead for 10+ minutes.
+- **B13 `tower status --json` broke pipes** (`Invalid \escape`): JSON output is now
+  pure ASCII (`ensure_ascii=True`), so PowerShell 5.1's cp936 decoding of native
+  output can no longer corrupt it. Verified: 1.3 MB output, all bytes < 128.
+- **B14 multi-path Files lines**: one line listing `a.json、b.json` is split on
+  `、 , ; ， ； |` and every segment is checked (brace patterns stay intact).
+- **B15 `tower accept` used the cached report**: `verify_report` now prefers the
+  freshest `<task>-REPORT.md` on disk over `.tower/tasks/T-….json`'s cached parse,
+  so edits to the Markdown take effect on accept.
+- **B16 old reports rejected for missing `## Self-review`**: compatibility via
+  `self_review_since` (reports created before it skip the gate) plus
+  `tower accept --legacy` for a forced one-off override.
+
 ## [0.12.1] - 2026-11-09
 
 ### Fixed — delivery to the issues bot IS the claim

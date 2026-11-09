@@ -216,8 +216,14 @@ def dispatch(
     task: Task,
     dry_run: bool = False,
     extra_options: dict[str, Any] | None = None,
+    timeout_s: float | None = None,
 ) -> Task:
-    """Run one task through its role's adapter."""
+    """Run one task through its role's adapter.
+
+    `timeout_s` caps a single adapter turn below the role's own timeout — the
+    synchronous triage retry path uses it so one bad role cannot hang the lead
+    for the role's full (often 30 min) budget (B12).
+    """
     role = cfg.roles[task.role]
     prompt = render_prompt(cfg, task)
 
@@ -241,7 +247,7 @@ def dispatch(
         role=task.role,
         prompt=prompt,
         cwd=cfg.role_dir(task.role),
-        timeout_s=role.timeout_s,
+        timeout_s=min(role.timeout_s, timeout_s) if timeout_s else role.timeout_s,
         env=role.env,
         task_id=task.id,
         options=options,

@@ -155,7 +155,9 @@ def _say(args, message: str):
 
 def _print(obj, as_json: bool = False):
     if as_json:
-        print(json.dumps(obj, ensure_ascii=False, indent=2))
+        # B13: --json must survive any Windows pipeline (PowerShell 5.1 decodes
+        # native output with the console code page): pure ASCII, always.
+        print(json.dumps(obj, ensure_ascii=True, indent=2))
     else:
         if isinstance(obj, str):
             print(obj)
@@ -286,7 +288,7 @@ def cmd_dispatch(args) -> int:
         print("\n--- report ---")
         print(f"summary: {task.report.get('summary', '')[:400]}")
         print(f"files: {len(task.report.get('files', []))} | checks: {len(task.report.get('checks', []))}")
-        v = verify_report(cfg, task)
+        v = verify_report(cfg, task, legacy=bool(getattr(args, "legacy", False)))
         print(f"verify: {'PASS' if v.ok else 'FAIL'} {v.problems or ''}")
     return 0
 
@@ -874,7 +876,7 @@ def cmd_stats(args) -> int:
     return 0
 
 
-def _triage_dispatch(cfg, board, task, reasons: str):
+def _triage_dispatch(cfg, board, task, reasons: str, timeout_s: float | None = None):
     """Re-dispatch a rejected job with its own failure reasons attached.
 
     Thin wrapper over `triage.redispatch_with_reasons` (the shared path also used
@@ -883,8 +885,11 @@ def _triage_dispatch(cfg, board, task, reasons: str):
     directly — the callers below bind cfg with a closure (the formal fix for the
     2026-11-08 exit-1 crash: a failed task on the board made the next dispatch
     die in auto-triage with "missing 1 required positional argument: reasons").
+
+    `timeout_s` is the per-turn adapter budget used by `tower triage --retry`
+    (B12): the interactive path never waits the role's full 30-minute timeout.
     """
-    redispatch_with_reasons(cfg, board, task, reasons)
+    redispatch_with_reasons(cfg, board, task, reasons, timeout_s=timeout_s)
 
 
 def _auto_triage(cfg, board, task):
@@ -898,7 +903,14 @@ def cmd_triage(args) -> int:
     """The tower's own follow-up pass: verify, accept, retry — escalate only when stuck."""
     cfg = _cfg(args)
     board = Board(cfg)
-    result = run_triage(cfg, board, dispatch_fn=(lambda b, t, r: _triage_dispatch(cfg, b, t, r)))
+    retry = bool(getattr(args, "retry", False))
+    budget = float(getattr(args, "budget", 300) or 0)
+    dispatch_fn = None
+    if retry:
+        # B12: re-dispatching is an explicit decision; a synchronous retry is
+        # capped by --budget so one adapter turn cannot hang the lead for hours.
+        dispatch_fn = (lambda b, t, r: _triage_dispatch(cfg, b, t, r, timeout_s=budget))
+    result = run_triage(cfg, board, dispatch_fn=dispatch_fn)
     if getattr(args, "json", False):
         _print(result, as_json=True)
         return 0
@@ -1461,6 +1473,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_relay)
 
     s = sub.add_parser("triage", help="the tower's own follow-up pass: verify, accept, retry, escalate")
+    s.add_argument("--retry", action="store_true",
+                   help="B12: also re-dispatch rejected tasks (default: verify/accept only)")
+    s.add_argument("--budget", type=float, default=300,
+                   help="per-task adapter budget in seconds for --retry (default 300)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_triage)
 
@@ -1566,6 +1582,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("accept", help="verify and accept a reported task")
     s.add_argument("task")
     s.add_argument("--note", default="")
+    s.add_argument("--legacy", action="store_true",
+                   help="B16: skip the self-review gate for reports written before it")
     s.set_defaults(func=cmd_accept)
 
     s = sub.add_parser("rework", help="send a task back with feedback")

@@ -72,6 +72,7 @@ class Snapshot:
     generated_at: str = ""
     counts: dict[str, int] = field(default_factory=dict)
     attention: list[dict[str, Any]] = field(default_factory=list)
+    stale: list[dict[str, Any]] = field(default_factory=list)
     triage: list[dict[str, Any]] = field(default_factory=list)
     in_flight: list[dict[str, Any]] = field(default_factory=list)
     roles: list[dict[str, Any]] = field(default_factory=list)
@@ -102,6 +103,7 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
     attention = []
     triage = []
     in_flight = []
+    stale = []
     # One source of truth: the Board decides who owns a task, the snapshot only
     # renders that decision. Anything else drifts (a restating task carrying an
     # attention question once counted as "needs you" while the badge said "tower").
@@ -129,6 +131,9 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         }
         if t.status == "accepted":
             continue  # done is done: an accepted task must never sit in a queue
+        if board.is_stale(t):
+            stale.append(item)              # 陈旧：超出「待总控」，单列
+            continue
         if t.id in claimed_ids or t.id in resolved_ids:
             continue  # the issues bot owns it (处理中 / 已处理), not 「需要你」
         if t.id in person_ids:
@@ -183,6 +188,7 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         # v0.12: the issues bot owns claimed/resolved work — the panel says so
         "attention_claimed": len(claimed_ids),
         "attention_resolved": len(resolved_ids),
+        "stale": len(stale),
         "triage": len(triage),
         "in_flight": len(in_flight),
         # design doc §3: the panel/supervise show in-flight async work explicitly
@@ -201,6 +207,7 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         attention=attention,
         triage=triage,
         in_flight=in_flight,
+        stale=stale,
         roles=roles,
         recent=recent_items,
     )

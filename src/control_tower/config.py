@@ -72,6 +72,11 @@ class TowerConfig:
     # B3: a claimed/in_progress task older than this (minutes) is marked
     # ⧗stale on `tower status` — free it with `tower unstick <id>`.
     staleness_minutes: int = 30
+    # B11: a pending/reported/failed task older than this is 陈旧 (stale): it is
+    # listed separately and no longer inflates 「待总控」.
+    stale_hours: float = 12.0
+    # B16: reports created before this timestamp skip the self-review gate.
+    self_review_since: str = ""
     # v0.12 — issue escalation: blocked/failed jobs go to a dedicated issues bot
     # instead of stacking up in 「需要你」. Role must exist in this tower.
     escalation_enabled: bool = True
@@ -226,6 +231,8 @@ def parse_config(path: Path) -> TowerConfig:
         review_roles=[str(r) for r in (raw.get("review_roles") or ["auditor"])],
         review_budget=max(0, int(raw.get("review_budget", 1))),
         staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
+        stale_hours=float(raw.get("stale_hours", 12.0)),
+        self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),
         escalation_role=str((raw.get("escalation") or {}).get("role", "issues")).strip(),
         escalation_max_attempts=max(1, int((raw.get("escalation") or {}).get("max_attempts", 1))),

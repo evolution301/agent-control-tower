@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import re
+
 from .board import REPORT_STATES, Task
 from .config import TowerConfig
 
@@ -56,9 +58,79 @@ def _expand_braces(text: str, limit: int = 64) -> list[str]:
     return out
 
 
-def verify_report(cfg: TowerConfig, task: Task) -> Verification:
+_FILE_SPLIT = re.compile(r"[、,;，；|]+")
+
+
+def split_file_candidates(line: str) -> list[str]:
+    """B14: one report line may list several paths joined by 、 , ; | — split them.
+
+    Each segment is checked on its own; a path with an annotation (` — why`) keeps
+    the old behaviour of checking the path part only. A line carrying a brace
+    pattern (`shots/{home,faq}.png`) is NOT split: its commas belong to the
+    pattern, which `_expand_braces` handles.
+    """
+    base = line.split(" — ")[0].split(" - ")[0].strip().strip("`")
+    if "{" in base and "}" in base and base.find("{") < base.find("}"):
+        return [base]
+    parts = [seg.strip().strip("`") for seg in _FILE_SPLIT.split(base)]
+    return [part for part in parts if part]
+
+
+def _fresh_report(cfg: TowerConfig, task: Task) -> dict[str, Any] | None:
+    """B15: prefer the markdown report on disk over the cached copy in the task.
+
+    A role (or the lead) may edit `<task>-REPORT.md` after filing; accepting must
+    see those edits, not the stale parse stored in `.tower/tasks/T-….json`.
+    """
+    from .dispatch import parse_report
+
+    candidates = []
+    try:
+        candidates.append(Path(cfg.role_dir(task.role)) / f"{task.id}-REPORT.md")
+    except (AttributeError, TypeError):
+        pass
+    candidates.append(Path(cfg.workspace) / f"{task.id}-REPORT.md")
+    project_root = getattr(cfg, "project_root", None)
+    if project_root:
+        candidates.append(Path(project_root) / f"{task.id}-REPORT.md")
+    best: Path | None = None
+    best_mtime = -1.0
+    for candidate in candidates:
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best, best_mtime = candidate, mtime
+    if best is None:
+        return None
+    try:
+        text = best.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    parsed = parse_report(text)
+    if not (parsed.get("state") or parsed.get("summary")
+            or parsed.get("files") or parsed.get("checks")):
+        return None
+    return parsed
+
+
+def _before(task: Task, since: str) -> bool:
+    """Is the task older than `since` (ISO ts)? Unparseable input answers False."""
+    from datetime import datetime
+
+    try:
+        boundary = datetime.strptime(since.strip(), "%Y-%m-%dT%H:%M:%S%z")
+        created = datetime.strptime((task.created_at or "").strip(), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return False
+    return created < boundary
+
+
+def verify_report(cfg: TowerConfig, task: Task, legacy: bool = False) -> Verification:
     problems: list[str] = []
-    report = task.report or {}
+    # B15: the markdown file wins over the cached parse when it exists
+    report = _fresh_report(cfg, task) or task.report or {}
 
     requirements = {
         "summary": lambda r: bool(r.get("summary")),
@@ -76,8 +148,14 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
     elif state in ("blocked", "failed") and not (report.get("attention") or {}).get("question"):
         problems.append(f"status '{state}' requires one concrete question under '## Attention'")
     requirements["self_review"] = lambda r: bool((r.get("self_review") or "").strip())
+    self_review_required = bool(getattr(cfg, "self_review", True)) and not legacy
+    since = str(getattr(cfg, "self_review_since", "") or "").strip()
+    if self_review_required and since and _before(task, since):
+        self_review_required = False
 
     for need in cfg.accept_requires:
+        if need == "self_review" and not self_review_required:
+            continue
         check = requirements.get(need)
         if check is None:
             continue
@@ -87,7 +165,7 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
     # v0.10 — the self-review gate (pstack: 写完 ≠ 完成). When the tower turns it
     # on, a report without a substantive `## Self-review` line cannot pass, no
     # matter what accept_requires says.
-    if getattr(cfg, "self_review", True) and not requirements["self_review"](report):
+    if self_review_required and not requirements["self_review"](report):
         problems.append(
             "report is missing '## Self-review' — re-read your own changes and fix "
             "issues BEFORE filing; one line on what you reviewed and fixed, or "
@@ -117,26 +195,27 @@ def verify_report(cfg: TowerConfig, task: Task) -> Verification:
             roots.append(extra)
     missing = []
     for f in report.get("files", []):
-        candidate = f.split(" — ")[0].split(" - ")[0].strip().strip("`")
-        if not candidate:
+        candidates = split_file_candidates(str(f))
+        if not candidates:
             continue
-        # A report often summarises a set with a shell-style brace pattern
-        # (`shots/{home,faq}-{1440,390}.png`). Every expansion must exist: a
-        # pattern that names files the role did not produce is still a false
-        # claim, and an unexpandable string falls back to the literal path.
-        expanded = _expand_braces(candidate)
-        found = True
-        for item in expanded:
-            path = Path(item)
-            if path.is_absolute():
-                if not path.exists():
+        for candidate in candidates:
+            # A report often summarises a set with a shell-style brace pattern
+            # (`shots/{home,faq}-{1440,390}.png`). Every expansion must exist: a
+            # pattern that names files the role did not produce is still a false
+            # claim, and an unexpandable string falls back to the literal path.
+            expanded = _expand_braces(candidate)
+            found = True
+            for item in expanded:
+                path = Path(item)
+                if path.is_absolute():
+                    if not path.exists():
+                        found = False
+                        break
+                elif not any((root / item).exists() for root in roots):
                     found = False
                     break
-            elif not any((root / item).exists() for root in roots):
-                found = False
-                break
-        if not found:
-            missing.append(candidate)
+            if not found:
+                missing.append(candidate)
     if missing:
         problems.append("reported files do not exist (checked: "
                         + ", ".join(str(r) for r in roots) + "): " + ", ".join(missing[:5]))

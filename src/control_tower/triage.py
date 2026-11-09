@@ -60,7 +60,8 @@ def _escalate(cfg: TowerConfig, board: Board, task: Task, question: str) -> None
                   issues_task=delivered.get("issues_task", ""))
 
 
-def redispatch_with_reasons(cfg: TowerConfig, board: Board, task: Task, reasons: str) -> None:
+def redispatch_with_reasons(cfg: TowerConfig, board: Board, task: Task, reasons: str,
+                          timeout_s: float | None = None) -> None:
     """Re-dispatch a rejected job with its own failure reasons attached.
 
     The one shared re-dispatch path for sync (`cli._triage_dispatch`) and the
@@ -71,7 +72,7 @@ def redispatch_with_reasons(cfg: TowerConfig, board: Board, task: Task, reasons:
     board.save(task)
     from .dispatch import dispatch
 
-    dispatch(cfg, board, task)
+    dispatch(cfg, board, task, timeout_s=timeout_s)
 
 
 def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) -> dict[str, Any]:

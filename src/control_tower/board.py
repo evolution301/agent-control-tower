@@ -112,6 +112,17 @@ class Task:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
+def age_seconds(ts: str) -> float | None:
+    """Seconds since an ISO timestamp; None when it cannot be parsed."""
+    from datetime import datetime
+
+    try:
+        parsed = datetime.strptime((ts or "").strip(), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return None
+    return max(0.0, (datetime.now(parsed.tzinfo) - parsed).total_seconds())
+
+
 def attention_status(task: Task) -> str:
     """open (default) | claimed | resolved — empty when the task has no attention."""
     attention = task.attention or {}
@@ -260,6 +271,19 @@ class Board:
         ]
         return sorted(out, key=lambda t: t.updated_at, reverse=True)
 
+    def is_stale(self, task: Task, hours: float | None = None) -> bool:
+        """B11: queue work that has sat still for too long is 陈旧, not backlog."""
+        if task.status in (STATUS_ACCEPTED, "dropped") or task.state == "dropped":
+            return False  # accepted and dropped are terminal: not a queue at all
+        limit = float(hours if hours is not None else getattr(self.cfg, "stale_hours", 12.0))
+        age = age_seconds(task.updated_at)
+        return age is not None and age > limit * 3600
+
+    def stale_tasks(self) -> list[Task]:
+        """Tasks excluded from 「待总控」because they sat too long; listed apart."""
+        return sorted((t for t in self.all() if self.is_stale(t)),
+                      key=lambda t: t.updated_at)
+
     def needs_lead(self) -> list[Task]:
         """Work the tower can still move on its own: verify, retry, confirm.
 
@@ -278,6 +302,9 @@ class Board:
             and t.status not in idle_hands
             and t.id not in person_ids
             and t.id not in owned_ids
+            and not self.is_stale(t)
+            and t.state != "dropped"
+            and t.status != "dropped"
             and (t.status in (STATUS_REPORTED, STATUS_REWORK, STATUS_RESTATING, STATUS_FAILED)
                  or t.state in ("ready", "waiting")
                  or t.overdue)

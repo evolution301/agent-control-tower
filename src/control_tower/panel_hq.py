@@ -501,6 +501,7 @@ function drawAuto() {
   const el = $("auto");
   if (!el) return;
   const claimed = s.counts?.attention_claimed ?? 0;
+  const staleCount = s.counts?.stale ?? 0;
   const resolved = s.counts?.attention_resolved ?? 0;
   const issuesBit = (claimed || resolved)
     ? ' · <span style="color:var(--dim)">处理中 <b>' + claimed + '</b> · 已处理 <b>'
@@ -509,7 +510,9 @@ function drawAuto() {
   el.innerHTML =
     '<span style="color:var(--orange)">◐</span> 待总控 <b>' + lead +
     '</b> 项（塔自己验收入库 / 打回重试） · <span style="color:var(--red)">●</span> 需要你 <b>' +
-    person + '</b> 项（blocked/failed 且重试用尽）' + issuesBit;
+    person + '</b> 项（blocked/failed 且重试用尽）' + issuesBit
+    + (staleCount ? ' · <span style="color:var(--dim)">陈旧 <b>' + staleCount
+                     + '</b>（不在待总控内）</span>' : '');
 }
 
 function drawBusiness() {
