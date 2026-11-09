@@ -50,6 +50,42 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.12.0] - 2026-11-09
+
+### Added — 问题同步：issues bot + 自动收口 + 秘书链路（John 高优先级）
+
+看板上「需要你 5」的任务其实早已被后续工作取代/属外部额度，但没人收口，一直挂到
+John 亲自来问。这一版把**收口变成塔台自动行为**：
+
+- **自动投递**（关键）：`dispatch`/worker 结束若 `state=blocked` 或 `status=failed`
+  （重试用尽），塔台把该任务作为**问题工单**投给 `escalation.role`（默认 `issues`），
+  而不是留在「需要你」等人。同一任务幂等（`task.escalation` 记录 delivered/issues_task/
+  attempts），工单未关闭前不重复投递。
+
+  ```yaml
+  escalation:
+    enabled: true
+    role: issues
+    max_attempts: 1
+  ```
+
+- **attention 生命周期**：`open → claimed(by issues bot) → resolved(reason)`。
+  `tower attention claim <task> --by issues --note …` 后任务进「处理中」，**不再计入
+  「需要你」**；`tower attention resolve <task> --as dropped|rework|accepted --note …`
+  落终态并清 attention。已 resolve 的任务，triage **不会**再抛回 blocked。
+- **秘书链路可审计**：`tower escalate <task> --to deputy|planner|… --note …` 生成承接
+  任务并记录 `escalation.chain`（issues → deputy → planner），原任务 ledger/events 留痕。
+- **面板同步**：`/api/snapshot` 新增 `attention_claimed` / `attention_resolved`；
+  HQ 顶部状态行显示「处理中 N · 已处理 M」，与 `needs_person()` 实时一致。
+- 工单模板（kind: tower-bug|exec|infra|policy，severity，回写要求）随投递 brief 一起
+  下发；链路与判断标准见各塔 `docs/issues-flow.md`。
+
+### Wired
+
+- evergocasa 塔：新增 `issues` 角色（Evergo 问题处理，session 已接）、
+  `roles/issues/AGENT.md`（来自 `_charters/issues.md`）、`escalation` 配置；
+  `tower doctor` = problems: none。
+
 ## [0.11.0] - 2026-11-09
 
 ### Fixed — the prl-ops field batch (B1–B3, B9, B10)

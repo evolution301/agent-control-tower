@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .board import PERSON_STATES, Board, Task
+from .board import attention_status
 from .config import TowerConfig
 from .supervise import due_human
 
@@ -105,6 +106,9 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
     # renders that decision. Anything else drifts (a restating task carrying an
     # attention question once counted as "needs you" while the badge said "tower").
     person_ids = {t.id for t in board.needs_person()}
+    claimed_ids = {t.id for t in tasks
+                   if attention_status(t) == "claimed" and t.status != "accepted"}
+    resolved_ids = {t.id for t in tasks if attention_status(t) == "resolved"}
     lead_ids = {t.id for t in board.needs_lead()}
     for t in tasks:
         state = t.state or ""
@@ -125,6 +129,8 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
         }
         if t.status == "accepted":
             continue  # done is done: an accepted task must never sit in a queue
+        if t.id in claimed_ids or t.id in resolved_ids:
+            continue  # the issues bot owns it (处理中 / 已处理), not 「需要你」
         if t.id in person_ids:
             attention.append(item)          # a human really has to decide
         elif t.id in lead_ids:
@@ -174,6 +180,9 @@ def build_snapshot(cfg: TowerConfig, board: Board | None = None, recent: int = 8
     counts = {
         "total": len(tasks),
         "attention": len(attention),
+        # v0.12: the issues bot owns claimed/resolved work — the panel says so
+        "attention_claimed": len(claimed_ids),
+        "attention_resolved": len(resolved_ids),
         "triage": len(triage),
         "in_flight": len(in_flight),
         # design doc §3: the panel/supervise show in-flight async work explicitly

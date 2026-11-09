@@ -19,10 +19,12 @@ from .board import (
     Board,
     PERSON_STATES,
     STATUS_ACCEPTED,
+    STATUS_FAILED,
     STATUS_PENDING,
     STATUS_REPORTED,
     STATUS_RESTATING,
     STATUS_REWORK,
+    attention_status,
 )
 from .config import ensure_layout, load_config
 from .board_view import render as render_board, watch as watch_board
@@ -93,6 +95,9 @@ verify_commands:
 serial_requests: false
 request_gap_s: 1.5
 """
+
+
+from .board import attention_status
 
 
 def _cfg(args):
@@ -375,11 +380,51 @@ def cmd_panel(args) -> int:
 
 
 def cmd_attention(args) -> int:
-    """Only what needs a person — the rest can stay quiet."""
+    """list what needs a person, or claim/resolve the attention lifecycle.
+
+    v0.12 (John 2026-11-09): open → claimed(by issues bot) → resolved(reason).
+    A claimed task is 「处理中」 and no longer counts in 「需要你」; a resolved
+    task is closed for good (triage will not re-raise it).
+    """
     cfg = _cfg(args)
     board = Board(cfg)
+    action = getattr(args, "action", "") or ""
+    task_id = getattr(args, "task", "") or ""
+    note = getattr(args, "note", "") or ""
+    by = getattr(args, "by", "") or (cfg.escalation_role or "issues")
+
+    if action in ("claim", "resolve"):
+        if not task_id:
+            _say(args, f"usage: tower attention {action} <task-id> --note \"...\"")
+            return 2
+        task = board.load(task_id)
+        if action == "claim":
+            board.claim_attention(task, by=by, note=note)
+            print(f"{task.id} attention CLAIMED by {by}")
+            return 0
+        target = getattr(args, "as_", "dropped") or "dropped"
+        if target == "rework":
+            # a fresh attempt is a fresh issue: clear the resolved marker
+            task.attention = None
+            board.transition(task, STATUS_REWORK, note=f"attention resolved (rework): {note}")
+            print(f"{task.id} attention RESOLVED -> rework")
+        elif target == "accepted":
+            board.resolve_attention(task, "accepted", note=note, by=by)
+            board.transition(task, STATUS_ACCEPTED, note=f"attention resolved (accepted): {note}")
+            print(f"{task.id} attention RESOLVED -> accepted")
+        else:
+            board.resolve_attention(task, "dropped", note=note, by=by)
+            board.transition(task, STATUS_FAILED, note=f"attention resolved (dropped): {note}")
+            print(f"{task.id} attention RESOLVED -> dropped")
+        return 0
+
     tasks = board.needs_person()
-    if not tasks:
+    claimed = [t for t in board.all()
+               if attention_status(t) == "claimed" and t.status != STATUS_ACCEPTED]
+    if getattr(args, "json", False):
+        _print([t.to_dict() for t in tasks], as_json=True)
+        return 0
+    if not tasks and not claimed:
         print("nothing needs you — all tasks are working, idle or accepted")
         return 0
     for t in tasks:
@@ -387,6 +432,38 @@ def cmd_attention(args) -> int:
         print(f"{t.id}  {t.role:<10} {t.state or t.status:<8} {t.brief[:50]}")
         if question:
             print(f"      → {question}")
+    if claimed:
+        print(f"\n处理中（issues bot 已接手，{len(claimed)}）:")
+        for t in claimed:
+            attention = t.attention or {}
+            print(f"{t.id}  {t.role:<10} claimed_by={attention.get('claimed_by', '?')} "
+                  f"{t.brief[:40]}")
+    return 0
+
+
+def cmd_escalate(args) -> int:
+    """Hand a task to another role with an audit trail (issues → deputy → planner)."""
+    from .escalation import deliver
+
+    cfg = _cfg(args)
+    board = Board(cfg)
+    task = board.load(args.task)
+    target = getattr(args, "to", "") or cfg.escalation_role or "issues"
+    if target not in cfg.roles:
+        _say(args, f"unknown role {target!r}; known roles: {', '.join(sorted(cfg.roles))}")
+        return 2
+    question = (getattr(args, "question", "") or
+                ((task.attention or {}).get("question", "")) or "")
+    note = getattr(args, "note", "") or ""
+    if attention_status(task) == "open":
+        board.claim_attention(task, by=target, note=note or "escalated")
+    result = deliver(cfg, board, task, target, question=question, note=note, chain=True)
+    if not result.get("ok"):
+        _say(args, f"escalation failed: {result.get('reason', '?')}")
+        return 2
+    chain = (task.escalation or {}).get("chain") or [target]
+    print(f"{task.id} escalated to {target} as {result['issues_task']} "
+          f"(chain: {' → '.join(chain)})")
     return 0
 
 
@@ -1470,8 +1547,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--open-browser", action="store_true")
     s.set_defaults(func=cmd_panel)
 
-    s = sub.add_parser("attention", help="list only the tasks that need a person")
+    s = sub.add_parser("attention", help="list / claim / resolve what needs a person")
+    s.add_argument("action", nargs="?", default="", choices=["", "claim", "resolve"])
+    s.add_argument("task", nargs="?", default="")
+    s.add_argument("--by", default="", help="who claims/resolves (default: escalation.role)")
+    s.add_argument("--note", default="", help="short reason, recorded in the task history")
+    s.add_argument("--as", dest="as_", default="dropped",
+                   choices=["dropped", "rework", "accepted"], help="resolution kind")
+    s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_attention)
+    s = sub.add_parser("escalate", help="hand a task to another role with an audit trail")
+    s.add_argument("task", help="task id, e.g. T-0051")
+    s.add_argument("--to", default="", help="target role (default: escalation.role or issues)")
+    s.add_argument("--question", default="", help="one-line issue statement for the ticket")
+    s.add_argument("--note", default="", help="context for the receiving role")
+    s.set_defaults(func=cmd_escalate)
 
     s = sub.add_parser("accept", help="verify and accept a reported task")
     s.add_argument("task")

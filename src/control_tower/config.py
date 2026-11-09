@@ -72,6 +72,11 @@ class TowerConfig:
     # B3: a claimed/in_progress task older than this (minutes) is marked
     # ⧗stale on `tower status` — free it with `tower unstick <id>`.
     staleness_minutes: int = 30
+    # v0.12 — issue escalation: blocked/failed jobs go to a dedicated issues bot
+    # instead of stacking up in 「需要你」. Role must exist in this tower.
+    escalation_enabled: bool = True
+    escalation_role: str = "issues"
+    escalation_max_attempts: int = 1
     # shown on the control-room top bar; empty means "local operator"
     account: str = ""
     # where the tower file lives — the worker re-parses it per job so role edits
@@ -221,6 +226,9 @@ def parse_config(path: Path) -> TowerConfig:
         review_roles=[str(r) for r in (raw.get("review_roles") or ["auditor"])],
         review_budget=max(0, int(raw.get("review_budget", 1))),
         staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
+        escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),
+        escalation_role=str((raw.get("escalation") or {}).get("role", "issues")).strip(),
+        escalation_max_attempts=max(1, int((raw.get("escalation") or {}).get("max_attempts", 1))),
         config_path=str(path),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),

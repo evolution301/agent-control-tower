@@ -17,7 +17,8 @@
 
 | 队列 | 判定（按顺序第一个命中） | 谁处理 |
 |---|---|---|
-| **需要你** | `state ∈ {blocked, failed}` 且未验收 | **人**：一个具体决定（看 `## Attention`） |
+| **处理中（issues）** | `attention.status ∈ {claimed, resolved}` 且未验收 | **问题处理 bot**：去重定级 → 分类路由 → 回写原任务；不再计入「需要你」 |
+| **需要你** | `state ∈ {blocked, failed}` 且未验收且 `attention.status = open` | **人**：一个具体决定（看 `## Attention`） |
 | **待总控** | `status ∈ {reported, rework, restating}`，或 `state = ready`，或已逾期 | **塔自己**：验收 / 打回重试 / 催办，不用人 |
 | **进行中** | `status ∈ {claimed, in_progress}` | bot |
 | **已完成** | `status = accepted` | 谁也不占：只计数，不进任何队列 |
@@ -27,6 +28,7 @@
 1. `accepted` 的任务**永远**不进「需要你」和「待总控」。之前"需要你 32 个"就是这条被违反造成的。
 2. 只有 `blocked` / `failed` 才计入「需要你」，而且必须有 `## Attention` 里的一个具体问题。
 3. 塔的重试次数上限是角色的 `max_rounds`；用尽后任务从「待总控」升级到「需要你」。
+4. **（v0.12）重试用尽不是终点**：`escalation` 配置把 blocked/failed 任务自动投给问题处理 bot（`issues`）；它 `tower attention claim` 后任务进「处理中」，`tower attention resolve --as dropped|rework|accepted` 后进「已处理」，`needs_person` 永远不再数它们。已 resolve 的任务 triage 不会重新抛回 blocked。
 
 ## 3. 页面数字的公式（一处实现，三处显示）
 
@@ -36,7 +38,9 @@
 | bot | 当前项目的角色数；「全部项目」视图为各项目之和 |
 | 进行中 | 当前项目 `status ∈ {claimed, in_progress}` 的任务数 |
 | 待总控 | 当前项目 `Board.needs_lead()` 的长度 |
-| 需要你 | 当前项目 `Board.needs_person()` 的长度 |
+| 需要你 | 当前项目 `Board.needs_person()` 的长度（**不含** issues bot 已 claim/resolve 的） |
+| 处理中 | `attention.status = claimed` 的任务数（issues bot 已接手，v0.12） |
+| 已处理 | `attention.status = resolved` 的任务数（v0.12） |
 | 逾期 | `due_at` 已过且未验收；**为 0 时不显示** |
 | 已完成 | `status = accepted` 的任务数（只出现在「统计」里） |
 | 验收率 | `accepted / (accepted + rework)`；没有裁决时显示 `—`，不显示 0% |

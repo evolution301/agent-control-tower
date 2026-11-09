@@ -35,12 +35,29 @@ from .config import TowerConfig
 from .verify import verify_report
 
 
-def _escalate(board: Board, task: Task, question: str) -> None:
-    """Hand a task to a person with exactly one actionable question."""
-    task.attention = {"question": question}
+def _escalate(cfg: TowerConfig, board: Board, task: Task, question: str) -> None:
+    """Hand a task to the issues bot (v0.12), a person only if no issues role.
+
+    A resolved attention is never re-raised: the issue was closed on purpose, so
+    a late triage pass records the fact instead of flipping the board back to
+    「需要你」 (John, 2026-11-09).
+    """
+    from .board import attention_status
+
+    if attention_status(task) == "resolved":
+        board.log("triage_escalation_suppressed", task=task.id,
+                  reason="attention already resolved")
+        return
+    task.attention = {"question": question, "status": "open"}
     task.state = "blocked"
     board.transition(task, task.status, note=f"escalated: {question[:160]}")
     board.log("triage_escalated", task=task.id, role=task.role, question=question[:300])
+    from .escalation import maybe_escalate
+
+    delivered = maybe_escalate(cfg, board, task, question=question)
+    if delivered:
+        board.log("triage_handed_to_issues", task=task.id,
+                  issues_task=delivered.get("issues_task", ""))
 
 
 def redispatch_with_reasons(cfg: TowerConfig, board: Board, task: Task, reasons: str) -> None:
@@ -74,6 +91,11 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
     # an adversarial review in flight owns the task: nobody else may act on it
     if (task.review or {}).get("verdict") == "pending":
         return {"task": task.id, "outcome": "awaiting_review"}
+
+    # a resolved attention closed the issue on purpose: a late report must not
+    # reopen the board's 「需要你」 queue (v0.12, John 2026-11-09)
+    if (task.attention or {}).get("status") == "resolved":
+        return {"task": task.id, "outcome": "resolved_hold"}
 
     def _pick_reviewer() -> str:
         """First configured reviewer that exists here; the author never reviews itself."""
@@ -118,7 +140,7 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
                 dispatch_fn(board, task, reasons)
             return {"task": task.id, "outcome": "reworked", "round": task.round,
                     "reasons": reasons}
-        _escalate(board, task, f"{task.id} failed verification after {task.round} round(s): "
+        _escalate(cfg, board, task, f"{task.id} failed verification after {task.round} round(s): "
                                f"{verdict.problems[0] if verdict.problems else 'see report'}")
         return {"task": task.id, "outcome": "escalated", "reasons": reasons}
 
@@ -135,7 +157,7 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
             if dispatch_fn is not None:
                 dispatch_fn(board, task, str(output)[:400])
             return {"task": task.id, "outcome": "retried", "round": task.round}
-        _escalate(board, task, f"{task.id} keeps failing after {task.round} round(s): "
+        _escalate(cfg, board, task, f"{task.id} keeps failing after {task.round} round(s): "
                                f"{str(output)[:160]}")
         return {"task": task.id, "outcome": "escalated"}
 

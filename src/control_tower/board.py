@@ -99,6 +99,9 @@ class Task:
     due_at: str = ""
     overdue: bool = False
     nudges: int = 0
+    # v0.12 — issue escalation chain: {"delivered_at", "role", "issues_task",
+    # "attempts", "open", "chain": [role, ...]}. Idempotent per task.
+    escalation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -107,6 +110,14 @@ class Task:
     def from_dict(cls, data: dict[str, Any]) -> "Task":
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
+
+
+def attention_status(task: Task) -> str:
+    """open (default) | claimed | resolved — empty when the task has no attention."""
+    attention = task.attention or {}
+    if not attention:
+        return ""
+    return str(attention.get("status") or "open")
 
 
 class Board:
@@ -168,6 +179,38 @@ class Board:
                 return t
         return None
 
+    # -- attention lifecycle (v0.12) --------------------------------------
+    # open → claimed(by issues bot) → resolved(reason). A claimed or resolved
+    # attention never counts as 「需要你」 again: the issues bot owns it and the
+    # board must not keep nagging a person.
+    def claim_attention(self, task: Task, by: str = "", note: str = "") -> Task:
+        attention = dict(task.attention or {})
+        attention.update({"status": "claimed", "claimed_by": by or "issues",
+                          "claimed_at": now_ts()})
+        if note:
+            attention["note"] = note
+        task.attention = attention
+        self.save(task)
+        self.log("attention_claimed", task=task.id, role=task.role,
+                 by=attention["claimed_by"], note=note[:300])
+        self.event("attention_claimed", task=task.id, by=attention["claimed_by"])
+        return task
+
+    def resolve_attention(self, task: Task, resolution: str = "dropped",
+                          note: str = "", by: str = "") -> Task:
+        attention = dict(task.attention or {})
+        attention.update({"status": "resolved", "resolution": resolution,
+                          "resolved_at": now_ts(), "resolved_by": by or "issues"})
+        if note:
+            attention["note"] = note
+        task.attention = attention
+        task.state = ""
+        self.save(task)
+        self.log("attention_resolved", task=task.id, role=task.role,
+                 resolution=resolution, by=attention["resolved_by"], note=note[:300])
+        self.event("attention_resolved", task=task.id, resolution=resolution)
+        return task
+
     def create(self, role: str, brief: str, batch: str = "", write_scopes: list[str] | None = None,
                idem_key: str = "", mandate: dict[str, Any] | None = None) -> Task:
         cfg_role = self.cfg.roles.get(role)
@@ -209,7 +252,12 @@ class Board:
         its state is `blocked` or `failed` — which only triage escalation sets once
         the retry budget is spent (docs/board-model.md: blocked/failed 且重试用尽).
         """
-        out = [t for t in self.all() if t.status != STATUS_ACCEPTED and t.state in PERSON_STATES]
+        out = [
+            t for t in self.all()
+            if t.status != STATUS_ACCEPTED
+            and t.state in PERSON_STATES
+            and attention_status(t) not in ("claimed", "resolved")
+        ]
         return sorted(out, key=lambda t: t.updated_at, reverse=True)
 
     def needs_lead(self) -> list[Task]:
@@ -221,12 +269,15 @@ class Board:
         escalates to a person once the budget is spent.
         """
         person_ids = {t.id for t in self.needs_person()}
+        owned_ids = {t.id for t in self.all()
+                     if attention_status(t) in ("claimed", "resolved")}
         idle_hands = {STATUS_CLAIMED, STATUS_IN_PROGRESS, STATUS_PENDING}
         out = [
             t for t in self.all()
             if t.status != STATUS_ACCEPTED
             and t.status not in idle_hands
             and t.id not in person_ids
+            and t.id not in owned_ids
             and (t.status in (STATUS_REPORTED, STATUS_REWORK, STATUS_RESTATING, STATUS_FAILED)
                  or t.state in ("ready", "waiting")
                  or t.overdue)
