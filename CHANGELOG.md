@@ -50,6 +50,17 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.12.1] - 2026-11-09
+
+### Fixed — delivery to the issues bot IS the claim
+
+The moment a blocked/failed task is auto-delivered to `escalation.role`, the
+attention is claimed on the issues bot's behalf (`claimed_by=issues`), so the task
+leaves 「需要你」 immediately and counts as 处理中 — it no longer waits for the
+bot's next turn to claim it. Verified end-to-end with the real CLI: exhausted
+task → auto-escalated → `attention 0 · attention_claimed 1` → issues ticket
+dispatched and accepted.
+
 ## [0.12.0] - 2026-11-09
 
 ### Added — 问题同步：issues bot + 自动收口 + 秘书链路（John 高优先级）

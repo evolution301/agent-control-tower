@@ -126,6 +126,10 @@ def deliver(cfg: TowerConfig, board: Board, task: Task, target_role: str,
         escalation["chain"] = previous_chain + [target_role]
     task.escalation = escalation
     board.save(task)
+    # Delivery IS a claim: the issues bot owns the task the moment it is handed
+    # over, so it leaves 「需要你」right now and shows as 处理中 (John, 2026-11-09).
+    if attention_status(task) == "open":
+        board.claim_attention(task, by=target_role, note="auto-escalated")
     board.event("escalation_delivered", task=task.id, to=target_role,
                 issues_task=issue_task.id)
     board.log("escalation_delivered", task=task.id, role=task.role,

@@ -77,16 +77,17 @@ def test_claimed_attention_leaves_needs_person_and_counts_as_processing(tower):
     board = Board(tower)
     task = _exhausted_failure(tower, board)
     triage_task(tower, board, task)
-    task = board.load(task.id)
-    assert {t.id for t in board.needs_person()} == {task.id}
-
-    board.claim_attention(task, by="issues", note="triaging")
+    # delivery to the issues bot IS a claim: no human nagging from that moment
     reloaded = board.load(task.id)
     assert reloaded.attention["status"] == "claimed"
-    assert board.needs_person() == [], "claimed work is 处理中, not 需要你"
+    assert reloaded.attention["claimed_by"] == "issues"
+    assert board.needs_person() == [], "auto-escalated work is 处理中, not 需要你"
     snap = build_snapshot(tower)
     assert snap.counts["attention"] == 0
     assert snap.counts["attention_claimed"] == 1
+    # an explicit claim is harmless and keeps the owner
+    board.claim_attention(reloaded, by="issues", note="triaging")
+    assert board.load(task.id).attention["claimed_by"] == "issues"
 
 
 def test_claim_and_resolve_cli_lifecycle(tower, capsys):
