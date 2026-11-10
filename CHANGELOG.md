@@ -50,6 +50,27 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.15.0] - 2026-11-10
+
+### Breaking — the CLI no longer falls back to the global active-project pointer
+
+With three towers alive (evergocasa / prl-ops / offroadleagues), running a command
+in a directory that has no `tower.toml` silently resolved against the *active*
+project: `tower say ops deputy "…"` answered `unknown role 'deputy'` (its roles
+came from another tower), and the same path would have misrouted `dispatch` /
+`accept` / `relay`. Field report 2026-11-10.
+
+- **Resolution is now exactly `--workspace` > `tower.toml` found walking up from
+  cwd > a loud error.** `~/.tower/binding.json` and the `tower projects use`
+  pointer are no longer consulted by the CLI; they exist for the GUI panel and
+  plugin reconnection only.
+- **Every write command announces its target**: `resolved workspace = <path>` on
+  stderr (stdout stays a single JSON document under `--json`). Covered:
+  `dispatch`, `accept`, `rework`, `relay`, `say`, `escalate`, `batch`, `restate`,
+  `review`, `attention claim|resolve`.
+- READMEs document the rule and the pointer's scope; regression tests pin that a
+  registered+active tower elsewhere is never touched from a foreign cwd.
+
 ## [0.14.1] - 2026-11-10
 
 ### Fixed — false "no worker" alarm right after a spawn

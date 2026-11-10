@@ -208,6 +208,21 @@ tower panel            # http://127.0.0.1:8787/  只读，2 秒自刷新
 顺序固定：**需要你决定**（ready/blocked/failed，每个带那一个具体问题）→ **进行中** → **各角色此刻在做什么** → ledger 尾巴。
 读的就是 CLI 读的那几个文件，没有数据库、没有守护进程、不写任何东西。
 
+## 命令打给哪个塔台？
+
+解析顺序严格是：**`--workspace <目录>` > 从 cwd 向上找到 `tower.toml` > 报错**。
+CLI **不会**回落到全局「活跃项目」指针（`tower projects use`）——多个塔台并存时
+它曾把 `say` / `dispatch` / `accept` 静默投到别的塔台（2026-11-10 实测）。● 指针只
+影响 GUI 面板，不影响 CLI 写操作。
+
+所有写操作（`dispatch`、`accept`、`rework`、`relay`、`say`、`escalate`、`batch`、
+`restate`、`review`、`attention claim|resolve`）都会在 stderr 先打印
+`resolved workspace = <路径>`，`--json` 时 stdout 仍是单一可解析 JSON。
+
+```bash
+tower --workspace G:/projects/tower-a dispatch ops "deploy"
+```
+
 ## 适配器
 
 适配器是唯一知道"怎么让 agent 动起来"的组件。四个后端同一套契约：

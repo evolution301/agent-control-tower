@@ -103,31 +103,34 @@ from .board import attention_status
 def _cfg(args):
     """Which tower this command talks to — and it must never change by accident.
 
-    1. `--workspace` on the command line;
-    2. a `tower.toml` found by walking up from cwd;
-    3. the bound tower (`~/.tower/binding.json`) — the seamless reconnection after
-       a plugin update that lost the aim;
-    4. the project selected with `tower projects use`.
-
-    Whichever tower is used gets recorded as the binding, so the next update can
-    reconnect to it instead of guessing.
+    Resolution is exactly: `--workspace` > a `tower.toml` found by walking up
+    from cwd > **error**. There is deliberately NO fallback to the global
+    active-project pointer: with several towers alive that silently routed
+    `say`/`dispatch`/`accept` into the wrong tower (2026-11-10 field report).
+    The pointer (`tower projects use`) only steers the GUI panel; it never
+    redirects a CLI write.
     """
-    from . import registry
-
     explicit = getattr(args, "global_workspace", None) or getattr(args, "workspace", None)
     if explicit:
         return load_config(explicit)
     try:
         return load_config(os.getcwd())
     except FileNotFoundError:
-        pass
-    target = registry.effective_workspace(None)
-    if target is not None:
-        return load_config(target)
-    raise FileNotFoundError(
-        "no tower.toml here (or in any parent) and no bound/active project — "
-        "run `tower init .`, or `tower projects use <name>`"
-    )
+        raise FileNotFoundError(
+            f"no tower.toml in {Path.cwd()} or any parent — pass "
+            "`--workspace <tower-dir>` (the CLI no longer falls back to the "
+            "global active-project pointer: with several towers that silently "
+            "routed commands to the wrong one)"
+        ) from None
+
+
+def _announce_workspace(cfg) -> None:
+    """Write commands say which tower they resolved.
+
+    stderr keeps `--json` stdout a single parseable document; humans and bots
+    still see the line first.
+    """
+    print(f"resolved workspace = {cfg.workspace}", file=sys.stderr)
 
 
 def _bind(cfg):
@@ -190,6 +193,7 @@ def cmd_init(args) -> int:
 
 def cmd_dispatch(args) -> int:
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
@@ -364,6 +368,7 @@ def cmd_dispatch(args) -> int:
 def cmd_batch(args) -> int:
     """Dispatch the same brief to several roles."""
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
@@ -462,6 +467,7 @@ def cmd_attention(args) -> int:
     task is closed for good (triage will not re-raise it).
     """
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     board = Board(cfg)
     action = getattr(args, "action", "") or ""
     task_id = getattr(args, "task", "") or ""
@@ -521,6 +527,7 @@ def cmd_escalate(args) -> int:
     from .escalation import deliver
 
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     board = Board(cfg)
     task = board.load(args.task)
     target = getattr(args, "to", "") or cfg.escalation_role or "issues"
@@ -544,6 +551,7 @@ def cmd_escalate(args) -> int:
 
 def cmd_accept(args) -> int:
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     board = Board(cfg)
     task = board.load(args.task)
     # A restating task has no report by construction; accepting it would accept
@@ -566,6 +574,7 @@ def cmd_accept(args) -> int:
 
 def cmd_rework(args) -> int:
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     board = Board(cfg)
     task = board.load(args.task)
     board.transition(task, STATUS_REWORK, note=args.note or "rework requested")
@@ -587,6 +596,7 @@ def cmd_restate(args) -> int:
     restatement as `## Confirmed understanding`.
     """
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     _bind(cfg)
     board = Board(cfg)
     task = board.load(args.task)
@@ -617,6 +627,7 @@ def cmd_restate(args) -> int:
 def cmd_say(args) -> int:
     """Relay one bot-to-bot message. Both halves are filed, never whispered."""
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     _bind(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
@@ -626,6 +637,9 @@ def cmd_say(args) -> int:
         return 2
     try:
         entry = say(cfg, board, args.sender, args.to, message.strip(), task_id=args.task)
+    except FileNotFoundError as exc:
+        _say(args, str(exc))
+        return 2
     except KeyError as exc:
         _say(args, str(exc))
         return 2
@@ -815,6 +829,7 @@ def cmd_relay(args) -> int:
     from .relay import send_relay
 
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     adapter_name = getattr(args, "adapter", "") or "dsh"
@@ -902,6 +917,7 @@ def cmd_review(args) -> int:
     from .worker import enqueue, ensure_worker
 
     cfg = _cfg(args)
+    _announce_workspace(cfg)
     ensure_layout(cfg)
     board = Board(cfg)
     task = board.load(args.task)

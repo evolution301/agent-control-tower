@@ -249,6 +249,23 @@ The panel shows **needs you** (ready / blocked / failed, each with its one quest
 flight, then what every role is doing right now, then the tail of the ledger. It reads the same files
 the CLI does — no database, no daemon, no writes.
 
+## Which tower does a command talk to?
+
+Resolution is exactly: **`--workspace <dir>` > a `tower.toml` found by walking up
+from the cwd > an error**. The CLI deliberately does **not** fall back to the
+global active-project pointer (`tower projects use`): with several towers alive
+that silently routed `say` / `dispatch` / `accept` into the wrong tower
+(2026-11-10 field report). The pointer only steers the GUI panel.
+
+Every write command (`dispatch`, `accept`, `rework`, `relay`, `say`, `escalate`,
+`batch`, `restate`, `review`, `attention claim|resolve`) prints
+`resolved workspace = <path>` on stderr first, so the caller can see the target
+even when stdout is machine-readable (`--json`).
+
+```bash
+tower --workspace G:/projects/tower-a dispatch ops "deploy"
+```
+
 ## Adapters
 
 An adapter is the only component that knows how to make an agent act. Same contract for all four:
