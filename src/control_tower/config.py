@@ -75,6 +75,9 @@ class TowerConfig:
     # B11: a pending/reported/failed task older than this is 陈旧 (stale): it is
     # listed separately and no longer inflates 「待总控」.
     stale_hours: float = 12.0
+    # 2026-11-10: a pending job older than this (minutes) while no worker consumes
+    # it is surfaced on `tower status` / `tower inbox` / `tower doctor`.
+    queue_alert_minutes: int = 15
     # B16: reports created before this timestamp skip the self-review gate.
     self_review_since: str = ""
     # v0.12 — issue escalation: blocked/failed jobs go to a dedicated issues bot
@@ -232,6 +235,7 @@ def parse_config(path: Path) -> TowerConfig:
         review_budget=max(0, int(raw.get("review_budget", 1))),
         staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
         stale_hours=float(raw.get("stale_hours", 12.0)),
+        queue_alert_minutes=max(1, int(raw.get("queue_alert_minutes", 15))),
         self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),
         escalation_role=str((raw.get("escalation") or {}).get("role", "issues")).strip(),

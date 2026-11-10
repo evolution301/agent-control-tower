@@ -50,6 +50,73 @@ def _dirs(cfg: TowerConfig) -> tuple[Path, Path, Path, Path]:
     return root, pending, claimed, done
 
 
+def wait_for_worker(cfg: TowerConfig, timeout_s: float = 6.0, poll_s: float = 0.25) -> bool:
+    """Give a just-spawned worker a moment to write its first heartbeat.
+
+    `ensure_worker` returns as soon as the detached process is created; the
+    heartbeat lands ~1s later. Callers that must report "nothing is consuming
+    this queue" poll briefly instead of racing the spawn.
+    """
+    deadline = time.time() + max(0.0, timeout_s)
+    while True:
+        if worker_alive(cfg):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(max(0.05, poll_s))
+
+
+def worker_status(cfg: TowerConfig) -> dict:
+    """Live snapshot of the async consumer for this workspace.
+
+    The 2026-11-10 incident: adversarial jobs piled up for 33 hours because the
+    only worker process belonged to another workspace. This is what makes that
+    visible before a human has to notice the silence.
+    """
+    from . import __version__
+
+    _, pending, claimed, done = _dirs(cfg)
+    info: dict = {}
+    try:
+        info = json.loads((cfg.queue_dir / "worker.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        info = {}
+    age = time.time() - float(info.get("unix_ts", 0) or 0)
+    oldest_minutes = 0.0
+    files = sorted(pending.glob("*.json"), key=lambda f: f.stat().st_mtime)
+    if files:
+        oldest_minutes = round((time.time() - files[0].stat().st_mtime) / 60, 1)
+    return {
+        "workspace": str(cfg.workspace),
+        "alive": bool(info) and age < HEARTBEAT_STALE_S,
+        "pid": info.get("pid"),
+        "version": info.get("v", ""),
+        "heartbeat_age_s": round(age, 1) if info else None,
+        "pending": len(list(pending.glob("*.json"))),
+        "claimed": len(list(claimed.glob("*.json"))),
+        "done": len(list(done.glob("*.json"))),
+        "oldest_pending_minutes": oldest_minutes,
+        "version_matches": info.get("v") == __version__ if info else False,
+    }
+
+
+def backlog_warning(cfg: TowerConfig) -> str | None:
+    """One-line alarm when queued work has no consumer (or has waited too long)."""
+    status = worker_status(cfg)
+    if not status["pending"]:
+        return None
+    limit = float(getattr(cfg, "queue_alert_minutes", 15) or 15)
+    if not status["alive"]:
+        return (f"⚠ queue backlog: {status['pending']} job(s) pending, NO worker alive "
+                f"for {cfg.workspace} — run `tower worker --status`, then "
+                f"`tower worker` (or any dispatch/review auto-starts one)")
+    if status["oldest_pending_minutes"] > limit:
+        return (f"⚠ queue backlog: oldest pending job is "
+                f"{status['oldest_pending_minutes']:.0f} min old (>{limit:.0f} min) "
+                f"while a worker is alive — check `tower worker --status` / logs")
+    return None
+
+
 def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None = None) -> dict:
     """Write one job and return it. Jobs are ordered by a monotonic counter.
 
@@ -92,6 +159,11 @@ def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None
                 tmp.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
     board = Board(cfg)
     board.event("enqueued", job=job["id"], kind=kind, task=task_id)
+    # a queued job must never sit without a consumer (2026-11-10 adversarial pile-up)
+    try:
+        job["spawned"] = bool(ensure_worker(cfg))
+    except (OSError, RuntimeError):
+        job["spawned"] = False
     return job
     return job
 

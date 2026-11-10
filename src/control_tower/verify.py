@@ -58,7 +58,7 @@ def _expand_braces(text: str, limit: int = 64) -> list[str]:
     return out
 
 
-_FILE_SPLIT = re.compile(r"[、,;，；|]+")
+_FILE_SPLIT = re.compile(r"[、,;，；|·•\t]+")
 
 
 def split_file_candidates(line: str) -> list[str]:

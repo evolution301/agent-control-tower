@@ -30,6 +30,9 @@ def never_spawn_worker(monkeypatch):
 
     def fake_ensure(cfg):
         spawns.append(str(cfg.workspace))
+        # emulate a real spawn: the worker's first heartbeat exists by the time
+        # dispatch/review check for a consumer
+        worker_mod._heartbeat(cfg)
         return True
 
     real = worker_mod.ensure_worker

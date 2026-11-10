@@ -50,6 +50,30 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.14.0] - 2026-11-10
+
+### Added — parallel dispatch (a bot can hold several jobs) + queue supervision
+
+- **`tower dispatch <role> --brief-file A --brief-file B …`** queues one task per
+  brief and returns immediately — no more waiting for brief #1's 30-minute adapter
+  turn before brief #2 is even submitted. Also `--parallel` for a single
+  no-wait submit. Each task runs async; the bot's own session may serialise them.
+- **`tower worker --status`** prints the consumer state for the workspace:
+  alive/pid/version/heartbeat age, queue depths, oldest pending age, backlog alarm.
+- **enqueue auto-starts a worker** for its own workspace — the 2026-11-10
+  incident: 12 adversarial reviews sat 33 hours because the only worker belonged
+  to another project and accept-time enqueue never ensured a consumer.
+- **Backlog alarm**: `tower status` / `tower inbox` print a ⚠ line when pending
+  work has no worker, or the oldest pending job exceeds `queue_alert_minutes`
+  (default 15); `tower doctor` reports it as a problem.
+- **`dispatch --async` / `tower review` fail loudly** (exit 1) when no consumer is
+  available after the spawn attempt, instead of silently queueing forever.
+
+### Fixed — Files section separator `·`
+
+- `accept` verification splits multi-path lines on `·`/`•`/tab as well, so
+  `a.json·b.json` is two paths, not one nonexistent one (T-0062 round-1 case).
+
 ## [0.13.1] - 2026-11-09
 
 ### Fixed — relay contract taught a flag the CLI did not accept (B17)

@@ -198,10 +198,73 @@ def cmd_dispatch(args) -> int:
         _say(args, f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
         return 2
     brief = args.brief or ""
-    brief_file = getattr(args, "brief_file", "") or ""
-    if brief_file:
-        bpath = Path(brief_file)
-        brief = bpath.read_text(encoding="utf-8")
+    brief_files = getattr(args, "brief_file", None) or []
+    if isinstance(brief_files, str):
+        brief_files = [brief_files] if brief_files else []
+    parallel = bool(getattr(args, "parallel", False)) or len(brief_files) > 1
+    # parallel submit: one role, several independent briefs, nobody waits on a
+    # 30-minute adapter turn for brief #1 before brief #2 is even queued
+    if parallel:
+        from .worker import backlog_warning, enqueue, wait_for_worker, worker_status
+
+        briefs = []
+        for path_text in brief_files:
+            try:
+                briefs.append((Path(path_text).read_text(encoding="utf-8"), path_text))
+            except OSError as exc:
+                _say(args, f"cannot read brief file {path_text!r}: {exc}")
+                return 2
+        if not brief_files:
+            briefs = [(brief, "-")]
+        briefs = [(text.strip(), label) for text, label in briefs if text.strip()]
+        if not briefs:
+            _say(args, "empty brief")
+            return 2
+        try:
+            due_at = parse_due(getattr(args, "due", "") or "")
+        except ValueError as exc:
+            _say(args, str(exc))
+            return 2
+        kind = "restate" if getattr(args, "restate", False) else "dispatch"
+        notify = str(getattr(args, "notify", "") or "")
+        queued = []
+        spawned = False
+        for text, label in briefs:
+            task = board.create(role, text, batch=args.batch or "",
+                                mandate={"requester": getattr(args, "requester", "") or "operator",
+                                         "strength": getattr(args, "strength", "") or "explicit",
+                                         "policy": "tower.toml"})
+            task.due_at = due_at
+            task.mode = "async"
+            task.waiter = ({"kind": "lead_session", "target": notify[len("session:"):]}
+                           if notify.startswith("session:") else {"kind": "inbox", "target": ""})
+            board.save(task)
+            job = enqueue(cfg, kind, task.id)
+            spawned = spawned or bool(job.get("spawned"))
+            board.event("enqueued", job=job["id"], kind=kind, task=task.id, mode="async",
+                        parallel=True)
+            queued.append({"task": task.id, "job": job["id"], "brief": label})
+        status = worker_status(cfg)
+        if not spawned and not status["alive"] and wait_for_worker(cfg):
+            status = worker_status(cfg)
+        if args.json:
+            _print({"queued": queued, "worker_alive": status["alive"]}, as_json=True)
+            return 0
+        for item in queued:
+            print(f"queued {item['task']} (job {item['job']}) — {item['brief']}")
+        print(f"{len(queued)} task(s) submitted in parallel to {role}; "
+              "the bot runs them in its own order, settlements land in `tower inbox`")
+        if not status["alive"]:
+            _say(args, "worker could not be started — the jobs are queued but nothing is "
+                       "consuming them; run `tower worker`")
+            return 1
+        return 0
+    if brief_files:
+        try:
+            brief = Path(brief_files[0]).read_text(encoding="utf-8")
+        except OSError as exc:
+            _say(args, f"cannot read brief file {brief_files[0]!r}: {exc}")
+            return 2
     if not brief.strip():
         brief = sys.stdin.read()
     if not brief.strip():
@@ -245,8 +308,14 @@ def cmd_dispatch(args) -> int:
         task.mode = "async"
         board.save(task)
         job = enqueue(cfg, kind, task.id)
-        ensure_worker(cfg)
+        spawned = bool(job.get("spawned"))
         board.event("enqueued", job=job["id"], kind=kind, task=task.id, mode="async")
+        from .worker import wait_for_worker, worker_status
+
+        if not spawned and not worker_status(cfg)["alive"] and not wait_for_worker(cfg):
+            _say(args, f"queued {task.id} but NO worker is consuming this workspace — "
+                       "run `tower worker` (or `tower worker --status` to inspect)")
+            return 1
         if args.json:
             _print({"id": task.id, "role": task.role, "queued": True,
                     "job": job["id"], "mode": "async",
@@ -340,6 +409,11 @@ def cmd_batch(args) -> int:
 def cmd_inbox(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
+    from .worker import backlog_warning
+
+    warning = backlog_warning(cfg)
+    if warning:
+        print(warning)
     entries = board.inbox(unread_only=not args.all)
     if not entries:
         print("inbox empty")
@@ -669,6 +743,28 @@ def cmd_projects(args) -> int:
 
 
 def cmd_worker(args) -> int:
+    from .worker import backlog_warning, worker_status
+
+    if getattr(args, "status", False):
+        cfg = _cfg(args)
+        status = worker_status(cfg)
+        print(f"workspace:        {status['workspace']}")
+        print(f"worker alive:     {status['alive']}   (pid {status['pid']}, "
+              f"version {status['version'] or '?'})")
+        print(f"heartbeat age:    {status['heartbeat_age_s']}s")
+        print(f"queue:            pending {status['pending']} · claimed "
+              f"{status['claimed']} · done {status['done']}")
+        if status["oldest_pending_minutes"]:
+            print(f"oldest pending:   {status['oldest_pending_minutes']} min")
+        warning = backlog_warning(cfg)
+        if warning:
+            print(warning)
+        if not status["alive"]:
+            print("next: `tower worker` starts one for THIS workspace (dispatching or "
+                  "reviewing also auto-starts it)")
+            return 2
+        return 0
+    
     """Run the async queue worker: claim → run adapter → settle → notify.
 
     Started automatically by `dispatch --async` when no live heartbeat exists;
@@ -819,8 +915,14 @@ def cmd_review(args) -> int:
         _say(args, "no reviewer configured (review_roles) for this tower")
         return 2
     job = enqueue(cfg, "adversarial", task.id, payload={"reviewer": reviewer})
-    ensure_worker(cfg)
+    spawned = bool(job.get("spawned"))
     board.event("review_queued", task=task.id, reviewer=reviewer, manual=True)
+    from .worker import wait_for_worker, worker_status
+
+    if not spawned and not worker_status(cfg)["alive"] and not wait_for_worker(cfg):
+        _say(args, f"queued {job['id']} but NO worker is consuming this workspace — "
+                   "run `tower worker`")
+        return 1
     print(f"queued adversarial review {job['id']} — {reviewer} breaks {task.id}; "
           "verdict lands in `tower inbox`")
     return 0
@@ -1060,6 +1162,11 @@ def cmd_status(args) -> int:
             if age_min >= getattr(cfg, "staleness_minutes", 30):
                 flag += " ⧗stale"
         print(f"{t.id:<{width}}  {t.role:<10} {state:<18} rounds={t.round} {due:<14}{flag} {t.brief[:60]}")
+    from .worker import backlog_warning
+
+    warning = backlog_warning(cfg)
+    if warning:
+        print("\n" + warning)
     return 0
 
 
@@ -1187,6 +1294,14 @@ def cmd_doctor(args) -> int:
             problems.append(
                 "verify command %r: %r is not on PATH" % (command, command.strip().split(" ")[0])
             )
+    # 2026-11-10: a queue nobody consumes must be a doctor PROBLEM, not silence
+    from .worker import worker_status
+
+    status = worker_status(cfg)
+    if status["pending"] and not status["alive"]:
+        problems.append(
+            f"{status['pending']} queued job(s) but NO worker alive for this workspace "
+            f"(oldest {status['oldest_pending_minutes']} min) — run `tower worker`")
     # playbook point 2: few, well-trained bots — size and overlap are smell.
     if len(cfg.roles) > 5:
         warnings.append(
@@ -1409,8 +1524,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--async", dest="async_", action="store_true",
                    help="queue the task and return its id in under a second; a tower worker "
                         "runs the adapter and the settlement lands in `tower inbox`")
-    s.add_argument("--brief-file", default="", metavar="PATH",
-                   help="read the brief from a file (long briefs, '<'/'>' redirect hazard)")
+    s.add_argument("--brief-file", action="append", default=[], metavar="PATH",
+                   help="read the brief from a file; repeat it to submit several briefs to "
+                        "the same role in parallel (async by construction)")
+    s.add_argument("--parallel", action="store_true",
+                   help="submit without waiting: queue the work and return the task ids "
+                        "(same as --async; with several briefs they all run in parallel)")
     s.add_argument("--notify", default="", metavar="KIND",
                    help="where the settlement notice goes: 'inbox' (default) or 'session:<id>' "
                         "to also push one message to the lead's DSH session")
@@ -1453,8 +1572,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name", nargs="?", default="", help="show one full card (default: list)")
     s.set_defaults(func=cmd_principles)
 
-    s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / relay receipts)")
+    s = sub.add_parser("worker", help="run the async queue worker (dispatch --async / review)")
     s.add_argument("--once", action="store_true", help="drain the current queue and exit")
+    s.add_argument("--status", action="store_true",
+                   help="print the queue consumer state for this workspace and exit")
     s.set_defaults(func=cmd_worker)
 
     s = sub.add_parser("ctx", help="context pressure per configured session (50 percent or more = compact now)")
