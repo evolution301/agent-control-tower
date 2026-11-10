@@ -67,6 +67,7 @@ def test_worker_once_settles_a_dispatch_job_end_to_end(tower):
 def test_cli_dispatch_async_returns_fast_and_queues(tower, capsys, monkeypatch):
     spawned = []
     monkeypatch.setattr(worker, "ensure_worker", lambda cfg: spawned.append(cfg) or True)
+    monkeypatch.setattr(worker, "worker_alive", lambda cfg: True)
 
     import time
 
@@ -90,6 +91,7 @@ def test_cli_dispatch_async_returns_fast_and_queues(tower, capsys, monkeypatch):
 
 def test_role_dispatch_mode_async_needs_no_flag(tower, capsys, monkeypatch):
     monkeypatch.setattr(worker, "ensure_worker", lambda cfg: True)
+    monkeypatch.setattr(worker, "worker_alive", lambda cfg: True)
     assert cli.main(["dispatch", "ops", "role default is async", "--json"]) == 0
     data = json.loads(capsys.readouterr().out.strip())
     assert data["queued"] is True

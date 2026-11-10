@@ -244,17 +244,16 @@ def cmd_dispatch(args) -> int:
             board.event("enqueued", job=job["id"], kind=kind, task=task.id, mode="async",
                         parallel=True)
             queued.append({"task": task.id, "job": job["id"], "brief": label})
+        consumer = _ensure_consumer(cfg)
         status = worker_status(cfg)
-        if not spawned and not status["alive"] and wait_for_worker(cfg):
-            status = worker_status(cfg)
         if args.json:
-            _print({"queued": queued, "worker_alive": status["alive"]}, as_json=True)
+            _print({"queued": queued, "worker_alive": consumer}, as_json=True)
             return 0
         for item in queued:
             print(f"queued {item['task']} (job {item['job']}) — {item['brief']}")
         print(f"{len(queued)} task(s) submitted in parallel to {role}; "
               "the bot runs them in its own order, settlements land in `tower inbox`")
-        if not status["alive"]:
+        if not consumer:
             _say(args, "worker could not be started — the jobs are queued but nothing is "
                        "consuming them; run `tower worker`")
             return 1
@@ -312,7 +311,7 @@ def cmd_dispatch(args) -> int:
         board.event("enqueued", job=job["id"], kind=kind, task=task.id, mode="async")
         from .worker import wait_for_worker, worker_status
 
-        if not spawned and not worker_status(cfg)["alive"] and not wait_for_worker(cfg):
+        if not _ensure_consumer(cfg):
             _say(args, f"queued {task.id} but NO worker is consuming this workspace — "
                        "run `tower worker` (or `tower worker --status` to inspect)")
             return 1
@@ -919,7 +918,7 @@ def cmd_review(args) -> int:
     board.event("review_queued", task=task.id, reviewer=reviewer, manual=True)
     from .worker import wait_for_worker, worker_status
 
-    if not spawned and not worker_status(cfg)["alive"] and not wait_for_worker(cfg):
+    if not _ensure_consumer(cfg):
         _say(args, f"queued {job['id']} but NO worker is consuming this workspace — "
                    "run `tower worker`")
         return 1
@@ -1793,6 +1792,19 @@ def _force_utf8_stdio() -> None:
                 stream.reconfigure(encoding="utf-8")
         except (OSError, ValueError, AttributeError):
             pass
+
+
+def _ensure_consumer(cfg, timeout_s: float = 10.0) -> bool:
+    """True when a worker is (or is about to be) consuming this workspace's queue.
+
+    `ensure_worker` returns the moment the detached process is created — the
+    heartbeat lands 1–3 s later (cold Python start), so checking `alive` straight
+    after spawn produced a false "no worker" alarm (2026-11-10). Always wait for
+    the heartbeat instead of trusting the spawn call.
+    """
+    from .worker import wait_for_worker, worker_alive
+
+    return worker_alive(cfg) or wait_for_worker(cfg, timeout_s=timeout_s)
 
 
 def main(argv: list[str] | None = None) -> int:

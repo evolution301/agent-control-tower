@@ -35,6 +35,7 @@ def tower(tmp_path, monkeypatch):
 
 def test_async_dispatch_stamps_mode_waiter_and_settlement_fields(tower, capsys, monkeypatch):
     monkeypatch.setattr(worker, "ensure_worker", lambda cfg: True)
+    monkeypatch.setattr(worker, "worker_alive", lambda cfg: True)
     assert cli_dispatch(tower, capsys, "fields probe", "--notify", "session:session-lead") == 0
     board = Board(tower)
     task = board.load("T-0001")
@@ -145,6 +146,7 @@ def test_timeout_accepts_the_doc_grammar(tower):
 
 def test_events_jsonl_records_the_lifecycle(tower, capsys, monkeypatch):
     monkeypatch.setattr(worker, "ensure_worker", lambda cfg: True)
+    monkeypatch.setattr(worker, "worker_alive", lambda cfg: True)
     assert cli_dispatch(tower, capsys, "audit me") == 0
     assert worker.run_worker(tower, once=True) == 0
     events_path = tower.state_dir / "events.jsonl"
@@ -156,6 +158,7 @@ def test_snapshot_counts_async_in_flight(tower, capsys, monkeypatch):
     from control_tower.snapshot import build_snapshot
 
     monkeypatch.setattr(worker, "ensure_worker", lambda cfg: True)
+    monkeypatch.setattr(worker, "worker_alive", lambda cfg: True)
     assert cli_dispatch(tower, capsys, "in flight") == 0
     snap = build_snapshot(tower)
     assert snap.counts["async_in_flight"] == 1

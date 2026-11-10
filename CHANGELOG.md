@@ -50,6 +50,22 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.14.1] - 2026-11-10
+
+### Fixed — false "no worker" alarm right after a spawn
+
+`ensure_worker` returns the instant the detached process is created, but the
+heartbeat lands 1–3 s later (cold Python start). The consumer check added in
+0.14.0 trusted the spawn result and could report "worker could not be started"
+while the worker was in fact booting (reproduced in a parallel-dispatch smoke
+test: 3 tasks queued, worker pid alive seconds later).
+
+- One `_ensure_consumer()` path now waits up to 10 s for the heartbeat whenever
+  a worker is expected, and only then fails (exit 1). Single dispatch, parallel
+  dispatch and `tower review` all use it.
+- Tests that fake a spawn now fake `worker_alive` too (a fake consumer must
+  answer both questions).
+
 ## [0.14.0] - 2026-11-10
 
 ### Added — parallel dispatch (a bot can hold several jobs) + queue supervision
