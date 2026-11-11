@@ -180,6 +180,22 @@ def render_prompt(cfg: TowerConfig, task: Task) -> str:
             charter = charter[:limit] + "\n…(truncated)"
         prompt += "\n## Role charter\n\n" + charter + "\n"
 
+    # Deploy discipline: any bot that touches a live server file gets the guard
+    # rules in its prompt (2026-11-11: an unsynced online edit was silently
+    # overwritten by a normal upload).
+    for deploy_name in ("docs/deploy-rules.md", "DEPLOY-RULES.md"):
+        deploy_path = Path(cfg.workspace) / deploy_name
+        try:
+            deploy_rules = deploy_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if deploy_rules:
+            limit = 2000
+            if len(deploy_rules) > limit:
+                deploy_rules = deploy_rules[:limit] + "\n…(truncated)"
+            prompt += "\n## Deploy rules（部署纪律）\n\n" + deploy_rules + "\n"
+        break
+
     # Workspace standing rules: docs/bug-report-protocol.md, docs/RULES.md or
     # RULES.md — whichever exists first. 全塔台规则改一处、每次派单全体生效。
     for rules_name in ("docs/bug-report-protocol.md", "docs/RULES.md", "RULES.md"):

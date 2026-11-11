@@ -755,6 +755,69 @@ def cmd_projects(args) -> int:
     return 2
 
 
+def cmd_deploy(args) -> int:
+    """Deploy guard: refuse to overwrite an online file that changed since last sync."""
+    from . import deploy as deploy_mod
+
+    cfg = _cfg(args)
+    _announce_workspace(cfg)
+    board = Board(cfg)
+    action = args.action
+    fetch_cmd = getattr(args, "fetch_cmd", "") or None
+    role = getattr(args, "role", "") or ""
+    note = getattr(args, "note", "") or ""
+
+    if action == "status":
+        records = deploy_mod.status(cfg)
+        if getattr(args, "json", False):
+            _print(records, as_json=True)
+            return 0
+        if not records:
+            print("no tracked deploys (run `tower deploy init|pull <local> --remote <path>`)")
+            return 0
+        for record in records:
+            print(f"{record.get('remote')}  baseline={record.get('baseline_sha')}  "
+                  f"at={record.get('baseline_at')}")
+        return 0
+
+    local = getattr(args, "local", "") or ""
+    remote = getattr(args, "remote", "") or ""
+    if not local or not remote:
+        _say(args, "usage: tower deploy <check|pull|init|done> <local> --remote <remote-path>")
+        return 2
+    try:
+        if action == "check":
+            result = deploy_mod.check(cfg, local, remote, fetch_cmd)
+        elif action == "pull":
+            result = deploy_mod.pull(cfg, local, remote, fetch_cmd, role=role, note=note)
+        elif action == "init":
+            result = deploy_mod.init(cfg, local, remote, fetch_cmd, role=role, note=note)
+        elif action == "done":
+            result = deploy_mod.done(cfg, local, remote, fetch_cmd, role=role, note=note)
+        else:  # pragma: no cover - parser restricts the choices
+            _say(args, f"unknown deploy action {action!r}")
+            return 2
+    except deploy_mod.DeployError as exc:
+        board.log("deploy_refused", action=action, local=local, remote=remote, error=str(exc)[:400])
+        _say(args, f"deploy {action} REFUSED: {exc}")
+        return 1
+    board.log(f"deploy_{action}", local=str(result.get("local", local)),
+              remote=remote, verdict=result.get("verdict"),
+              local_sha=result.get("local_sha"), remote_sha=result.get("remote_sha"))
+    if getattr(args, "json", False):
+        _print(result, as_json=True)
+        return int(result.get("exit_code", 0))
+    print(f"deploy {action}: {result.get('verdict')}")
+    for key in ("local", "remote", "local_sha", "remote_sha", "baseline_sha"):
+        if result.get(key):
+            print(f"  {key}: {result[key]}")
+    if result.get("message"):
+        print(f"  → {result['message']}")
+    if result.get("receipt"):
+        print(f"  receipt: {result['receipt']}")
+    return int(result.get("exit_code", 0))
+
+
 def cmd_worker(args) -> int:
     from .worker import backlog_warning, worker_status
 
@@ -1592,6 +1655,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", action="store_true",
                    help="print the queue consumer state for this workspace and exit")
     s.set_defaults(func=cmd_worker)
+    s = sub.add_parser("deploy", help="deploy guard: check/pull/init/done a server file")
+    s.add_argument("action", choices=["check", "pull", "init", "done", "status"])
+    s.add_argument("local", nargs="?", default="", help="local working-copy path")
+    s.add_argument("--remote", default="", help="remote path (as the fetch command expects)")
+    s.add_argument("--fetch-cmd", default="",
+                   help="command that prints the remote file to stdout; overrides deploy.fetch")
+    s.add_argument("--role", default="", help="also append the receipt to roles/<role>/DEPLOY-SYNC.md")
+    s.add_argument("--note", default="")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_deploy)
 
     s = sub.add_parser("ctx", help="context pressure per configured session (50 percent or more = compact now)")
     s.set_defaults(func=cmd_ctx)

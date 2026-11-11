@@ -50,6 +50,27 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.16.0] - 2026-11-11
+
+### Added — deploy guard（线上直改未同步 → 上传静默覆盖，T-0102 事故）
+
+- `tower deploy check|init|pull|done|status <local> --remote <path>`：对
+  「本地 ↔ 远端」维护 baseline，三方比较：
+  `remote == local` = in_sync；`remote == baseline` = local_changed（可上传）；
+  否则 **remote_drift → 拒绝上传**，必须先 `pull` 或人工合并。
+- `pull` 先把本地旧版备份到 `.tower/deploy/backup/`，再写入线上内容并推进基线；
+  `done` 在上传后强制验证「远端 == 本地」，不成立即报 "upload did not land"。
+- 回执：`.tower/deploy/receipts/<ts>-<key>-<action>.md`；`--role <role>` 时追加
+  `roles/<role>/DEPLOY-SYNC.md`；全部动作进 ledger（`deploy_init/check/pull/done`）。
+- `control_tower.deploy_fetch`：`python -m control_tower.deploy_fetch --cwd <theme-dir>
+  --remote <path>` 通过项目自带 `w.py` 的 `sync_request read_file` 取远端内容，对任何
+  w.py 站点通用；tower.toml 里 `deploy.fetch` 配置一次（支持 `{remote}` `{local}`
+  `{workspace}` `{project_root}` `{python}` 占位符）。
+- 部署纪律随派单注入：`docs/deploy-rules.md` 会进入每次 dispatch prompt 的
+  `## Deploy rules` 段。
+- 生产实测：evergocasa `functions.php` 已纳管（baseline 78c69e1e…），`check` 返回
+  `in_sync`，回执与 `roles/frontend/DEPLOY-SYNC.md` 已生成。
+
 ## [0.15.0] - 2026-11-10
 
 ### Breaking — the CLI no longer falls back to the global active-project pointer

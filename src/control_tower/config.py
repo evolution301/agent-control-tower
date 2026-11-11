@@ -78,6 +78,9 @@ class TowerConfig:
     # 2026-11-10: a pending job older than this (minutes) while no worker consumes
     # it is surfaced on `tower status` / `tower inbox` / `tower doctor`.
     queue_alert_minutes: int = 15
+    # v0.16 — deploy guard: how to read a remote file before an upload.
+    # `deploy.fetch` in tower.toml, a list (placeholders expanded) or a shell string.
+    deploy_fetch: list[str] | str | None = None
     # B16: reports created before this timestamp skip the self-review gate.
     self_review_since: str = ""
     # v0.12 — issue escalation: blocked/failed jobs go to a dedicated issues bot
@@ -236,6 +239,7 @@ def parse_config(path: Path) -> TowerConfig:
         staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
         stale_hours=float(raw.get("stale_hours", 12.0)),
         queue_alert_minutes=max(1, int(raw.get("queue_alert_minutes", 15))),
+        deploy_fetch=(raw.get("deploy") or {}).get("fetch") or None,
         self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),
         escalation_role=str((raw.get("escalation") or {}).get("role", "issues")).strip(),

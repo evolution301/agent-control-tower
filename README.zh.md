@@ -135,6 +135,31 @@ tower rework T-0001 --note "Checks 没写结果，重跑测试"
 | 每份回执都要你读一遍才知道要不要人插手 | `tower attention` 只列 `ready` / `blocked` / `failed` |
 | 重试或双击产生重复任务 | `tower dispatch --key <id>` 直接返回已有任务 |
 
+## 部署守卫：线上文件漂移时绝不覆盖
+
+bot 直接改了**线上**主题文件、本地工作副本没同步，下一次正常 upload 把线上改动静默
+抹掉（2026-11-11 事故）。塔台现在内置这道闸：
+
+```bash
+tower deploy check generatepress-child/functions.php --remote ./functions.php
+# in_sync       → 无需上传
+# local_changed → 可以上传（只有本地变了）
+# remote_drift  → 拒绝：先 `tower deploy pull ...`
+```
+
+`init` 以当前线上状态建基线；`pull` 把线上内容拉回本地（本地旧版备份到
+`.tower/deploy/backup/`）；`done` 验证上传确实生效并推进基线。所有动作进 ledger，
+回执写 `.tower/deploy/receipts/`，带 `--role <角色>` 时还追加到
+`roles/<角色>/DEPLOY-SYNC.md`。读远端只需一行配置：
+
+```yaml
+deploy:
+  fetch: ["{python}", "-m", "control_tower.deploy_fetch",
+          "--cwd", "<站点>/generatepress-child", "--remote", "{remote}"]
+```
+
+把纪律写进 `docs/deploy-rules.md`，它会随每次派单注入 bot 的 prompt。
+
 ## 安装
 
 ```bash

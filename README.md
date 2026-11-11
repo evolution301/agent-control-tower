@@ -87,6 +87,35 @@ tower rework T-0001 --note "Checks list no results; re-run the suite"
 | You re-read every report to see if a human is needed | `tower attention` lists only `ready` / `blocked` / `failed` |
 | A retry or a double-click creates duplicate work | `tower dispatch --key <id>` returns the existing task |
 
+## Deploy guard: never overwrite a live file that drifted
+
+A bot edited a theme file **on the server**; the local working copy never got the
+change, and the next normal upload silently erased it (2026-11-11). The tower now
+carries the check that makes that impossible to do by accident:
+
+```bash
+tower deploy check generatepress-child/functions.php --remote ./functions.php
+# in_sync       → nothing to upload
+# local_changed → safe to upload (only local moved)
+# remote_drift  → REFUSE: pull first (`tower deploy pull ...`)
+```
+
+`init` accepts the current server state as baseline, `pull` brings the server copy
+into local (local file backed up under `.tower/deploy/backup/`), `done` verifies an
+upload landed and advances the baseline. Every action is ledgered, a receipt is
+written under `.tower/deploy/receipts/`, and `--role <role>` also appends to
+`roles/<role>/DEPLOY-SYNC.md`. How the remote file is read is one config line:
+
+```yaml
+deploy:
+  fetch: ["{python}", "-m", "control_tower.deploy_fetch",
+          "--cwd", "<site>/generatepress-child", "--remote", "{remote}"]
+```
+
+`control_tower.deploy_fetch` imports the project's `w.py` and reads the file via
+`w.sync_request({"action": "read_file", …})` — generic for w.py-based sites. Put the
+protocol in `docs/deploy-rules.md` and it rides every dispatch prompt.
+
 ## Install
 
 ```bash
