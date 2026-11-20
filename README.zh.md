@@ -158,7 +158,7 @@ deploy:
           "--cwd", "<站点>/generatepress-child", "--remote", "{remote}"]
 ```
 
-把纪律写进 `docs/deploy-rules.md`，它会随每次派单注入 bot 的 prompt。
+`--remote` 规范写法是主题内相对路径 `./functions.php`；`wp-content/themes/<主题>/…` 也会被自动归一化。把纪律写进 `docs/deploy-rules.md`，它会随每次派单注入 bot 的 prompt。
 
 ## 安装
 

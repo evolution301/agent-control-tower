@@ -125,3 +125,34 @@ def test_cli_exit_codes_and_status(tmp_path, monkeypatch, capsys):
     assert "REMOTE DRIFT" in out
     assert cli.main(["deploy", "status"]) == 0
     assert str(remote) in capsys.readouterr().out
+
+
+def test_deploy_fetch_normalises_remote_paths(tmp_path):
+    """trans.php wants './<theme-relative>'; every reasonable spelling must work."""
+    from control_tower.deploy_fetch import normalize_remote
+
+    cwd = r"G:/新网站项目/需要的网站/evergocasa-new/generatepress-child"
+    cases = {
+        "./functions.php": "./functions.php",
+        "functions.php": "./functions.php",
+        "wp-content/themes/generatepress-child/functions.php": "./functions.php",
+        "wp-content/themes/generatepress-child/inc/custom.php": "./inc/custom.php",
+        r".\inc\custom.php": "./inc/custom.php",
+        cwd + "/functions.php": "./functions.php",
+        "/html/wp-content/themes/generatepress-child/functions.php": "./functions.php",
+    }
+    for given, expected in cases.items():
+        assert normalize_remote(cwd, given) == expected, given
+    assert normalize_remote(cwd, "wp-content/themes/other/functions.php") == \
+        "./wp-content/themes/other/functions.php"
+
+
+def test_invalid_path_error_explains_the_dot_slash_convention(tmp_path, monkeypatch):
+    cfg = _tower(tmp_path, monkeypatch)
+    local, remote = _files(tmp_path, "server", "local")
+    failing = [sys.executable, "-c",
+               "import sys;print('{\"success\":false,\"error\":\"Invalid path\"}', "
+               "file=sys.stderr);sys.exit(4)"]
+    with pytest.raises(deploy_mod.DeployError, match="Invalid path") as exc:
+        deploy_mod.fetch_remote(cfg, str(remote), local, failing)
+    assert "./functions.php" in str(exc.value)

@@ -21,19 +21,19 @@
 ```bash
 # 首次纳管：以当前线上内容为基线（不改文件）
 tower deploy init generatepress-child/functions.php \
-  --remote wp-content/themes/generatepress-child/functions.php
+  --remote ./functions.php
 
 # 上传前检查（exit 1 = 线上漂移，禁止上传）
 tower deploy check generatepress-child/functions.php \
-  --remote wp-content/themes/generatepress-child/functions.php
+  --remote ./functions.php
 
 # 把线上内容拉回本地（本地先备份到 .tower/deploy/backup/，再更新基线）
 tower deploy pull generatepress-child/functions.php \
-  --remote wp-content/themes/generatepress-child/functions.php --role frontend
+  --remote ./functions.php --role frontend
 
 # 上传成功后验证并推进基线（远端必须已等于本地，否则报错）
 tower deploy done generatepress-child/functions.php \
-  --remote wp-content/themes/generatepress-child/functions.php --role frontend
+  --remote ./functions.php --role frontend
 
 # 查看所有纳管文件
 tower deploy status
@@ -49,6 +49,13 @@ tower deploy status
 - 所有动作进 `.tower/ledger.jsonl`（`deploy_check/init/pull/done`）
 
 ## 取远端内容：`deploy.fetch`
+
+> **路径口径**：`--remote` 规范写法是**主题目录内相对路径 + `./` 前缀**
+> （如 `./functions.php`、`./inc/custom.php`）——`trans.php` 的 `read_file` 只认这个。
+> `control_tower.deploy_fetch` 会自动把 `wp-content/themes/<主题>/…`、反斜杠、
+> 绝对路径等写法归一化成 `./…`（2026-11-20 修复），所以两种写法都能用；
+> **基线按本地文件记录**，换写法不会丢基线。
+
 
 守卫需要一条「打印远端文件到 stdout」的命令，在 tower.toml 配置一次：
 

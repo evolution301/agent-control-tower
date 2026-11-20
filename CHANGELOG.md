@@ -50,6 +50,27 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.16.1] - 2026-11-20
+
+### Fixed — `deploy check/pull` 读不到远端主题文件（read_file 路径口径）
+
+`trans.php` 的 `read_file` 只认**主题目录内相对路径 + `./` 前缀**（w.py 内部就是
+`'./' + path`）。`deploy_fetch` 原样透传 `wp-content/themes/<theme>/functions.php`，
+得到 `HTTP 400 Invalid path`，守卫完全不可用（2026-11-20 实测）。
+
+- `control_tower.deploy_fetch` 新增 `normalize_remote()`：接受 `./x`、`x`、
+  `wp-content/themes/<theme>/x`、`/html/wp-content/themes/<theme>/x`、反斜杠路径、
+  主题目录下的绝对路径，统一归一化为 `./x`；`--theme` 可覆盖主题名（默认取 `--cwd` 目录名）。
+- 错误信息现在带上实际发送的路径；`Invalid path` 时直接给出 `./` 写法指引。
+- **基线改为按本地文件键控**（记录里仍保存 remote）：换 remote 写法不再丢基线；
+  旧的 `local+remote` 记录会被自动采纳（取最新 `baseline_at`），`status` 每个本地文件
+  只显示一行。
+- `_render_command` 只替换五个已知占位符（不再 `str.format` 整条命令），命令里合法的
+  `{}`（python 一行式、shell `${VAR}`、JSON 片段）不会再被吃掉。
+- 生产复核：evergocasa `functions.php` 用 `--remote wp-content/themes/generatepress-child/functions.php`
+  与 `--remote ./functions.php` 两种写法均 `in_sync`；基线已刷新为
+  `39025b1c0d3359bb`（receipt 20261120-090624）。
+
 ## [0.16.0] - 2026-11-11
 
 ### Added — deploy guard（线上直改未同步 → 上传静默覆盖，T-0102 事故）

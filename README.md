@@ -112,7 +112,7 @@ deploy:
           "--cwd", "<site>/generatepress-child", "--remote", "{remote}"]
 ```
 
-`control_tower.deploy_fetch` imports the project's `w.py` and reads the file via
+`--remote` is theme-relative with a `./` prefix (`./functions.php`); `wp-content/themes/<theme>/…` is accepted and normalised. `control_tower.deploy_fetch` imports the project's `w.py` and reads the file via
 `w.sync_request({"action": "read_file", …})` — generic for w.py-based sites. Put the
 protocol in `docs/deploy-rules.md` and it rides every dispatch prompt.
 

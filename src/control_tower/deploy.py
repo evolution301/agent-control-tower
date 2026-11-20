@@ -50,26 +50,49 @@ def deploy_dir(cfg: TowerConfig) -> Path:
     return path
 
 
-def _key(local: Path, remote: str) -> str:
+def _key(local: Path) -> str:
+    """One baseline per local file.
+
+    The remote spelling varies between callers (`./functions.php`,
+    `wp-content/themes/<theme>/functions.php`, …), so keying on it lost the
+    baseline whenever the spelling changed (2026-11-20). The record still stores
+    the remote path; lookups also adopt legacy local+remote records.
+    """
+    return hashlib.sha1(str(local.resolve()).encode("utf-8")).hexdigest()[:16]
+
+
+def _record_path(cfg: TowerConfig, local: Path, _remote: str = "") -> Path:
+    return deploy_dir(cfg) / f"{_key(local)}.json"
+
+
+def _legacy_key(local: Path, remote: str) -> str:
     return hashlib.sha1(f"{local.resolve()}::{remote}".encode("utf-8")).hexdigest()[:16]
 
 
-def _record_path(cfg: TowerConfig, local: Path, remote: str) -> Path:
-    return deploy_dir(cfg) / f"{_key(local, remote)}.json"
-
-
-def load_record(cfg: TowerConfig, local: Path, remote: str) -> dict[str, Any] | None:
-    path = _record_path(cfg, local, remote)
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+def load_record(cfg: TowerConfig, local: Path, remote: str = "") -> dict[str, Any] | None:
+    """Newest baseline for this local file (current scheme, else legacy ones)."""
+    candidates: list[dict[str, Any]] = []
+    target = str(local.resolve())
+    for path in deploy_dir(cfg).glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        try:
+            recorded_local = str(Path(record.get("local", "")).resolve())
+        except (OSError, TypeError):
+            continue
+        if recorded_local == target:
+            candidates.append(record)
+    if not candidates:
         return None
+    candidates.sort(key=lambda r: r.get("baseline_at", ""), reverse=True)
+    return candidates[0]
 
 
 def save_record(cfg: TowerConfig, record: dict[str, Any]) -> None:
     local = Path(record["local"])
-    remote = str(record["remote"])
-    path = _record_path(cfg, local, remote)
+    path = _record_path(cfg, local)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
@@ -95,6 +118,22 @@ def digest(raw: bytes) -> str:
 # remote fetch
 # ---------------------------------------------------------------------------
 
+PLACEHOLDERS = ("remote", "local", "workspace", "project_root", "python")
+
+
+def _render_part(part: str, mapping: dict[str, str]) -> str:
+    """Replace `{name}` placeholders only.
+
+    A command may legitimately contain other braces (Python one-liners with dict
+    literals, shell `${VAR:-x}`, JSON fragments). `str.format` would crash or mangle
+    them, so only the five documented placeholders are substituted.
+    """
+    out = part
+    for name in PLACEHOLDERS:
+        out = out.replace("{" + name + "}", mapping[name])
+    return out
+
+
 def _render_command(spec: list[str] | str, cfg: TowerConfig, remote: str, local: Path) -> list[str] | str:
     mapping = {
         "remote": remote,
@@ -104,8 +143,8 @@ def _render_command(spec: list[str] | str, cfg: TowerConfig, remote: str, local:
         "python": sys.executable,
     }
     if isinstance(spec, str):
-        return spec.format(**mapping)
-    return [str(part).format(**mapping) for part in spec]
+        return _render_part(spec, mapping)
+    return [_render_part(str(part), mapping) for part in spec]
 
 
 def fetch_remote(cfg: TowerConfig, remote: str, local: Path, fetch_cmd: str | list[str] | None = None) -> bytes:
@@ -135,7 +174,14 @@ def fetch_remote(cfg: TowerConfig, remote: str, local: Path, fetch_cmd: str | li
         raise DeployError(f"remote fetch failed to run: {exc}") from exc
     if proc.returncode != 0:
         detail = (proc.stderr or b"").decode("utf-8", "replace").strip()[:400]
-        raise DeployError(f"remote fetch exited {proc.returncode}: {detail or '(no stderr)'}")
+        hint = ""
+        if "Invalid path" in detail:
+            hint = (" — trans.php read_file wants the THEME-relative path with a './' "
+                    "prefix (e.g. --remote ./functions.php). "
+                    "`control_tower.deploy_fetch` accepts wp-content/themes/<theme>/… "
+                    "and normalises it; a custom --fetch-cmd must normalise itself.")
+        raise DeployError(f"remote fetch exited {proc.returncode}: "
+                          f"{detail or '(no stderr)'}{hint}")
     return proc.stdout
 
 
@@ -214,7 +260,7 @@ def _receipt(cfg: TowerConfig, action: str, local: Path, remote: str,
     receipts = deploy_dir(cfg) / "receipts"
     receipts.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    path = receipts / f"{stamp}-{_key(local, remote)}-{action}.md"
+    path = receipts / f"{stamp}-{_key(local)}-{action}.md"
     lines = [
         f"# deploy {action} · {now_ts()}", "",
         f"- local:  `{local}`",
@@ -248,7 +294,7 @@ def _update_baseline(cfg: TowerConfig, local: Path, remote: str, content: bytes,
         "baseline_bytes": len(content),
         "baseline_at": now_ts(),
         "note": note,
-        "key": _key(local, remote),
+        "key": _key(local),
     }
     save_record(cfg, record)
     return record
@@ -305,12 +351,16 @@ def done(cfg: TowerConfig, local_path: str, remote: str,
 
 
 def status(cfg: TowerConfig) -> list[dict[str, Any]]:
-    out = []
+    """One row per tracked local file (newest baseline; legacy records merged)."""
+    newest: dict[str, dict[str, Any]] = {}
     for path in sorted(deploy_dir(cfg).glob("*.json")):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        local = str(record.get("local", ""))
         record["baseline_at"] = record.get("baseline_at", "")
-        out.append(record)
-    return out
+        current = newest.get(local)
+        if current is None or record["baseline_at"] > current["baseline_at"]:
+            newest[local] = record
+    return [newest[key] for key in sorted(newest)]
