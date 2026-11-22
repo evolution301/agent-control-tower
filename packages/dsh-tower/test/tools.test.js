@@ -178,16 +178,18 @@ test('an update cannot re-aim the tools: config wins, binding reconnects', () =>
     // 1. the configured workspace is the aim, whatever the pointer says
     assert.equal(targetWorkspace({ workspace: configured }), configured)
 
-    // 2. no configured workspace (the line an update can lose): the bound tower returns
+    // 2. no configured workspace: the user's pointer (tower projects use) wins —
+    //    a mount-time binding must never outrank an explicit choice (B1, 2026-11-22)
     assert.equal(recordBinding(bound, 'test'), bound)
     assert.equal(boundWorkspace(), bound)
-    assert.equal(targetWorkspace({}), bound)
-
-    // 3. no binding either: fall back to the switcher's active project
-    rmSync(join(home, 'binding.json'))
     assert.equal(targetWorkspace({}), active)
 
+    // 2b. no pointer either: the bound tower reconnects (the update story)
+    rmSync(join(home, 'active'))
+    assert.equal(targetWorkspace({}), bound)
+
     // 4. a configured path that is not a tower must not win over the binding
+    rmSync(join(home, 'binding.json'))
     recordBinding(bound, 'test')
     assert.equal(hasTowerConfig(configured), true)
     assert.equal(targetWorkspace({ workspace: join(home, 'not-a-tower') }), bound)
