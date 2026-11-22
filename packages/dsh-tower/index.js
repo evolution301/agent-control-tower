@@ -491,6 +491,141 @@ export async function ensurePanel(cfg, deps = {}) {
   return null
 }
 
+/** Run the tower CLI and resolve its TEXT output even on a non-zero exit.
+ *
+ * `tower doctor` exits 1 whenever it has problems — exactly the case the guide
+ * wants to render — so the guide cannot use `runTower` (which rejects).
+ */
+function runTowerText(settings, args, timeoutMs) {
+  const usePython = !settings.towerBin || settings.towerBin === '__python__'
+  const file = usePython ? settings.python : settings.towerBin
+  const argv = usePython ? ['-m', 'control_tower', ...args] : args
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      argv,
+      { cwd: settings.workspace, timeout: timeoutMs ?? 60_000, maxBuffer: 20 * 1024 * 1024,
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
+      (error, stdout, stderr) => {
+        resolve({ code: error?.code ?? 0, stdout: (stdout ?? '').trim(), stderr: (stderr ?? '').trim() })
+      },
+    )
+  })
+}
+
+/** Read `adapters.dsh.base_url` straight out of the tower file (display only). */
+function towerBaseUrl(settings) {
+  for (const name of ['tower.toml', 'tower.yaml', 'tower.yml', 'tower.json']) {
+    try {
+      const text = readFileSync(join(settings.workspace, name), 'utf8')
+      const m = text.match(/base_url:\s*"?([^"\s\n]+)"?/)
+      if (m) return m[1]
+    } catch { /* next candidate */ }
+  }
+  return ''
+}
+
+/** Build the `/tower-guide` checklist from a live `tower doctor` run. */
+function buildTowerGuide(settings, run) {
+  const lines = (run.stdout || '').split(/\r?\n/)
+  const field = (key) => {
+    const hit = lines.find((l) => l.startsWith(key + ':'))
+    return hit ? hit.slice(key.length + 1).trim() : ''
+  }
+  const workspace = field('workspace')
+  const rolesRaw = field('roles')
+  const roles = rolesRaw ? rolesRaw.split(',').map((s) => s.trim()).filter(Boolean) : []
+  const problemsRaw = field('problems')
+  const problems = problemsRaw && problemsRaw !== 'none'
+    // python list repr mixes quote styles ('a' vs "a'b") — accept both
+    ? (problemsRaw.match(/['"]([^'"]+)['"]/g) || []).map((s) => s.slice(1, -1))
+    : []
+  const warnings = lines.filter((l) => l.startsWith('warning:')).map((l) => l.slice(8).trim())
+  const base = towerBaseUrl(settings)
+
+  const has = (needle) => problems.some((p) => p.includes(needle))
+  const rows = []
+  const connectionBad = has('unreachable or unauthorized') || has('probe failed') || has('no base_url')
+  rows.push(connectionBad
+    ? `❌ DSH 连接${base ? `（${base}）` : ''}：${problems.find((p) => p.includes('adapter')) ?? 'adapter 不可达'}`
+    : `✅ 已连上 DSH${base ? `（${base}）` : ''}`)
+  rows.push(roles.length
+    ? `✅ 已有 ${roles.length} 个角色（${roles.join('、')}）`
+    : `❌ 还没有任何角色 → 第 1 步：选角色模板（tower onboard）`)
+  if (has('unauthorized')) {
+    rows.push('❌ secret 被拒（401）→ 位置：~/.dsh/.credentials.yaml → records.*.payload.secret（43 位 base64），或设置 DSH_BRIDGE_SECRET')
+  }
+  if (has('pinned session')) {
+    rows.push('⚠️ 有角色但 sessions 未绑定/会话不在宿主上 → dispatch 会永远 running（最迷惑的故障）→ 第 3 步：tower bootstrap')
+  }
+  if (has('NO worker alive')) {
+    rows.push('⚠️ 队列有积压但没有 worker → tower worker')
+  }
+  for (const w of warnings) rows.push(`⚠️ ${w}`)
+
+  const firstBad = rows.find((r) => r.startsWith('❌')) ?? ''
+  const step = firstBad.includes('角色') ? '第 1 步'
+    : firstBad.includes('secret') || firstBad.includes('DSH 连接') ? '第 2 步'
+    : rows.some((r) => r.includes('sessions 未绑定')) ? '第 3 步' : ''
+  const next = step
+    ? `\n我们从 ${step} 开始。`
+    : `\n全部绿灯 → 直接跑毕业考试。`
+
+  return [
+    '塔台体检结果（live）：',
+    ...rows.map((r) => `  ${r}`),
+    `  workspace: ${workspace || settings.workspace}`,
+    next,
+    '',
+    '一个 bot = 四处接线：① DSH 会话 ② roles.<name> ③ sessions.<name>（+role_titles）④ roles/<name>/AGENT.md。',
+    '引擎是 `tower onboard` / `tower bootstrap`；缺哪条上面就会亮哪条。',
+    '',
+    '1. 侧栏可见需要重启 DSH（新会话在工作区注册表里，重启后才显示）。',
+    '2. 毕业考试：自动派一条「只回复 ready」的任务，跑通 dispatch → report → verify → accept 才算建好；哪一步断了大喊哪一步的名字（四个绑定缺哪一个）。',
+  ].join('\n')
+}
+
+/** `/tower-guide` and `/塔台引导`: render the live tower health check in chat. */
+function registerGuideCommand(ctx, cfg) {
+  let stop = null
+  const handler = async (invocation) => {
+    if ((invocation?.rawInput ?? '').trim().length > 0) {
+      return { kind: 'error', text: 'Usage: /tower-guide（无参数）' }
+    }
+    try {
+      const run = await runTowerText(cfg, ['doctor'])
+      return { kind: 'success', text: buildTowerGuide(cfg, run) }
+    } catch (error) {
+      return { kind: 'error', text: `tower-guide failed: ${error?.message ?? error}` }
+    }
+  }
+  ;(async () => {
+    try {
+      const commands = ctx.commands // throws when the host has no command registry
+      const dispose = [
+        commands.register({
+          definitionId: 'dsh-tower/tower-guide',
+          name: 'tower-guide',
+          description: '塔台引导：live 体检 + 四绑定向导（tower guide）',
+          handler,
+        }),
+        commands.register({
+          definitionId: 'dsh-tower/tower-guide',
+          name: '塔台引导',
+          description: '塔台引导：live 体检 + 四绑定向导（/tower-guide）',
+          handler,
+        }),
+      ]
+      stop = () => { for (const d of dispose) d?.() }
+    } catch {
+      // no `commands` service on this host (headless): the guide needs the chat UI anyway
+    }
+  })()
+  return () => stop?.()
+}
+
+export { buildTowerGuide, runTowerText }
+
 export function apply(ctx, config = {}) {
   const cfg = settings(config)
   // Bind the tower this mount actually points at, before anything else runs: a
@@ -508,6 +643,7 @@ export function apply(ctx, config = {}) {
     })
     .catch(() => {})
   const disposers = [
+    registerGuideCommand(ctx, cfg),
     ctx.tools.register(dispatchTool(cfg)),
     ctx.tools.register(restateOkTool(cfg)),
     ctx.tools.register(compactTool(cfg, ctx)),

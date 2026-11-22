@@ -50,6 +50,28 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.17.1] - 2026-11-22
+
+### Added — in-chat slash command `/塔台引导` (`/tower-guide`)
+
+The user who needs onboarding most is standing **in the DSH chat**, not in a
+terminal. Both names (ASCII + 中文) now register a host command that renders a
+**live** checklist built from `tower doctor`: DSH connection (with port), role
+count, secret 401 hint (where `.credentials.yaml` lives), unbound-session
+warning (the "dispatch runs forever" failure), queue/worker state — each ❌
+mapped to its step number of the four bindings. The closing text carries the
+two required sentences verbatim: sidebar visibility needs a DSH restart, and
+the graduation test (dispatch a "reply `ready` only" task through
+dispatch → report → verify → accept, naming the broken step).
+
+- Registration is guarded: hosts without a `commands` service (headless) simply
+  don't get the command — the plugin never pends (the compaction lesson).
+- `runTowerText` resolves CLI text output even on non-zero exit (`doctor`
+  exits 1 exactly when the guide has something to show).
+- 4 node tests cover: all-green, 401→secret hint, no-roles→step 1,
+  unbound-sessions→the forever-running warning. Live-smoked against the
+  evergocasa tower (port 62721, 9 roles, warnings rendered).
+
 ## [0.17.0] - 2026-11-22
 
 ### Fixed — the 5-bug field batch (21 real reports run; the loop works, the edges bit)
