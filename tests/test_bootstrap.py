@@ -74,11 +74,17 @@ def test_command_available_knows_builtins_and_paths(tmp_path):
     assert boot.command_available('"%s" -c pass' % script) is True
 
 
-def test_fix_verify_commands_drops_unrunnable_commands(tmp_path):
+def test_fix_verify_commands_comments_out_unrunnable_commands(tmp_path):
     path = _write_config(tmp_path)
     dropped = boot.fix_verify_commands(path)
     assert dropped == ["definitely-not-a-binary-zzz --version"]
-    assert load_config(tmp_path).verify_commands == ["echo ok"]
+    # B5: the unrunnable command is commented out in place, never replaced by
+    # `echo ok`; runnable checks survive untouched.
+    cfg = load_config(tmp_path)
+    assert cfg.verify_commands == []          # only the broken one existed
+    text = path.read_text(encoding="utf-8")
+    assert "# tower bootstrap: cannot run here:" in text
+    assert "definitely-not-a-binary-zzz" in text
 
 
 def test_resolve_roles_pins_the_ids(tmp_path, monkeypatch):
@@ -121,5 +127,31 @@ def test_run_bootstrap_end_to_end_with_stubs(tmp_path, monkeypatch):
     assert not summary.get("error")
     assert summary["base_url"] == "http://127.0.0.1:54408"
     assert summary["smoke"]["exit_code"] == 0
-    assert load_config(tmp_path).verify_commands == ["echo ok"]
     assert json.dumps(summary)  # JSON-able
+
+
+def test_run_bootstrap_fails_loudly_on_401_without_secret(tmp_path, monkeypatch):
+    """B2: a 401 with no secret is an error, not a silent success."""
+    path = _write_config(tmp_path)
+    monkeypatch.setattr(boot, "detect_secret", lambda workspace: "")
+    monkeypatch.setattr(boot, "detect_base_url", lambda secret="", prefer="": ("http://127.0.0.1:54408", True))
+    summary = boot.run_bootstrap(path, pin=False)
+    assert summary.get("error") and "401" in summary["error"]
+    assert "~/.dsh/.credentials.yaml" in summary["error"]
+    assert summary.get("secret_checked")
+    # nothing was wired
+    cfg = load_config(tmp_path)
+    assert (cfg.adapter_options["dsh"] or {}).get("base_url", "") != "http://127.0.0.1:54408"
+
+
+def test_detect_secret_reads_the_harness_credentials_file(tmp_path, monkeypatch):
+    import types
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".dsh").mkdir(parents=True)
+    (fake_home / ".dsh" / ".credentials.yaml").write_text(
+        "records:\n  desktop:\n    payload:\n      secret: c2VjcmV0LWlzLTQzLWNoYXJzLWxvbmctYmFzZTY0LW9r\n",
+        encoding="utf-8")
+    monkeypatch.setenv("DSH_BRIDGE_SECRET", "")
+    monkeypatch.setattr(boot, "CREDENTIALS_PATH", fake_home / ".dsh" / ".credentials.yaml")
+    assert boot.detect_secret(tmp_path) == "c2VjcmV0LWlzLTQzLWNoYXJzLWxvbmctYmFzZTY0LW9r"

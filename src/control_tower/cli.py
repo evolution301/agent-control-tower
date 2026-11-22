@@ -75,9 +75,12 @@ roles:
     max_rounds: 2
 
 # Optional: commands that must pass before the tower accepts any report.
-# Replace with real checks. `echo` is used so `tower demo` works everywhere.
-verify_commands:
-  - "echo ok"
+# Leave empty until you have real checks — an empty list verifies nothing, but a
+# builtin like `echo ok` verifies nothing too while *looking* like it does
+# (B5, 2026-11-22). `tower accept` warns while no real check is configured.
+# verify_commands:
+#   - "pytest -q"
+#   - "npm run build"
 
 # Adapter options (all optional):
 # adapters:
@@ -191,6 +194,36 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _dispatch_preflight(cfg, role_name: str) -> str | None:
+    """B4: a stale dsh base_url must fail the dispatch NOW, not hang the task.
+
+    The desktop port changes on every restart; before this check a dispatch
+    "succeeded" (task id returned) and then sat at `running` forever because the
+    adapter talked to a dead port. One session/list probe (3s, localhost is
+    enough) fails fast with the same wording `tower doctor` uses.
+    """
+    role = cfg.roles.get(role_name)
+    if role is None or role.adapter != "dsh":
+        return None
+    opts = dict(cfg.adapter_options.get("dsh") or {})
+    base = str(opts.get("base_url") or "").strip()
+    if not base:
+        return f"dsh adapter has no base_url — run `tower bootstrap`"
+    try:
+        from .adapters import get_adapter
+
+        adapter = get_adapter("dsh", opts)
+        reply = adapter.rpc("session/list", {"_request": {}}, timeout=3)
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a fail-fast
+        return (f"dsh adapter {base} unreachable: {exc} — check base_url (the desktop "
+                "port changes on every restart) and secret; run `tower doctor`")
+    error = str(reply.get("error") or "")
+    if error:
+        return (f"dsh adapter {base} rejected the connection: {error} — check base_url "
+                "(the desktop port changes on every restart) and secret; run `tower doctor`")
+    return None
+
+
 def cmd_dispatch(args) -> int:
     cfg = _cfg(args)
     _announce_workspace(cfg)
@@ -200,6 +233,10 @@ def cmd_dispatch(args) -> int:
     role = args.role
     if role not in cfg.roles:
         _say(args, f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
+        return 2
+    preflight = _dispatch_preflight(cfg, role)
+    if preflight:
+        _say(args, f"dispatch REFUSED (pre-flight): {preflight}")
         return 2
     brief = args.brief or ""
     brief_files = getattr(args, "brief_file", None) or []
@@ -554,6 +591,15 @@ def cmd_accept(args) -> int:
     _announce_workspace(cfg)
     board = Board(cfg)
     task = board.load(args.task)
+    # B5 (2026-11-22): builtin-only checks are self-grading — say so, loudly.
+    from .bootstrap import BUILTINS, command_available
+
+    real = [c for c in (cfg.verify_commands or [])
+            if command_available(c) and c.strip().split(" ")[0].strip("\"'") not in BUILTINS]
+    if not real:
+        _say(args, "WARN: no real verification configured — every configured check is a "
+                   "builtin (echo/test/…) or unrunnable. Put a real command in "
+                   "verify_commands; this accept verifies structure only.")
     # A restating task has no report by construction; accepting it would accept
     # a claim that was never made. The gate has exactly one exit: `restate ok`.
     if task.status == STATUS_RESTATING:
@@ -748,6 +794,12 @@ def cmd_projects(args) -> int:
         except KeyError as exc:
             _say(args, str(exc))
             return 2
+        # one file, one order: an explicit switch also re-aims the binding, so a
+        # mount-time record can never outrank the user's choice (2026-11-22 B1)
+        try:
+            registry.record_binding(entry["path"], source="projects-use")
+        except Exception:
+            pass
         print(f"active project: {entry['name']}  {entry['path']}")
         return 0
 
@@ -850,7 +902,8 @@ def cmd_worker(args) -> int:
 
     cfg = _cfg(args)
     ensure_layout(cfg)
-    return run_worker(cfg, once=getattr(args, "once", False))
+    return run_worker(cfg, once=getattr(args, "once", False),
+                      force=bool(getattr(args, "force", False)))
 
 
 def cmd_ctx(args) -> int:
@@ -1380,6 +1433,22 @@ def cmd_doctor(args) -> int:
         problems.append(
             f"{status['pending']} queued job(s) but NO worker alive for this workspace "
             f"(oldest {status['oldest_pending_minutes']} min) — run `tower worker`")
+    # B3 (2026-11-22): a running task whose worker is gone is a zombie — say so.
+    if not status["alive"]:
+        from .board import age_seconds
+
+        board = Board(cfg)
+        for task in board.all():
+            if task.status not in ("claimed", "in_progress"):
+                continue
+            age = age_seconds(task.updated_at)
+            role = cfg.roles.get(task.role)
+            budget = role.timeout_s if role else 1800
+            if age is not None and age > budget:
+                problems.append(
+                    f"task {task.id} ({task.role}) has been {task.status} for "
+                    f"{age / 60:.0f} min with NO worker alive — it will be adopted "
+                    "to rework on the next `tower worker` start")
     # playbook point 2: few, well-trained bots — size and overlap are smell.
     if len(cfg.roles) > 5:
         warnings.append(
@@ -1654,6 +1723,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true", help="drain the current queue and exit")
     s.add_argument("--status", action="store_true",
                    help="print the queue consumer state for this workspace and exit")
+    s.add_argument("--force", action="store_true",
+                   help="B3: exit immediately even with jobs in flight (they are adopted on next start)")
     s.set_defaults(func=cmd_worker)
     s = sub.add_parser("deploy", help="deploy guard: check/pull/init/done a server file")
     s.add_argument("action", choices=["check", "pull", "init", "done", "status"])

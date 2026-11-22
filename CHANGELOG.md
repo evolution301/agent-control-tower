@@ -50,6 +50,51 @@ nothing at all while the work had never started.
 - `DshAdapter.session_state()` — turns/llmMs/model for one session.
 - `tests/test_fixes_2026_11_09.py` — one regression test per failure above.
 
+## [0.17.0] - 2026-11-22
+
+### Fixed — the 5-bug field batch (21 real reports run; the loop works, the edges bit)
+
+**B1 — `tower_use` could never take effect (mount-time binding outranked the
+pointer).** `targetWorkspace()` resolved configured → binding → pointer, and
+`apply()` recorded a binding on every mount, so the first mount pinned the demo
+tower forever. Now: the pointer (an explicit `tower projects use`) **outranks**
+the binding, the mount-time record is gone (the first successful *dispatch*
+records instead), and `projects use` also re-aims `binding.json` — one file, one
+order. `unknown role` errors now carry the workspace.
+
+**B2 — `bootstrap` exited 0 with a wrong secret.** A 401 with no secret is now a
+hard error (non-zero exit) that lists every location checked
+(`$DSH_BRIDGE_SECRET` → `SECRET_B64` in `*.py` → `~/.dsh/.credentials.yaml`) and
+where the harness keeps it; nothing gets wired. The credentials file is a new
+secret source (read-only, never echoed).
+
+**B3 — stopping the worker left DSH sessions half-dead and tasks `running`
+forever.** Ctrl-C now **drains**: in-flight task ids are printed and the worker
+waits (second Ctrl-C or `--force` abandons). On start, `_adopt_orphans` sends
+tasks that were claimed/in_progress, stale, and uncovered by a live queue claim
+back to **rework** with a `task_interrupted` audit event. `doctor` flags running
+tasks past the adapter timeout with no worker alive.
+
+**B4 — a DSH restart (new port) made dispatches hang instead of failing.** Every
+dispatch pre-flights the dsh adapter (`session/list`, 3 s): unreachable/401 →
+`dispatch REFUSED (pre-flight)` with the doctor wording, exit 2 — before a task
+id exists that will never move.
+
+**B5 — `verify_commands: ["echo ok"]` was the default (self-grading).** `tower
+init` ships the option commented with real examples; `bootstrap` **comments out**
+unrunnable commands in place instead of replacing them with `echo ok`; `tower
+accept` prints a loud WARN while every configured check is a builtin.
+
+### Added — the "four bindings" model
+
+A bot is four artifacts (session / `roles.<name>` / `sessions`+`role_titles` /
+`AGENT.md`), and missing #3 is the classic "dispatch runs forever". `tower
+onboard --from notes.md` now understands `session:` and `title:` lines per role
+and wires the session pin + charter in the same pass; its result carries a
+`next` field with the four-bindings checklist and the graduation test.
+`docs/dsh-quickstart.md` gained the four-bindings table; `doctor` already flags
+pinned sessions that are not on the harness.
+
 ## [0.16.1] - 2026-11-20
 
 ### Fixed — `deploy check/pull` 读不到远端主题文件（read_file 路径口径）

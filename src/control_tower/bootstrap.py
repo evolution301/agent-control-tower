@@ -94,8 +94,35 @@ def detect_base_url(secret: str = "", prefer: str = "") -> tuple[str | None, boo
     return (fallback, True) if fallback else (None, False)
 
 
+CREDENTIALS_PATH = Path.home() / ".dsh" / ".credentials.yaml"
+
+
+def _secret_from_credentials() -> str:
+    """`~/.dsh/.credentials.yaml` -> records.<id>.payload.secret.
+
+    This is where the desktop harness itself keeps the bridge secret — the one
+    place a brand-new user (no bridge script yet) can actually find it.
+    Read-only; never echoed into any config diff or log line.
+    """
+    try:
+        import yaml
+
+        data = yaml.safe_load(CREDENTIALS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    records = (data or {}).get("records") or {}
+    if not isinstance(records, dict):
+        return ""
+    for record in records.values():
+        payload = (record or {}).get("payload") or {}
+        secret = str(payload.get("secret") or "").strip()
+        if secret:
+            return secret
+    return ""
+
+
 def detect_secret(workspace: Path) -> str:
-    """base64 HMAC secret from the environment or an existing bridge script."""
+    """base64 HMAC secret: env → an existing bridge script → the harness credentials file."""
     env = os.environ.get("DSH_BRIDGE_SECRET", "").strip()
     if env:
         return env
@@ -108,7 +135,19 @@ def detect_secret(workspace: Path) -> str:
             match = SECRET_RE.search(text)
             if match:
                 return match.group(1)
-    return ""
+    return _secret_from_credentials()
+
+
+def secret_locations_checked(workspace: Path) -> list[str]:
+    """Human-readable list of everywhere detect_secret looked (for the 401 message)."""
+    env_set = "set" if os.environ.get("DSH_BRIDGE_SECRET", "").strip() else "(unset)"
+    scripts = any(sorted(workspace.glob(pattern)) for pattern in SECRET_SOURCES)
+    return [
+        f"$DSH_BRIDGE_SECRET                              {env_set}",
+        f'SECRET_B64 = "..." in *.py                      {"(some)" if scripts else "(none)"}',
+        f"{CREDENTIALS_PATH}  "
+        + ("(found)" if CREDENTIALS_PATH.exists() else "(not found)"),
+    ]
 
 
 def apply_connection(config_path: Path, base_url: str = "", secret: str = "") -> list[str]:
@@ -138,9 +177,14 @@ def command_available(command: str) -> bool:
 
 
 def fix_verify_commands(config_path: Path) -> list[str]:
-    """Replace verify commands that cannot run here. Returns the dropped ones."""
+    """Comment out verify commands that cannot run here. Returns the dropped ones.
+
+    B5 (2026-11-22): never *replace* the user's checks with `echo ok` — that made
+    the acceptance chain self-grading. Unrunnable commands are commented out in
+    place; runnable ones survive untouched.
+    """
     cfg = load_config(config_path.parent)
-    broken = [command for command in cfg.verify_commands if not command_available(command)]
+    broken = set(command for command in cfg.verify_commands if not command_available(command))
     if not broken:
         return []
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -150,18 +194,26 @@ def fix_verify_commands(config_path: Path) -> list[str]:
             start = i
             break
     if start is None:
-        return broken
+        return sorted(broken)
     end = len(lines)
     for j in range(start + 1, len(lines)):
         if lines[j].strip() and not lines[j][0].isspace():
             end = j
             break
-    lines[start:end] = [
-        "verify_commands:\n",
-        '  - "echo ok"   # tower bootstrap: replace with a real check\n',
-    ]
+    out: list[str] = [lines[start]]
+    for line in lines[start + 1:end]:
+        stripped = line.strip()
+        if stripped.startswith("-"):
+            item = stripped[1:].strip()
+            command = item.strip("\"'`").strip()
+            if command in broken:
+                indent = line[:len(line) - len(line.lstrip())]
+                out.append(f"{indent}# tower bootstrap: cannot run here: {item}\n")
+                continue
+        out.append(line)
+    lines[start:end] = out
     config_path.write_text("".join(lines), encoding="utf-8")
-    return broken
+    return sorted(broken)
 
 
 def adapter_for(config_path: Path, secret: str = "", base_url: str = "") -> DshAdapter:
@@ -230,6 +282,17 @@ def run_bootstrap(
     summary["steps"].append({"step": "base_url", "value": detected, "needs_secret": needs_secret})
     if not detected:
         summary["error"] = "no running DSH harness found - is the desktop app open?"
+        return summary
+    if needs_secret and not secret:
+        # B2 (2026-11-22): the harness answered 401 and we have nothing to send.
+        # "Bootstrap succeeded" and "nothing is wired" must not look the same.
+        checked = secret_locations_checked(workspace)
+        summary["error"] = (
+            "the harness rejected the connection (401) and no secret was found - "
+            "nothing was wired. The harness stores it at "
+            "~/.dsh/.credentials.yaml -> records.<id>.payload.secret, or set "
+            "DSH_BRIDGE_SECRET. Checked:\n  " + "\n  ".join(checked))
+        summary["secret_checked"] = checked
         return summary
 
     changed = apply_connection(config_path, base_url=detected, secret=secret)

@@ -69,6 +69,14 @@ def parse_notes(text: str) -> tuple[list[dict], str]:
                 scope = stripped.split(":", 1)[1].strip()
                 if scope:
                     current_role["write_scopes"].append(scope)
+            elif stripped.lower().startswith("session:"):
+                session_id = stripped.split(":", 1)[1].strip()
+                if session_id:
+                    current_role["session_id"] = session_id
+            elif stripped.lower().startswith("title:"):
+                title = stripped.split(":", 1)[1].strip()
+                if title:
+                    current_role["title"] = title
             elif stripped:
                 current_role["description"] = (current_role["description"] + " " + stripped).strip()
         else:
@@ -127,14 +135,30 @@ def onboard(
         )
     created = []
     for spec in roles:
+        # B-feature (2026-11-22): a bot is FOUR bindings (session / role /
+        # session-pin / charter). The notes file can carry `session:` and
+        # `title:` lines per role so onboarding wires all of them in one pass —
+        # the old loop left the session pin to the user and dispatch hung.
+        session_id = spec.get("session_id", "")
+        title = spec.get("title", "")
+        charter = ""
+        if title:
+            charter = (f"# {title}\n\n{spec['description']}\n\n"
+                       "- 只在约定写盘范围内改文件；改线上必须走 `tower deploy` 守卫。\n"
+                       "- 回执按契约：Status / Summary / Files / Checks / Self-review。\n")
         info = add_role(
             config_path,
             spec["name"],
             description=spec["description"],
             adapter=adapter,
             write_scopes=spec["write_scopes"],
+            session_id=session_id or None,
+            charter=charter or None,
             force=force,
         )
+        if title and not session_id:
+            # remember the title so bootstrap/resolve can find the session later
+            info["title"] = title
         created.append(info)
     plan_path = config_path.parent / "PLAN.md"
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -152,4 +176,15 @@ def onboard(
         + "\n",
         encoding="utf-8",
     )
-    return {"roles": [r["name"] for r in created], "plan": str(plan_path), "created": created}
+    return {
+        "roles": [r["name"] for r in created],
+        "plan": str(plan_path),
+        "created": created,
+        "next": (
+            "A bot is FOUR bindings: ① a live DSH session ② roles.<name> ③ "
+            "sessions.<name> (+role_titles) ④ roles/<name>/AGENT.md. Onboard wrote "
+            "②④ and the session pins it knew; run `tower bootstrap` to resolve the "
+            "rest, then check sidebar visibility (needs a DSH restart). Graduation "
+            "test: dispatch a 'reply ready only' brief and watch it reach accepted."
+        ),
+    }

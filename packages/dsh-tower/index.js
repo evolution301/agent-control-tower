@@ -113,10 +113,13 @@ export function recordBinding(directory, source = 'bundle') {
 export function targetWorkspace(config = {}) {
   const configured = config.workspace
   if (hasTowerConfig(configured)) return resolve(configured)
-  const bound = boundWorkspace()
-  if (bound) return bound
+  // B1 (2026-11-22): the active-project pointer is an explicit user choice
+  // (`tower projects use`), so it outranks the mount-time binding — otherwise
+  // `tower_use` could never take effect after the first mount pinned binding.json.
   const pointer = activeProject(config)
   if (pointer) return pointer
+  const bound = boundWorkspace()
+  if (bound) return bound
   return resolve(configured || process.cwd())
 }
 
@@ -493,7 +496,8 @@ export function apply(ctx, config = {}) {
   // Bind the tower this mount actually points at, before anything else runs: a
   // later update that loses the config line reconnects here instead of guessing.
   try {
-    recordBinding(cfg.workspace, 'bundle-mount')
+    // B1: no mount-time binding — a mount that never dispatched must not pin
+  // anything; the first successful dispatch records the tower that did work
   } catch {
     // binding is best effort; never block mounting on it
   }
@@ -565,6 +569,7 @@ export function dispatchTool(cfg) {
       if (args.due) argv.push('--due', String(args.due))
       if (args.restate) argv.push('--restate')
       if (args.async) argv.push('--async')
+      recordBinding(cfg.workspace, 'dispatch')
       const { data } = await runTower(cfg, argv)
       if (data?.queued) {
         return {

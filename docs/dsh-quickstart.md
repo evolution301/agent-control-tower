@@ -165,3 +165,23 @@ roles:
 ```
 
 The tower only requires that each role returns a report with the four sections.
+
+## The four bindings（一个 bot = 四处接线）
+
+A working bot is **four artifacts in four places** — miss any one and you get a
+different, confusing failure:
+
+| # | Artifact | Where | What breaks if missing |
+|---|---|---|---|
+| 1 | A live DSH session | DSH app | nothing to send to; title lookup fails |
+| 2 | `roles.<name>` | tower.toml | `unknown role` |
+| 3 | `sessions.<name>` + `role_titles.<name>` | tower.toml → `adapters.dsh` | **dispatch stays `running` forever** — the most confusing failure |
+| 4 | `roles/<name>/AGENT.md` charter + sidebar visibility | `roles/<name>/`; DSH-side workspace | no instructions, or the bot is invisible in the sidebar (needs a DSH restart) |
+
+`tower onboard --from notes.md` writes ②④ and pins ③ when the notes carry
+`session:` / `title:` lines per role; `tower bootstrap` resolves the rest.
+`tower doctor` now flags a pinned session that is not on the harness (the
+failure that used to have no signal anywhere).
+
+**Graduation test**: dispatch a one-liner ("reply `ready` only") and watch it
+travel dispatch → report → verify → accepted. Only then is the bot "built".

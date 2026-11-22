@@ -670,7 +670,56 @@ def run_one_job(cfg: TowerConfig) -> dict[str, Any] | None:
         return None
 
 
-def run_worker(cfg: TowerConfig, once: bool = False) -> int:
+def _claimed_job_tasks(cfg: TowerConfig) -> list[str]:
+    """Task ids currently owned by a live queue claim (someone is working them)."""
+    claimed_dir = cfg.queue_dir / "claimed"
+    out = []
+    for path in sorted(claimed_dir.glob("*.json")):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if job.get("task"):
+            out.append(str(job["task"]))
+    return out
+
+
+def _adopt_orphans(cfg: TowerConfig) -> int:
+    """B3: tasks left claimed/in_progress by a dead worker go back to rework.
+
+    The 2026-11-22 report: the worker was stopped mid-run and three tasks stayed
+    `running` forever — no surface ever said the owning process was gone. At
+    worker start, any claimed/in_progress task that is old (staleness_minutes)
+    and NOT covered by a live queue claim is interrupted: rework + audit event.
+    """
+    from .board import STATUS_REWORK, age_seconds, attention_status
+
+    board = Board(cfg)
+    live = set(_claimed_job_tasks(cfg))
+    adopted = 0
+    for task in board.all():
+        if task.status not in ("claimed", "in_progress"):
+            continue
+        if attention_status(task) in ("claimed", "resolved"):
+            continue  # the issues bot owns it
+        age = age_seconds(task.updated_at)
+        if age is None or age < getattr(cfg, "staleness_minutes", 30) * 60:
+            continue
+        if task.id in live:
+            continue  # a live queue claim owns it
+        board.transition(task, STATUS_REWORK,
+                         note="interrupted: the worker died mid-run; re-dispatched")
+        task.round += 1
+        board.save(task)
+        board.event("task_interrupted", task=task.id, role=task.role,
+                    last_status=task.status)
+        adopted += 1
+    if adopted:
+        board.log("orphans_adopted", count=adopted)
+    return adopted
+
+
+def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int:
     """The worker loop with a thread pool (`workers: N`, design doc §1).
 
     Each thread claims jobs via the atomic `os.replace`; per-role serialisation is
@@ -678,10 +727,15 @@ def run_worker(cfg: TowerConfig, once: bool = False) -> int:
     two adapter turns at once, while different roles go in parallel. A worker
     whose workspace has been deleted (test tmp dirs!) exits instead of polling
     forever — B2 field report, 2026-11-09.
+
+    B3 (2026-11-22): on Ctrl-C the worker **drains** — it refuses to leave
+    claimed jobs half-dead. It prints the in-flight task ids and waits for them
+    to finish; a second Ctrl-C (or `--force`) exits immediately with a warning.
     """
     root_existed = cfg.workspace.exists()
     _dirs(cfg)
     _requeue_stale(cfg)
+    _adopt_orphans(cfg)
     pool = max(1, int(getattr(cfg, "workers", 4) or 1))
     role_locks: dict[str, threading.Semaphore] = {}
     locks_guard = threading.Lock()
@@ -711,17 +765,41 @@ def run_worker(cfg: TowerConfig, once: bool = False) -> int:
             else:
                 _process(cfg, claimed_path, job)
 
+    def _drain_or_die() -> None:
+        """B3: on Ctrl-C, wait for in-flight jobs instead of abandoning them."""
+        inflight = _claimed_job_tasks(cfg)
+        if not inflight or force:
+            if inflight:
+                print(f"worker: --force exit with {len(inflight)} job(s) in flight "
+                      f"({', '.join(inflight)}) — they will be adopted on next start",
+                      file=sys.stderr)
+            raise KeyboardInterrupt
+        print(f"worker: stopping, but {len(inflight)} job(s) still in flight "
+              f"({', '.join(inflight)}) — draining; Ctrl-C again to abandon",
+              file=sys.stderr)
+        deadline = time.time() + 3600
+        while _claimed_job_tasks(cfg) and time.time() < deadline:
+            _heartbeat(cfg)   # stay visible as the consumer while draining
+            time.sleep(1)
+        raise KeyboardInterrupt
+
     if pool <= 1:
-        loop()
+        try:
+            loop()
+        except KeyboardInterrupt:
+            pass
         return 0
     threads = [threading.Thread(target=loop, daemon=True) for _ in range(pool)]
     for thread in threads:
         thread.start()
-    while any(thread.is_alive() for thread in threads):
-        _heartbeat(cfg)
-        if once and queue_depth(cfg) == 0 and not any(thread.is_alive() for thread in threads):
-            break
-        time.sleep(0.2)
+    try:
+        while any(thread.is_alive() for thread in threads):
+            _heartbeat(cfg)
+            if once and queue_depth(cfg) == 0 and not any(thread.is_alive() for thread in threads):
+                break
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        _drain_or_die()
     return 0
 
 

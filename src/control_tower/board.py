@@ -226,7 +226,8 @@ class Board:
                idem_key: str = "", mandate: dict[str, Any] | None = None) -> Task:
         cfg_role = self.cfg.roles.get(role)
         if cfg_role is None:
-            raise KeyError(f"unknown role {role!r}; known roles: {', '.join(sorted(self.cfg.roles))}")
+            raise KeyError(f"unknown role {role!r} (workspace: {self.cfg.workspace}; "
+                       f"known roles: {', '.join(sorted(self.cfg.roles))})")
         from .config import next_task_id
 
         task = Task(
