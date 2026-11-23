@@ -10,7 +10,9 @@ import {
   boundWorkspace,
   hasTowerConfig,
   recordBinding,
+  resolveWorkspace,
   targetWorkspace,
+  workspaceLine,
   dispatchTool,
   ensurePanel,
   inboxTool,
@@ -175,8 +177,14 @@ test('an update cannot re-aim the tools: config wins, binding reconnects', () =>
   try {
     process.env.TOWER_HOME = home
 
-    // 1. the configured workspace is the aim, whatever the pointer says
-    assert.equal(targetWorkspace({ workspace: configured }), configured)
+    // 1. the active project (`tower_use`) outranks the profile config: on a live
+    //    tower the config still named the mount-time demo, so dispatch resolved
+    //    the demo and answered "unknown role 'frontend-2'" while tower_projects
+    //    showed the real project as active (2026-11-23 field report, P0-1)
+    assert.equal(resolveWorkspace({ workspace: configured }).source, 'active project')
+    assert.equal(targetWorkspace({ workspace: configured }), active)
+    assert.match(workspaceLine({ workspace: configured }), /profile config names/)
+    assert.ok(!/profile config names/.test(workspaceLine({})), 'no drift note without a config aim')
 
     // 2. no configured workspace: the user's pointer (tower projects use) wins —
     //    a mount-time binding must never outrank an explicit choice (B1, 2026-11-22)

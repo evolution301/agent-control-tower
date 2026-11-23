@@ -328,6 +328,25 @@ def render_restate_prompt(cfg: TowerConfig, task: Task) -> str:
     )
 
 
+def _late_report(cfg: TowerConfig, task: Task) -> dict[str, Any] | None:
+    """The report a timed-out role wrote anyway — None when it really produced none.
+
+    An empty or header-only file is not evidence of work: parse it and require a
+    summary, a file list or a check before the task leaves the failure bucket.
+    """
+    path = cfg.role_dir(task.role) / f"{task.id}-REPORT.md"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    report = parse_report(text)
+    if not (report.get("summary") or report.get("files") or report.get("checks")):
+        return None
+    return report
+
+
 def dispatch(
     cfg: TowerConfig,
     board: Board,
@@ -391,6 +410,25 @@ def dispatch(
         record_contract(cfg, task, plan)
 
     if result.exit_code != 0:
+        # B7 (2026-11-23): a bot that outlived the adapter timeout still writes
+        # its report — T-0202 ran 52 turns, was judged failed at 12:01, and the
+        # complete REPORT landed at 12:44. A report on disk is work to verify,
+        # not a failure, so hand it to the acceptance gate instead.
+        late = _late_report(cfg, task)
+        if late is not None:
+            board.log("late_report", task=task.id, role=task.role,
+                      exit_code=result.exit_code, report_chars=len(late.get("raw") or ""))
+            task.report = late
+            task.state = late.get("state", "")
+            task.attention = late.get("attention")
+            board.add_assignment(task, adapter.name, result.exit_code)
+            board.transition(
+                task, STATUS_REPORTED,
+                note=f"adapter exit {result.exit_code} but the report file landed — verify, do not trust",
+                report=late,
+            )
+            board.push_report(task, late)
+            return task
         board.transition(task, STATUS_FAILED, note=f"adapter exit {result.exit_code}", output=result.text[:2000])
         return task
 

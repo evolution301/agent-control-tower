@@ -26,7 +26,7 @@ from .board import (
     STATUS_REWORK,
     attention_status,
 )
-from .config import ensure_layout, load_config
+from .config import ensure_layout, load_config, unknown_role_message
 from .board_view import render as render_board, watch as watch_board
 from .dispatch import dispatch, dispatch_restate
 from .converse import load_conversation, parse_messages, relay_report_messages, say
@@ -229,7 +229,7 @@ def cmd_dispatch(args) -> int:
     board = Board(cfg)
     role = args.role
     if role not in cfg.roles:
-        _say(args, f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
+        _say(args, unknown_role_message(cfg, role))
         return 2
     preflight = _dispatch_preflight(cfg, role)
     if preflight:
@@ -578,7 +578,7 @@ def cmd_escalate(args) -> int:
     task = board.load(args.task)
     target = getattr(args, "to", "") or cfg.escalation_role or "issues"
     if target not in cfg.roles:
-        _say(args, f"unknown role {target!r}; known roles: {', '.join(sorted(cfg.roles))}")
+        _say(args, unknown_role_message(cfg, target))
         return 2
     question = (getattr(args, "question", "") or
                 ((task.attention or {}).get("question", "")) or "")
@@ -1327,6 +1327,27 @@ def _age_minutes(ts: str) -> float:
     return max(0.0, (datetime.now(parsed.tzinfo) - parsed).total_seconds() / 60)
 
 
+def _adapter_reachable(base_url: str, timeout: float = 1.0) -> bool:
+    """Is anything listening where tower.toml says the harness lives?
+
+    The desktop app picks a new port every restart; a stale `base_url` turns every
+    dispatch into `connection refused` while the task board still looks busy. A
+    plain TCP probe is enough to say "reachable / DOWN" in `tower status`.
+    """
+    from urllib.parse import urlparse
+    import socket
+
+    parsed = urlparse(str(base_url or "").strip())
+    if not parsed.hostname:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_status(args) -> int:
     cfg = _cfg(args)
     board = Board(cfg)
@@ -1334,6 +1355,15 @@ def cmd_status(args) -> int:
     if args.json:
         _print([t.to_dict() for t in tasks], as_json=True)
         return 0
+    # B6 (2026-11-23): the board said "in_progress" for an hour after the harness
+    # port moved and the worker died with it. Say the adapter state up front.
+    base_url = str((cfg.adapter_options.get("dsh") or {}).get("base_url") or "").strip()
+    if base_url:
+        if _adapter_reachable(base_url):
+            print(f"adapter dsh {base_url}: reachable")
+        else:
+            print(f"adapter dsh {base_url}: DOWN — nothing is listening; the desktop "
+                  f"app changes port on restart, update adapters.dsh.base_url (tower doctor)")
     if not tasks:
         print("no tasks yet")
         return 0
@@ -1489,6 +1519,17 @@ def cmd_doctor(args) -> int:
             problems.append(
                 "verify command %r: %r is not on PATH" % (command, command.strip().split(" ")[0])
             )
+    # B5 (2026-11-23): `echo ok` is not a gate. Say it once, in doctor, where the
+    # tower is configured — not only at accept time when the work is already done.
+    from .bootstrap import BUILTINS as _builtins, command_available as _available
+
+    real_checks = [c for c in (cfg.verify_commands or [])
+                   if _available(c) and c.strip().split(" ")[0].strip("\"'") not in _builtins]
+    if not real_checks:
+        warnings.append(
+            "no real verification: verify_commands is empty or only builtins "
+            "(echo/test/…) — `tower accept` verifies structure only. Add a command "
+            "that fails when the work is wrong.")
     # 2026-11-10: a queue nobody consumes must be a doctor PROBLEM, not silence
     from .worker import worker_status
 
@@ -1625,8 +1666,22 @@ def cmd_role_add(args) -> int:
     print(f"charter: {info['charter']}")
     if info["session_id"]:
         print(f"session wired: {info['session_id']}")
-    else:
-        print("next: wire its bot session — tower role add %s ... --session <session-id>" % info["name"])
+    # B8 (2026-11-23): a bot is four pieces. Missing sessions/role_titles used to
+    # fail silently — dispatch ran, the turn never started, the task sat "running"
+    # for hours. Print the checklist instead of a single "next:" hint.
+    from .config import reload_config
+
+    cfg = reload_config(cfg)
+    options = cfg.adapter_options.get("dsh") or {}
+    wired = bool((options.get("sessions") or {}).get(info["name"]))
+    titled = bool((options.get("role_titles") or {}).get(info["name"]))
+    print("checklist (a missing piece shows up as a dispatch that never starts):")
+    print(f"  [x] roles.{info['name']} in tower.toml")
+    print(f"  [{'x' if wired else ' '}] adapters.dsh.sessions.{info['name']}   # tower bootstrap, or --session <id>")
+    print(f"  [{'x' if titled else ' '}] adapters.dsh.role_titles.{info['name']}   # the name the bot shows in the sidebar")
+    print(f"  [x] {info['charter']}")
+    if not (wired and titled):
+        print("next: tower bootstrap   # wires every role's session + title in one run")
     return 0
 
 

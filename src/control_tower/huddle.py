@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from .board import Board, now_ts
-from .config import TowerConfig
+from .config import TowerConfig, unknown_role_message
 from .converse import run_turn
 from .dispatch import _sections
 
@@ -117,7 +117,7 @@ def huddle(
     unique: list[str] = []
     for role in roles:
         if role not in cfg.roles:
-            raise KeyError(f"unknown role {role!r}; known: {', '.join(sorted(cfg.roles))}")
+            raise KeyError(unknown_role_message(cfg, role))
         if role not in unique:
             unique.append(role)
     if len(unique) < 2:

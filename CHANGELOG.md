@@ -5,6 +5,58 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.17.3] - 2026-11-23
+
+### Fixed — a bot that outlived its timeout was judged failed
+
+T-0202 ran 52 turns, the adapter gave up at 1800 s and the task turned `failed`
+at 12:01; the complete REPORT landed at 12:44 and nobody looked again.
+
+- **A report on disk is work to verify, not a failure.** When an adapter exits
+  non-zero, `dispatch` now reads `roles/<role>/<TASK>-REPORT.md`; if it parses to
+  a summary, a file list or a check, the task goes to `reported` (note: *adapter
+  exit N but the report file landed — verify, do not trust*) and is logged as
+  `late_report`. An empty or header-only file still fails. (`dispatch.py`)
+
+### Fixed — the tools resolved the demo tower
+
+`tower_dispatch` answered `unknown role 'frontend-2'; known: backend, frontend,
+qa` while `tower_projects` showed the real project as active: the profile config
+still named the mount-time demo directory, and it outranked the active-project
+pointer.
+
+- **`tower_use` wins now.** `resolveWorkspace()` orders pointer → profile config
+  → last used → cwd, and every tool answer starts with
+  `resolved workspace: <path> — from <source>`, plus a drift note when the
+  profile config names a different tower. `tower dispatch` records its binding
+  for the workspace it really used. (`packages/dsh-tower/index.js`)
+- **`unknown role` names the tower.** The message carries the workspace path, the
+  roles it really has, and the two ways to re-aim (`--workspace <dir>`,
+  `tower projects use <name>`). (`config.unknown_role_message`)
+
+### Changed — the board tells the truth about a dead adapter
+
+The harness changes port on every restart; a stale `base_url` left tasks
+`in_progress` for an hour with a worker that died long before.
+
+- **`tower status` probes the adapter** and prints `reachable` or `DOWN — nothing
+  is listening … update adapters.dsh.base_url`. (`cli.py`)
+- **`tower doctor` calls out a verification chain that verifies nothing** — an
+  empty `verify_commands`, or only builtins such as `echo ok` — instead of
+  leaving it to accept time. (`cli.py`)
+- **`tower role add` prints the four-piece checklist** (role, session, sidebar
+  title, charter) with the missing pieces unticked. (`cli.py`)
+
+### Fixed — SIGTERM drains instead of abandoning a turn
+
+`kill` used to end the worker mid-turn; the DSH session then accepted messages
+but never started another turn and `session/cancel` could not revive it
+(three sessions, 2026-11-22).
+
+- **SIGTERM/SIGBREAK stop claiming and wait for the in-flight job**, exactly like
+  a first Ctrl-C; a second signal abandons it. Handlers are restored on exit.
+  (`worker.py`)
+
 ## [0.17.2] - 2026-11-23
 
 ### Fixed — a rejected queue call looked like a successful purge

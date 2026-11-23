@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -740,6 +741,31 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
     role_locks: dict[str, threading.Semaphore] = {}
     locks_guard = threading.Lock()
 
+    # B4 (2026-11-23): a `kill`/service-stop sends SIGTERM, and a worker that dies
+    # on the spot leaves its in-flight turn half-run — the DSH session then accepts
+    # messages but never starts a turn (`session/cancel` does not fix that). The
+    # handler asks the loops to stop claiming and lets the turn finish; a second
+    # signal abandons it the same way a second Ctrl-C does.
+    stop = threading.Event()
+    previous_handlers: dict[int, Any] = {}
+
+    def _request_stop(signum, _frame) -> None:
+        if stop.is_set():
+            raise KeyboardInterrupt
+        stop.set()
+        name = getattr(signal.Signals(signum), "name", str(signum))
+        print(f"worker: {name} — draining; send it again to abandon the turn",
+              file=sys.stderr)
+
+    for sig_name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            previous_handlers[sig] = signal.signal(sig, _request_stop)
+        except (ValueError, OSError):
+            pass  # not the main thread (tests, embedded use) — Ctrl-C still drains
+
     def role_sem(name: str) -> threading.Semaphore:
         with locks_guard:
             if name not in role_locks:
@@ -748,6 +774,8 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
 
     def loop() -> None:
         while True:
+            if stop.is_set():
+                return  # B4: SIGTERM asked us to stop claiming new work
             if root_existed and not cfg.workspace.exists():
                 return  # the workspace was deleted under us (tests/tmp cleanup)
             _heartbeat(cfg)
@@ -783,23 +811,44 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
             time.sleep(1)
         raise KeyboardInterrupt
 
-    if pool <= 1:
-        try:
-            loop()
-        except KeyboardInterrupt:
-            pass
-        return 0
-    threads = [threading.Thread(target=loop, daemon=True) for _ in range(pool)]
-    for thread in threads:
-        thread.start()
+    def _drain_quietly() -> None:
+        """B4: finish what was already claimed, then leave without a trace."""
+        inflight = _claimed_job_tasks(cfg)
+        if not inflight:
+            return
+        print(f"worker: draining {len(inflight)} in-flight job(s) "
+              f"({', '.join(inflight)})", file=sys.stderr)
+        deadline = time.time() + 3600
+        while _claimed_job_tasks(cfg) and time.time() < deadline:
+            _heartbeat(cfg)   # stay visible as the consumer while draining
+            time.sleep(1)
+
     try:
-        while any(thread.is_alive() for thread in threads):
-            _heartbeat(cfg)
-            if once and queue_depth(cfg) == 0 and not any(thread.is_alive() for thread in threads):
-                break
-            time.sleep(0.2)
-    except KeyboardInterrupt:
-        _drain_or_die()
+        if pool <= 1:
+            try:
+                loop()
+            except KeyboardInterrupt:
+                pass
+        else:
+            threads = [threading.Thread(target=loop, daemon=True) for _ in range(pool)]
+            for thread in threads:
+                thread.start()
+            try:
+                while any(thread.is_alive() for thread in threads):
+                    _heartbeat(cfg)
+                    if once and queue_depth(cfg) == 0 and not any(thread.is_alive() for thread in threads):
+                        break
+                    time.sleep(0.2)
+            except KeyboardInterrupt:
+                _drain_or_die()
+        if stop.is_set() and not force:
+            _drain_quietly()
+    finally:
+        for sig, handler in previous_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError, TypeError):
+                pass
     return 0
 
 

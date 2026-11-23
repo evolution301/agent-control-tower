@@ -32,7 +32,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.17.2'
+export const VERSION = '0.17.3'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -102,25 +102,46 @@ export function recordBinding(directory, source = 'bundle') {
 }
 
 /**
- * Which tower should the tools point at?
+ * Which tower should the tools point at — and why it picked that one.
  *
- * 1. the workspace in the profile config — an explicit aim always wins, so an
- *    update can never silently re-point a working installation;
- * 2. the bound tower — the seamless reconnection when that line is missing;
- * 3. the active project (`tower projects use` / `tower_use`);
+ * 1. the active project (`tower projects use` / `tower_use`) — the user's most
+ *    recent explicit choice;
+ * 2. the workspace in the profile config;
+ * 3. the bound tower — the seamless reconnection when that line is missing;
  * 4. cwd, for a first run that has not been configured yet.
+ *
+ * B2 (2026-11-23): the pointer used to come AFTER the config, so on a live tower
+ * whose profile still named the mount-time demo directory `tower_dispatch` and
+ * `tower_accept` resolved that demo and answered `unknown role 'frontend-2';
+ * known: backend, frontend, qa` while `tower_projects` correctly showed the real
+ * project as active. An explicit `tower_use` now wins, and every tool says which
+ * worker it resolved (`workspaceLine`), so the aim is never a guess.
  */
-export function targetWorkspace(config = {}) {
+export function resolveWorkspace(config = {}) {
   const configured = config.workspace
-  if (hasTowerConfig(configured)) return resolve(configured)
-  // B1 (2026-11-22): the active-project pointer is an explicit user choice
-  // (`tower projects use`), so it outranks the mount-time binding — otherwise
-  // `tower_use` could never take effect after the first mount pinned binding.json.
   const pointer = activeProject(config)
-  if (pointer) return pointer
+  if (pointer) return { path: pointer, source: 'active project' }
+  if (hasTowerConfig(configured)) return { path: resolve(configured), source: 'profile config' }
   const bound = boundWorkspace()
-  if (bound) return bound
-  return resolve(configured || process.cwd())
+  if (bound) return { path: bound, source: 'last used' }
+  return { path: resolve(configured || process.cwd()), source: 'cwd' }
+}
+
+export function targetWorkspace(config = {}) {
+  return resolveWorkspace(config).path
+}
+
+/**
+ * The first line of a tool answer: which tower ran it, and whether that differs
+ * from what the profile config asks for.
+ */
+export function workspaceLine(config = {}) {
+  const { path, source } = resolveWorkspace(config)
+  const configured = config.workspace
+  const drift = hasTowerConfig(configured) && resolve(configured) !== path
+    ? ` (profile config names ${resolve(configured)}; \`tower_use\` moved it — run tower_use to switch back)`
+    : ''
+  return `resolved workspace: ${path} — from ${source}${drift}`
 }
 
 /** Resolved runtime settings. */
@@ -149,7 +170,7 @@ function runTower(settings, args) {
       file,
       argv,
       { cwd: settings.workspace, timeout: settings.timeoutMs, maxBuffer: 64 * 1024 * 1024,
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },uffer: 20 * 1024 * 1024 },
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
       (error, stdout, stderr) => {
         const text = (stdout ?? '').trim()
         const errText = (stderr ?? '').trim()
@@ -700,23 +721,29 @@ export function dispatchTool(cfg) {
     },
     async execute(args) {
       assertWorkspace(cfg)
+      const aim = workspaceLine(cfg)
       const argv = ['dispatch', String(args.role ?? ''), String(args.brief ?? ''), '--json']
       if (args.batch) argv.push('--batch', String(args.batch))
       if (args.due) argv.push('--due', String(args.due))
       if (args.restate) argv.push('--restate')
       if (args.async) argv.push('--async')
-      recordBinding(cfg.workspace, 'dispatch')
-      const { data } = await runTower(cfg, argv)
+      recordBinding(targetWorkspace(cfg), 'dispatch')
+      let data
+      try {
+        ({ data } = await runTower(cfg, argv))
+      } catch (error) {
+        throw new Error(`${aim}\n${error?.message ?? error}`)
+      }
       if (data?.queued) {
         return {
           ok: true,
           task: data,
-          text: `Queued ${data.id} (job ${data.job}) — returns immediately. The worker runs `
+          text: `${aim}\nQueued ${data.id} (job ${data.job}) — returns immediately. The worker runs `
             + `the adapter; the settlement (auto-triage incl. accept/rework) lands in `
             + `tower_inbox as an async_settled notice.`,
         }
       }
-      const text = summarizeDispatch(data)
+      const text = `${aim}\n${summarizeDispatch(data)}`
       return { ok: true, task: data?.task ?? data, text }
     },
     presentCall(args) {
@@ -945,11 +972,18 @@ export function acceptTool(cfg) {
     },
     async execute(args) {
       assertWorkspace(cfg)
+      const aim = workspaceLine(cfg)
       const argv = ['accept', String(args.task ?? '')]
       if (args.note) argv.push('--note', String(args.note))
-      const { data, code } = await runTower(cfg, argv)
-      const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
-      const accepted = /ACCEPTED/.test(text) && code === 0
+      let data, code
+      try {
+        ({ data, code } = await runTower(cfg, argv))
+      } catch (error) {
+        throw new Error(`${aim}\n${error?.message ?? error}`)
+      }
+      const body = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+      const text = `${aim}\n${body}`
+      const accepted = /ACCEPTED/.test(body) && code === 0
       return { ok: code === 0, accepted, text }
     },
     presentCall() {

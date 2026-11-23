@@ -23,7 +23,7 @@ from typing import Any
 
 from .adapters import AdapterRequest
 from .board import Board, now_ts
-from .config import TowerConfig
+from .config import TowerConfig, unknown_role_message
 
 RELAY_CONTRACT = """## Relayed message from the {tower} control tower
 
@@ -142,7 +142,7 @@ def send_relay(cfg: TowerConfig, board: Board, adapter, to: str, message: str,
     elif session_id.startswith("role:"):
         role_name = session_id[len("role:"):]
         if role_name not in cfg.roles:
-            raise ValueError(f"unknown role {role_name!r}; known: {', '.join(sorted(cfg.roles))}")
+            raise ValueError(unknown_role_message(cfg, role_name))
         role = cfg.roles[role_name]
         options = dict(cfg.adapter_options.get(role.adapter) or {})
         req = AdapterRequest(

@@ -297,3 +297,18 @@ def next_task_id(cfg: TowerConfig) -> str:
         if _ID_RE.match(stem):
             existing.append(int(stem.split("-")[1]))
     return f"T-{(max(existing) + 1) if existing else 1:04d}"
+
+
+def unknown_role_message(cfg: TowerConfig, name: str) -> str:
+    """The one answer to "unknown role" — B6 (2026-11-23) field report.
+
+    A caller that resolved the wrong tower only saw `known: backend, frontend, qa`
+    (the demo's roles) and had no way to tell that the workspace itself was wrong.
+    Name the workspace, the roles it really has, and the two ways to re-aim.
+    """
+    known = ", ".join(sorted(cfg.roles)) or "none"
+    return (
+        f"unknown role {name!r}; known: {known} "
+        f"(workspace: {cfg.workspace}) — if this is not the tower you meant, "
+        f"pass --workspace <dir> or run `tower projects use <name>`"
+    )

@@ -28,7 +28,7 @@ import json
 
 from .adapters import AdapterRequest, get_adapter
 from .board import Board, Task, now_ts
-from .config import TowerConfig
+from .config import TowerConfig, unknown_role_message
 
 PEER_NOTE_CONTRACT = """## Peer note from {sender} (not a work brief)
 
@@ -150,9 +150,9 @@ def say(
     call returns immediately either way.
     """
     if sender not in cfg.roles:
-        raise KeyError(f"unknown role {sender!r}; known: {', '.join(sorted(cfg.roles))}")
+        raise KeyError(unknown_role_message(cfg, sender))
     if to not in cfg.roles:
-        raise KeyError(f"unknown role {to!r}; known: {', '.join(sorted(cfg.roles))}")
+        raise KeyError(unknown_role_message(cfg, to))
     if sender == to:
         raise ValueError("a role cannot send a peer message to itself")
 
