@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import groups, kickoff
 from .adapters import AdapterRequest, get_adapter
 from .board import (
     Board,
@@ -139,6 +140,18 @@ run commands.
 """
 
 
+def _auto_group(cfg: TowerConfig, task: Task) -> str:
+    """v3 §4: one task = one group, so a task never inherits another's history."""
+    if not getattr(cfg, "group_auto", True):
+        return ""
+    try:
+        group = groups.create(cfg, task.brief.strip().splitlines()[0][:80] or task.id, [task.role])
+    except OSError:
+        return ""
+    groups.attach(cfg, group.id, task.id)
+    return group.id
+
+
 def _confirmed_block(task: Task) -> str:
     """The restatement a person already accepted, carried into the work prompt."""
     if not (task.restate_ok and task.restatement.strip()):
@@ -249,6 +262,7 @@ def render_prompt(cfg: TowerConfig, task: Task, compact: bool = False) -> str:
     )
     # Playbook point 3: the role inherits what its past accepted jobs taught —
     # as a one-line-per-skill index, never the bodies (context window guard).
+    from .skills import library_index_lines as skills_library_lines
     from .skills import skill_index_lines
 
     index = skill_index_lines(cfg, task.role)
@@ -312,6 +326,31 @@ def render_prompt(cfg: TowerConfig, task: Task, compact: bool = False) -> str:
                 rules = rules[:limit] + "\n…(truncated; full text: " + rules_name + ")"
             prompt += "\n## Standing rules（全塔常设规则）\n\n" + rules + "\n"
         break
+
+    # v3 §5: the company-wide library is cross-role — a frontend lesson that a
+    # backend needs is invisible to the per-role index above. Index only, never
+    # bodies: the token cost of a skill is paid by the bot that opens it.
+    extra = skills_library_lines(cfg, task.brief, limit=3)
+    if extra:
+        prompt += (
+            "\n## Company skills that may apply\n\n" + "\n".join(extra)
+            + "\nOpen one with `tower skill show <name>` when it matters; do not "
+            "paste it back into the report.\n"
+        )
+
+    # v3 §3: a dispatched task inherits the kickoff package it was cut from.
+    if task.group:
+        section = kickoff.package_section(cfg, task.group, task.role)
+        if section:
+            prompt += section
+
+    if task.due_at:
+        prompt += (
+            "\n## Deadline\n\n"
+            + task.due_at
+            + " — the lane leader is asked for your progress when this passes. "
+            "Report `blocked` early instead of waiting.\n"
+        )
     return prompt
 
 
@@ -354,6 +393,8 @@ def dispatch(
     dry_run: bool = False,
     extra_options: dict[str, Any] | None = None,
     timeout_s: float | None = None,
+    due: str = "",
+    group: str = "",
 ) -> Task:
     """Run one task through its role's adapter.
 
@@ -362,6 +403,27 @@ def dispatch(
     for the role's full (often 30 min) budget (B12).
     """
     role = cfg.roles[task.role]
+    # v0.18 (v3 §3/§7): a group and a deadline are part of every dispatch, not
+    # something the caller may forget. The package check is the one gate that
+    # can refuse a dispatch outright — that is the point of a kickoff.
+    if not task.group:
+        task.group = group or _auto_group(cfg, task)
+    elif group and group != task.group:
+        task.group = group
+    if task.group:
+        kickoff.attach_task(cfg, task.group, task.id)
+    if not task.due_at:
+        from .supervise import parse_due
+
+        task.due_at = parse_due(due or cfg.default_due or "4h")
+    problems = kickoff.validate(kickoff.load_package(cfg, task.group)) if task.group else ["no group"]
+    if cfg.kickoff_require and not dry_run and problems:
+        raise ValueError(
+            "no task package for this dispatch — run `tower kickoff` first:\n- "
+            + "\n- ".join(problems)
+        )
+    board.save(task)
+
     plan = contract_plan(cfg, task)
     prompt = render_prompt(cfg, task, compact=bool(plan.get("compact")))
 
@@ -376,6 +438,8 @@ def dispatch(
         compact=bool(plan.get("compact")),
         reason=plan.get("reason", ""),
         prompt_len=len(prompt),
+        group=task.group,
+        due_at=task.due_at,
     )
 
     if dry_run:

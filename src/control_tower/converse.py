@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 
+from . import org
 from .adapters import AdapterRequest, get_adapter
 from .board import Board, Task, now_ts
 from .config import TowerConfig, unknown_role_message
@@ -110,7 +111,7 @@ def run_turn(cfg: TowerConfig, role_name: str, prompt: str, task_id: str = "") -
 
 def _send_breaker(cfg: TowerConfig, sender: str, verdict: dict) -> bool:
     """Tell the throttled sender once per hour — silence reads as a lost message."""
-    from . import peer_policy
+    from . import org, peer_policy
 
     try:
         if not peer_policy.claim_breaker(cfg, sender):
@@ -159,6 +160,21 @@ def say(
     from . import peer_policy
 
     verdict = peer_policy.check(cfg, sender, to)
+    # v3 §6: a flat tower keeps its old freedom; a layered one refuses the jump
+    # and names the door that was open.
+    if verdict["allow"]:
+        path = org.check_path(cfg, sender, to)
+        if not path["allow"]:
+            verdict = {
+                "allow": False,
+                "reason": str(path.get("reason") or "no direct line"),
+                "mode": "hierarchy",
+                "sender": sender,
+                "to": to,
+                "count": verdict.get("count", 0),
+                "per_hour": verdict.get("per_hour", 0),
+                "lead": verdict.get("lead", ""),
+            }
 
     cid = conversation_id or next_conversation_id(cfg)
     record = load_conversation(cfg, cid) if conversation_path(cfg, cid).exists() else {

@@ -421,6 +421,7 @@ tower stops and tells you to escalate instead of looping.
 | [DSH quickstart](docs/dsh-quickstart.md) | the primary setup, end to end, plus five failure modes it prevents |
 | [Architecture](docs/architecture.md) | components, state machine, why files instead of a queue |
 | [Adapters](docs/adapters.md) | mock / cli / dsh / openai, and how to add your own |
+| [Room, team, deadline](docs/v3-org.md) | guided teams, kickoff, groups, org chart, deadlines, skill library |
 | [Borrowed from dsh-superagent](docs/superagent-ideas.md) | the five ideas we adopted, and what we left out |
 | [Contributing](CONTRIBUTING.md) | ground rules, PR checklist, adapter guide |
 

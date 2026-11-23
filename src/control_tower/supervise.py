@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
+from . import org
 from .adapters import AdapterRequest, get_adapter
 from .board import Board, OPEN_STATES, STATUS_REPORTED, Task, now_ts
 from .config import TowerConfig
@@ -146,21 +147,41 @@ def supervise(cfg: TowerConfig, board: Board, now: datetime | None = None) -> di
         if role is None:  # a role removed while its task was open
             board.log("supervise_skipped", task=task.id, reason=f"unknown role {task.role!r}")
             continue
+        # v3 §6/§7: the deadline is answered by the lane leader, not by the bot
+        # that is late. Walk one step up the org chart; a flat tower keeps the
+        # old behaviour and is nudged directly.
+        target = task.role
+        chain = org.chain(cfg, task.role)
+        escal = dict(task.escalation or {})
+        if org.enabled(cfg) and len(chain) > 1 and not escal.get("leader_nudged"):
+            target = chain[1]
+            escal["leader_nudged"] = True
+            escal["leader"] = target
+            task.escalation = escal
+            board.save(task)
         prompt = render_supervise_prompt(cfg, task)
+        if target != task.role:
+            prompt = (
+                f"## 你是 {target}\n\n"
+                f"{task.role} 的任务 {task.id} 已过期。向 {task.role} 要一次结构化进度"
+                "（做了什么 / 到哪一步 / 卡在哪 / 还要多久），把结论回给我；"
+                "不要自己重做这项工作。\n\n" + prompt
+            )
         task_dir = cfg.task_dir(task.id)
         task_dir.mkdir(parents=True, exist_ok=True)
         (task_dir / f"supervise-{task.nudges + 1}.md").write_text(prompt, encoding="utf-8")
 
-        options = dict(cfg.adapter_options.get(role.adapter) or {})
-        adapter = get_adapter(role.adapter, options)
+        target_role = cfg.roles.get(target) or role
+        options = dict(cfg.adapter_options.get(target_role.adapter) or {})
+        adapter = get_adapter(target_role.adapter, options)
         board.log("supervise_nudge", task=task.id, role=task.role, adapter=adapter.name,
                   nudge=task.nudges + 1, due_at=task.due_at)
         req = AdapterRequest(
-            role=task.role,
+            role=target,
             prompt=prompt,
-            cwd=cfg.role_dir(task.role),
-            timeout_s=role.timeout_s,
-            env=role.env,
+            cwd=cfg.role_dir(target),
+            timeout_s=target_role.timeout_s,
+            env=target_role.env,
             task_id=task.id,
             options=options,
         )
@@ -200,8 +221,25 @@ def supervise(cfg: TowerConfig, board: Board, now: datetime | None = None) -> di
         board.transition(task, task.status, note=f"supervise: still open — {report.get('state') or 'no status'}")
         board.log("supervise_still_open", task=task.id, role=task.role,
                   state=report.get("state", ""), nudges=task.nudges)
+        if task.nudges >= 2 and not escal.get("notified"):
+            escal["notified"] = True
+            task.escalation = escal
+            board.save(task)
+            board.notify({
+                "event": "overdue_escalation",
+                "task": task.id,
+                "role": task.role,
+                "chain": chain,
+                "nudges": task.nudges,
+                "summary": (
+                    f"[tower] {task.id} overdue twice — {' → '.join(chain)}: "
+                    f"{report.get('state') or 'no status from the lane'}"
+                ),
+            })
+            board.log("supervise_escalated", task=task.id, chain=chain, nudges=task.nudges)
         results.append({"task": task.id, "role": task.role, "outcome": "still_open",
                         "nudges": task.nudges, "state": report.get("state", ""),
-                        "summary": report.get("summary", "")})
+                        "summary": report.get("summary", ""),
+                        "escalated_to": escal.get("leader", "")})
 
     return {"checked_at": now_ts(), "touched": len(results), "results": results}

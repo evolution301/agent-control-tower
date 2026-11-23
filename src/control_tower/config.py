@@ -30,6 +30,14 @@ class Role:
     env: dict[str, str] = field(default_factory=dict)
     # "" inherits the tower-level dispatch_mode (docs: dispatch --async / tower worker)
     dispatch_mode: str = ""
+    # 2026-11-23 (v3 §6): a two-layer org. A lane has one leader and N members;
+    # members talk to their leader, leaders talk to the lead. Jumping a level is
+    # refused by converse.say with the path that would have worked.
+    leader: bool = False
+    report_to: str = ""
+    # the secretary lane: dispatch / accept / rework / report only. Verifiable
+    # work (files, checks on code) belongs to the lanes below it.
+    secretary: bool = False
 
 
 @dataclass
@@ -88,6 +96,19 @@ class TowerConfig:
     # re-inject the full task contract every N dispatches per role; 0 = always
     # inject (the pre-2026-11-23 behaviour, now the fallback rather than the norm)
     contract_repeat_every: int = 5
+    # v3 §7: no task is dispatched without a deadline. `tower dispatch` stamps
+    # due_at from --due, else this default; supervise pulls the role up when it
+    # passes and walks the org chart (member -> leader -> lead -> inbox notice).
+    default_due: str = "4h"
+    # v3 §3: a task package (plan / assignments / acceptance / deps / merge
+    # order) is produced by `tower kickoff`. Required only when asked, so live
+    # towers keep working while their people learn the new loop.
+    kickoff_require: bool = False
+    # v3 §4: one task = one group. When no --group is given, dispatch opens one.
+    group_auto: bool = True
+    # v3 §2: the DSH sidebar registry lives in $DSH_HOME/storages/workspace.json.
+    # `tower dsh status` reads it; `tower dsh register` writes it (with a backup).
+    sidebar_register: bool = True
     # v0.16 — deploy guard: how to read a remote file before an upload.
     # `deploy.fetch` in tower.toml, a list (placeholders expanded) or a shell string.
     deploy_fetch: list[str] | str | None = None
@@ -157,6 +178,16 @@ class TowerConfig:
     def huddles_dir(self) -> Path:
         return self.state_dir / "huddles"
 
+    @property
+    def groups_dir(self) -> Path:
+        """v3 §4: one task group (room) per unit of work, alive until accepted."""
+        return self.state_dir / "groups"
+
+    @property
+    def skills_dir(self) -> Path:
+        """v3 §5: the company-wide skill library, shared by every role."""
+        return self.state_dir / "skills"
+
 
 def _load_yaml_or_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
@@ -221,6 +252,9 @@ def parse_config(path: Path) -> TowerConfig:
             timeout_s=int(spec.get("timeout_s", 1800)),
             env=dict(spec.get("env") or {}),
             dispatch_mode=str(spec.get("dispatch_mode", "")).strip().lower(),
+            leader=bool(spec.get("leader", False)),
+            report_to=str(spec.get("report_to") or "").strip(),
+            secretary=bool(spec.get("secretary", False)),
         )
 
     if not roles:
@@ -253,6 +287,10 @@ def parse_config(path: Path) -> TowerConfig:
         peer_note_lead=str((raw.get("peer_notes") or {}).get("lead", "lead")).strip(),
         peer_notes_per_hour=max(0, int((raw.get("peer_notes") or {}).get("per_hour", 10))),
         contract_repeat_every=max(0, int((raw.get("contract") or {}).get("repeat_every", 5))),
+        default_due=str((raw.get("deadline") or {}).get("default", "4h")).strip() or "4h",
+        kickoff_require=bool((raw.get("kickoff") or {}).get("require", False)),
+        group_auto=bool((raw.get("groups") or {}).get("auto", True)),
+        sidebar_register=bool((raw.get("sidebar") or {}).get("register", True)),
         deploy_fetch=(raw.get("deploy") or {}).get("fetch") or None,
         self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),

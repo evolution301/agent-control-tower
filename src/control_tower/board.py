@@ -102,6 +102,12 @@ class Task:
     # v0.12 — issue escalation chain: {"delivered_at", "role", "issues_task",
     # "attempts", "open", "chain": [role, ...]}. Idempotent per task.
     escalation: dict[str, Any] = field(default_factory=dict)
+    # v0.18 (v3 §4/§7) — the room this task lives in, and when anything last
+    # moved. A task whose heartbeat is older than staleness_minutes while still
+    # claimed is not "running", it is dead: the port changed, the worker went
+    # with it, and nobody noticed for an hour (T-0190, T-0207, 2026-11-23).
+    group: str = ""
+    last_heartbeat: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,6 +154,15 @@ class Board:
     # -- tasks ------------------------------------------------------------
     def path_for(self, task_id: str) -> Path:
         return self.cfg.tasks_dir / f"{task_id}.json"
+
+    def touch(self, task_id: str, note: str = "") -> Task:
+        """A sign of life: the worker, a peer note, a status probe."""
+        task = self.load(task_id)
+        task.last_heartbeat = now_ts()
+        task.updated_at = task.last_heartbeat
+        if note:
+            task.history.append({"ts": task.last_heartbeat, "event": "heartbeat", "note": note})
+        return self.save(task)
 
     def save(self, task: Task) -> Task:
         task.updated_at = now_ts()
@@ -314,6 +329,7 @@ class Board:
 
     def transition(self, task: Task, status: str, note: str = "", **extra: Any) -> Task:
         task.status = status
+        task.last_heartbeat = now_ts()
         task.history.append({"ts": now_ts(), "status": status, "note": note, **extra})
         self.save(task)
         self.log("task_status", task=task.id, role=task.role, status=status, note=note[:500])

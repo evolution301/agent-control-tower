@@ -5,6 +5,87 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.0] - 2026-11-23
+
+The tower grows a shape: guided teams, a kickoff before the first dispatch, one
+room per task, a shared skill library, two layers of command, and a deadline on
+every brief. A flat `tower.toml` keeps working — every new block is optional.
+
+### Added — `tower role add --guided` builds a whole team
+
+A working bot was never one file. `tower role add` now asks for a project kind
+(`b2b-site`, `service-api`, `content-site`, `generic`), offers that pack's roles
+(lead / frontend / backend / seo / content / qa, each with a scope and a
+`report_to`), and writes the pieces together: `roles.<name>` in `tower.toml`,
+`adapters.dsh.sessions.<name>` and `role_titles.<name>`, the charter under
+`roles/<name>/AGENT.md`, and the DSH sidebar registry. It ends by telling the
+operator which piece is still missing and that DSH needs a restart — the old
+checklist is printed in full, so the two-minute "why is my bot invisible" hunt
+is over. (`templates.py`, `roles.py`, `cli.py`)
+
+### Added — the sidebar registry is written, not explained
+
+`tower dsh status` lists every role with its session id and whether the session
+is in the DSH sidebar; `tower dsh register --apply` adds the missing session ids
+to `$DSH_HOME/storages/workspace.json` (with a timestamped backup) and never
+invents a workspace it cannot find. (`sidebar.py`)
+
+### Added — kickoff: agree before dispatching
+
+`tower kickoff "<brief>" --role backend --role qa` opens a room for the task
+and writes `.tower/groups/<G>/package.json` with the four things a dispatch used
+to assume: a plan (with alternatives and why), assignments with write scopes,
+acceptance commands plus thresholds, and the dependency / merge order. A draft
+package is honest — `tower group show` lists exactly what is still missing.
+With `[kickoff].require = true`, `dispatch` refuses to start until the package
+is complete, and every dispatch prompt carries the plan, the role's own part,
+the acceptance bar and the merge order as a compact block. The `/showroom/`
+three-round story is what this replaces. (`kickoff.py`, `dispatch.py`)
+
+### Added — one task, one room, closed when it ships
+
+Every dispatch attaches its task to a group (auto-created from the brief unless
+`[groups].auto = false`); the group walks `created → discussing → working →
+reviewing → closed` and `tower accept` closes and archives it to
+`.tower/conversations/<G>-closed.md` once no task in it is still open. Context
+no longer mixes between unrelated tasks. (`groups.py`, `cli.py`)
+
+### Added — one skill library for every role
+
+Skills written by one role used to be invisible to the next. `.tower/skills`
+is now a shared library: `tower skill search <words>`, `tower skill show <id>`,
+`tower skill patch <id> --file …` (version bump, previous body archived under
+`.tower/skills/.history`), `tower skill stats`. Dispatch injects only the index
+of matching skills (four lines), never the bodies. (`skills.py`, `dispatch.py`)
+
+### Added — a lane leader between the secretary and the workers
+
+A role can declare `leader: true`, `report_to: <role>` or `secretary: true`.
+When any role declares one, `tower_say` enforces the chain: a worker writes its
+lane leader, a leader writes its members or the secretary, and the secretary
+writes leaders — not members. A refused note is still filed and answered with
+one circuit-breaker line, so nothing is silently dropped. `tower role list
+--tree` draws the chart with each role's sidebar state. (`org.py`,
+`converse.py`, `cli.py`)
+
+### Added — deadlines, heartbeats and overdue escalation
+
+Every dispatch carries a deadline (`--due 90m`, ISO, or `YYYY-MM-DD HH:MM`; the
+default is `4h`, `[deadline].default`). The board stamps `last_heartbeat` on
+every status change. When a task passes its deadline, `tower supervise` asks the
+**lane leader** first — "把结论回给我；不要自己重做这项工作" — and only escalates
+to the inbox (`overdue_escalation`) after the second unanswered pass. (`supervise.py`,
+`board.py`)
+
+### Compatibility
+
+- A tower with no `leader`/`report_to`/`secretary` keeps the flat behaviour; the
+  hierarchy check is a no-op.
+- `[kickoff].require`, `[groups].auto` and `[sidebar].register` default to
+  `false`, `true` and `true`; `[deadline].default` defaults to `4h`.
+- The only new tightening is the deadline default: a dispatch with no `--due`
+  now gets four hours instead of no deadline.
+
 ## [0.17.3] - 2026-11-23
 
 ### Fixed — a bot that outlived its timeout was judged failed

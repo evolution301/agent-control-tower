@@ -6,6 +6,7 @@
  * five tools on the harness tool registry so a DSH agent can drive a control
  * tower without leaving the conversation:
  *
+ *   tower_kickoff   agree on plan/scope/acceptance in one room before dispatching
  *   tower_dispatch  dispatch a brief to a role and get its report + verdict
  *   tower_inbox     read the reports roles have filed
  *   tower_accept    verify a reported task and accept it (or reject with reasons)
@@ -32,7 +33,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.17.3'
+export const VERSION = '0.18.0'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -665,6 +666,7 @@ export function apply(ctx, config = {}) {
     .catch(() => {})
   const disposers = [
     registerGuideCommand(ctx, cfg),
+    ctx.tools.register(kickoffTool(cfg)),
     ctx.tools.register(dispatchTool(cfg)),
     ctx.tools.register(restateOkTool(cfg)),
     ctx.tools.register(compactTool(cfg, ctx)),
@@ -693,6 +695,53 @@ export function apply(ctx, config = {}) {
   }
 }
 
+/** `tower_kickoff`: agree on plan/scope/acceptance in one room before anyone is dispatched. */
+export function kickoffTool(cfg) {
+  return tool({
+    name: 'tower_kickoff',
+    description:
+      'Open a group and a task package BEFORE dispatching: one room per task, plan / assignments (who owns which files) / acceptance (the command and the threshold) / deps and merge order. Every task dispatched into that group inherits the package instead of a fresh guess. Use this instead of dispatching straight from the brief when more than one role is involved or the brief is a guess; with kickoff.require on in tower.toml a dispatch without a package is refused.',
+    parameters: {
+      brief: { type: 'string', required: true, description: 'The question the team has to settle. Be concrete: what is broken, what has been tried.' },
+      roles: { type: 'array', items: { type: 'string' }, description: 'Roles in the discussion. Default: every non-secretary role.' },
+      title: { type: 'string', description: 'Short room title (default: first line of the brief).' },
+      discuss: { type: 'boolean', description: 'Also run one huddle round and file the minutes next to the package.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
+      render: (_args, value) => textOut(value.text),
+    },
+    async execute(args) {
+      assertWorkspace(cfg)
+      const aim = workspaceLine(cfg)
+      const roles = Array.isArray(args.roles) ? args.roles.map(String).filter(Boolean) : []
+      const argv = ['kickoff', String(args.brief ?? ''), '--json']
+      for (const role of roles) argv.push('--role', role)
+      if (args.title) argv.push('--title', String(args.title))
+      if (args.discuss) argv.push('--discuss')
+      recordBinding(targetWorkspace(cfg), 'kickoff')
+      const { data } = await runTower(cfg, argv)
+      const group = data?.group ?? {}
+      const lines = [
+        aim,
+        `group ${group.id} (${group.status}) — ${(group.roles ?? []).join(', ')}`,
+        `package: ${data?.path ?? ''}`,
+        `minutes: ${data?.minutes ?? ''}`,
+      ]
+      const problems = Array.isArray(data?.problems) ? data.problems : []
+      if (problems.length) {
+        lines.push('the package still needs:')
+        for (const problem of problems) lines.push(`  - ${problem}`)
+      }
+      lines.push(`next: fill the package, then tower_dispatch with group="${group.id ?? ''}"`)
+      return { text: lines.join(String.fromCharCode(10)) }
+    },
+    presentCall() {
+      return { card: 'generic', title: 'Tower kickoff', kind: 'other' }
+    },
+  })
+}
+
 /** `tower_dispatch`: create a task for one role and return its report. */
 export function dispatchTool(cfg) {
   return tool({
@@ -703,7 +752,8 @@ export function dispatchTool(cfg) {
       role: { type: 'string', required: true, description: 'Role name from tower.toml (e.g. backend, frontend, qa).' },
       brief: { type: 'string', required: true, description: 'The task brief. Be explicit about deliverable and acceptance.' },
       batch: { type: 'string', description: 'Optional batch label to group related tasks.' },
-      due: { type: 'string', description: 'Deadline: 90m / 2h / 3d or "2026-11-09 18:00". An overdue task with no report is chased by tower_supervise.' },
+      due: { type: 'string', description: 'Deadline: 90m / 2h / 3d or "2026-11-09 18:00". Defaults to [deadline].default (4h). An overdue task is chased through the lane leader by tower_supervise.' },
+      group: { type: 'string', description: 'Join the group a tower_kickoff opened (G-0001). Without it the tower opens one room per task, which is what keeps histories from bleeding into each other.' },
       restate: { type: 'boolean', description: 'Restatement gate: the role first restates the brief in its own words; no work runs until tower_restate_ok confirms it.' },
       async: { type: 'boolean', description: 'Queue instead of blocking: returns the task id immediately; read tower_inbox for the settlement. dispatch_mode in tower.toml can set this per tower/role.' },
     },
@@ -725,6 +775,7 @@ export function dispatchTool(cfg) {
       const argv = ['dispatch', String(args.role ?? ''), String(args.brief ?? ''), '--json']
       if (args.batch) argv.push('--batch', String(args.batch))
       if (args.due) argv.push('--due', String(args.due))
+      if (args.group) argv.push('--group', String(args.group))
       if (args.restate) argv.push('--restate')
       if (args.async) argv.push('--async')
       recordBinding(targetWorkspace(cfg), 'dispatch')
@@ -1049,14 +1100,21 @@ export function rolesTool(cfg) {
   return tool({
     name: 'tower_roles',
     description:
-      'List the control tower roles (bots): adapter, write scope, round budget and the DSH session id wired to each one. Use it before dispatching to see who exists, and after creating a bot to confirm it is wired.',
-    parameters: {},
+      'List the control tower roles (bots): adapter, write scope, round budget and the DSH session id wired to each one. Use it before dispatching to see who exists, and after creating a bot to confirm it is wired. With tree:true it draws the org chart (lane leaders, their members) and whether each bot is actually visible in the desktop sidebar.',
+    parameters: {
+      tree: { type: 'boolean', description: 'Draw the org chart and the sidebar state per role instead of the flat table.' },
+    },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
       render: (_args, value) => textOut(value.text),
     },
-    async execute() {
+    async execute(args = {}) {
       assertWorkspace(cfg)
+      if (args.tree) {
+        const { data } = await runTower(cfg, ['role', 'list', '--tree'])
+        const text = typeof data === 'string' ? data : String(data ?? '')
+        return { text: text.trim() || 'no roles yet' }
+      }
       const { data } = await runTower(cfg, ['role', 'list', '--json'])
       const rows = Array.isArray(data) ? data : []
       const text = rows.length
@@ -1082,7 +1140,8 @@ export function roleAddTool(cfg) {
     description:
       'Create a role (bot) in the control tower: appends it to tower.toml, writes roles/<name>/AGENT.md from the description and write scopes, and wires the DSH session id when one is given. Use it when the user asks for a new kind of worker, then dispatch to it.',
     parameters: {
-      name: { type: 'string', required: true, description: 'Slug, e.g. keyword-research.' },
+      name: { type: 'string', description: 'Slug, e.g. keyword-research. Omit when template is set (a whole pack is built instead).' },
+      template: { type: 'string', description: 'Build a whole team from a pack: b2b-site (lead/frontend/backend/seo/content/qa), service-api (lead/backend/ops/qa), content-site, generic. Writes every role, its charter, the org links and reports the sidebar state.' },
       description: { type: 'string', required: true, description: 'One line: what this bot owns.' },
       scopes: { type: 'string', description: 'Comma-separated write scopes, e.g. "content/,templates/".' },
       adapter: { type: 'string', description: 'mock | cli | dsh | openai (default dsh).' },

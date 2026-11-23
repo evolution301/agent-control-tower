@@ -97,7 +97,7 @@ def _role_span(lines: list[str], name: str) -> tuple[int, int] | None:
 
 def _block(name: str, role: Role) -> list[str]:
     scopes = ", ".join(f'"{scope}"' for scope in role.write_scopes)
-    return [
+    block = [
         f"  {name}:\n",
         f'    description: "{role.description}"\n',
         f"    adapter: {role.adapter}\n",
@@ -105,6 +105,14 @@ def _block(name: str, role: Role) -> list[str]:
         f"    max_rounds: {role.max_rounds}\n",
         f"    timeout_s: {role.timeout_s}\n",
     ]
+    # v3 §6: the org chart is part of the role, not a second file to keep in sync.
+    if getattr(role, "leader", False):
+        block.append("    leader: true\n")
+    if getattr(role, "secretary", False):
+        block.append("    secretary: true\n")
+    if getattr(role, "report_to", ""):
+        block.append(f"    report_to: {role.report_to}\n")
+    return block
 
 
 def _insert_point(lines: list[str], span: tuple[int, int]) -> int:
@@ -214,6 +222,9 @@ def add_role(
     session_id: str = "",
     charter: str = "",
     force: bool = False,
+    leader: bool = False,
+    secretary: bool = False,
+    report_to: str = "",
 ) -> dict:
     """Register one role (bot), write its charter and wire its session id."""
     if not NAME_RE.match(name):
@@ -231,6 +242,9 @@ def add_role(
         write_scopes=list(write_scopes or []),
         max_rounds=int(max_rounds),
         timeout_s=int(timeout_s),
+        leader=bool(leader),
+        secretary=bool(secretary),
+        report_to=report_to,
     )
     text = config_path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
@@ -269,6 +283,9 @@ def add_role(
         "charter": str(charter_path),
         "write_scopes": list(role.write_scopes),
         "adapter": adapter,
+        "leader": role.leader,
+        "secretary": role.secretary,
+        "report_to": role.report_to,
     }
 
 

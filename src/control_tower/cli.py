@@ -221,6 +221,28 @@ def _dispatch_preflight(cfg, role_name: str) -> str | None:
     return None
 
 
+def _group_for(cfg, task, group_id: str = "") -> str:
+    """v3 §4: a task always belongs to a room; `--group` joins one, else one is opened."""
+    from . import groups as groups_mod
+
+    if group_id:
+        try:
+            groups_mod.attach(cfg, group_id, task.id)
+        except (OSError, ValueError):
+            return ""
+        return group_id
+    if not getattr(cfg, "group_auto", True):
+        return ""
+    first = (task.brief or "").strip().splitlines()
+    title = first[0][:80] if first else task.id
+    try:
+        group = groups_mod.create(cfg, title, [task.role])
+        groups_mod.attach(cfg, group.id, task.id)
+    except OSError:
+        return ""
+    return group.id
+
+
 def cmd_dispatch(args) -> int:
     cfg = _cfg(args)
     _announce_workspace(cfg)
@@ -328,6 +350,7 @@ def cmd_dispatch(args) -> int:
         return 2
     task = board.create(role, brief.strip(), batch=args.batch or "", idem_key=key, mandate=mandate)
     task.due_at = due_at
+    task.group = getattr(args, "group", "") or _group_for(cfg, task)
     board.save(task)
     # --async (or dispatch_mode: async / role override): enqueue and return the id
     # in under a second; a tower worker runs the adapter and settles the task.
@@ -343,6 +366,9 @@ def cmd_dispatch(args) -> int:
         else:
             task.waiter = {"kind": "inbox", "target": ""}
         task.mode = "async"
+        task.group = getattr(args, "group", "") or _group_for(cfg, task)
+        if not task.due_at:
+            task.due_at = parse_due(cfg.default_due or "4h")
         board.save(task)
         job = enqueue(cfg, kind, task.id)
         spawned = bool(job.get("spawned"))
@@ -373,7 +399,7 @@ def cmd_dispatch(args) -> int:
             print(task.restatement[:1200])
             print(f"\nnext: tower restate ok {task.id}   # work is dispatched only after this")
         return 0
-    task = dispatch(cfg, board, task, dry_run=args.dry_run)
+    task = dispatch(cfg, board, task, dry_run=args.dry_run, group=getattr(args, "group", "") or "")
     relayed = [] if args.dry_run else relay_report_messages(cfg, board, task)
     if not args.dry_run and not getattr(args, "no_auto", False):
         _auto_triage(cfg, board, task)
@@ -624,6 +650,17 @@ def cmd_accept(args) -> int:
         return 1
     board.transition(task, STATUS_ACCEPTED, note=args.note or "verified and accepted", verification=v.as_dict())
     print(f"{task.id} ACCEPTED")
+    if task.group:
+        from . import groups as groups_mod
+
+        open_left = [
+            other.id for other in board.all()
+            if other.group == task.group and other.id != task.id
+            and other.status not in (STATUS_ACCEPTED, STATUS_FAILED, STATUS_REWORK)
+        ]
+        if not open_left:
+            groups_mod.close(cfg, task.group, f"last task accepted ({task.id})")
+            print(f"group {task.group} closed and archived")
     return 0
 
 
@@ -1010,6 +1047,141 @@ def cmd_queue(args) -> int:
         return 1
 
 
+def cmd_kickoff(args) -> int:
+    """v3 §3: agree before dispatching — plan / assignments / acceptance / merge order."""
+    from . import kickoff as kickoff_mod
+
+    cfg = _cfg(args)
+    _announce_workspace(cfg)
+    _bind(cfg)
+    ensure_layout(cfg)
+    board = Board(cfg)
+    brief = args.brief or ""
+    if getattr(args, "brief_file", ""):
+        try:
+            brief = Path(args.brief_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            _say(args, f"cannot read brief file {args.brief_file!r}: {exc}")
+            return 2
+    if not brief.strip():
+        brief = sys.stdin.read()
+    if not brief.strip():
+        _say(args, "empty brief")
+        return 2
+    roles = list(args.role or [])
+    if not roles:
+        roles = [name for name, role in cfg.roles.items() if not getattr(role, "secretary", False)]
+    try:
+        result = kickoff_mod.kickoff(
+            cfg, board, brief.strip(), roles, title=args.title or "", discuss=args.discuss
+        )
+    except KeyError as exc:
+        _say(args, str(exc).strip("'"))
+        return 2
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
+    group = result["group"]
+    if getattr(args, "json", False):
+        _print({"group": group, "package": result["package"], "path": result["path"],
+                "minutes": result["minutes"], "problems": result["problems"]}, as_json=True)
+        return 0
+    print(f"group {group['id']} (discussing) — {len(group['roles'])} role(s): "
+          + ", ".join(group["roles"]))
+    print(f"package: {result['path']}")
+    print(f"minutes: {result['minutes']}")
+    if result["problems"]:
+        print("package still needs (a dispatch is refused while kickoff.require is on):")
+        for problem in result["problems"]:
+            print("  -", problem)
+    print(f"next: fill the package file, then: tower dispatch <role> --group {group['id']} --due 90m")
+    return 0
+
+
+def cmd_group(args) -> int:
+    """v3 §4: a task lives in one room; the room is closed when the work is done."""
+    from . import groups as groups_mod
+
+    cfg = _cfg(args)
+    board = Board(cfg)
+    if args.group_command == "list":
+        rows = groups_mod.all_groups(cfg) if args.all else groups_mod.live(cfg)
+        if getattr(args, "json", False):
+            _print([g.to_dict() for g in rows], as_json=True)
+            return 0
+        if not rows:
+            _say(args, "no groups — `tower kickoff` opens one, or dispatch with --group")
+            return 0
+        for group in rows:
+            print(f"{group.id}  {group.status:<10} tasks={len(group.tasks):<2} {group.title[:60]}")
+        return 0
+    if args.group_command == "show":
+        group = groups_mod.load(cfg, args.group)
+        package = groups_mod.load_package(cfg, group.id) if hasattr(groups_mod, "load_package") else None
+        tasks = [board.load(task_id) for task_id in group.tasks]
+        if getattr(args, "json", False):
+            _print({"group": group.to_dict(), "package": package,
+                    "tasks": [t.to_dict() for t in tasks]}, as_json=True)
+            return 0
+        print(f"{group.id}  {group.status}  {group.title}")
+        for task in tasks:
+            print(f"  {task.id}  {task.role:<12} {task.status:<12} due={task.due_at or '-'}")
+        if package:
+            print(f"package: {package.get('id')} (draft={package.get('draft')})")
+        return 0
+    try:
+        group = groups_mod.close(cfg, args.group, args.reason or "closed by operator")
+    except (OSError, ValueError) as exc:
+        _say(args, f"cannot close {args.group}: {exc}")
+        return 2
+    if getattr(args, "json", False):
+        _print(group.to_dict(), as_json=True)
+        return 0
+    print(f"group {group.id} closed — archived under {cfg.conversations_dir}")
+    return 0
+
+
+def cmd_dsh(args) -> int:
+    """v3 §2: the sidebar is data, not a hand edit followed by a restart."""
+    from . import sidebar
+
+    cfg = _cfg(args)
+    if args.dsh_command == "status":
+        info = sidebar.status(cfg)
+        if getattr(args, "json", False):
+            _print(info, as_json=True)
+            return 0
+        print(f"registry: {info.get('registry')} ({'found' if info.get('registry_found') else 'MISSING'})")
+        for row in info.get("roles", []):
+            state = "registered" if row.get("registered") else (
+                "no session id" if not row.get("wired") else "MISSING in sidebar"
+            )
+            print(f"  {str(row.get('role')):<14} {str(row.get('session') or '-'):<38} {state}")
+        missing = info.get("missing") or [row.get("session") for row in info.get("roles", [])
+                                           if row.get("wired") and not row.get("registered")]
+        if any(missing):
+            print("fix: tower dsh register --apply   # then restart DSH once")
+        print(sidebar.restart_hint())
+        return 0
+    if args.dsh_command == "register":
+        info = sidebar.register(cfg, apply=bool(args.apply))
+        if getattr(args, "json", False):
+            _print(info, as_json=True)
+            return 0
+        print(f"registry: {info.get('registry')}")
+        print(f"would add: {', '.join(info.get('added') or []) or '(nothing)'}")
+        if not info.get("exists"):
+            print("no DSH workspace registry on this machine — open the workspace in DSH once")
+        if not args.apply:
+            print("dry run — add --apply to write it (a .bak-<ts> backup is kept)")
+        else:
+            print(f"written: {info.get('written')}")
+            print(sidebar.restart_hint())
+        return 0
+    print(sidebar.restart_hint())
+    return 0
+
+
 def cmd_relay(args) -> int:
     """Deliver a message to any DSH session (or `--to tower` = this inbox)."""
     from .adapters import get_adapter
@@ -1278,6 +1450,64 @@ def cmd_skill(args) -> int:
         print(f"skill saved: {info['path']}")
         for line in info["index_lines"]:
             print(f"  {line}")
+        return 0
+    if args.skill_command in ("search", "show", "patch", "stats"):
+        from .skills import library_entries, patch as patch_skill, rebuild_library_index
+        from .skills import resolve as resolve_skill, search as search_skills, stats as skill_stats
+
+        if args.skill_command == "search":
+            query = " ".join(args.query or [])
+            rows = search_skills(cfg, query, limit=args.limit)
+            if getattr(args, "json", False):
+                _print(rows, as_json=True)
+                return 0
+            if not rows:
+                _say(args, f"no skill matched {query!r} — the library has "
+                           f"{len(library_entries(cfg))} entries")
+                return 0
+            for row in rows:
+                print(f"{row['id']:<40} v{row['version']}  {row['title']}")
+                if row["summary"]:
+                    print(f"    {row['summary'][:160]}")
+            return 0
+        if args.skill_command == "show":
+            try:
+                entry = resolve_skill(cfg, args.name)
+            except KeyError as exc:
+                _say(args, str(exc).strip("'"))
+                return 2
+            if getattr(args, "json", False):
+                _print(entry, as_json=True)
+                return 0
+            print(entry["body"].strip() or f"(empty) {entry['path']}")
+            return 0
+        if args.skill_command == "patch":
+            try:
+                body = Path(args.body_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                _say(args, f"cannot read {args.body_file!r}: {exc}")
+                return 2
+            try:
+                info = patch_skill(cfg, args.name, body, note=args.note, by=args.by)
+            except KeyError as exc:
+                _say(args, str(exc).strip("'"))
+                return 2
+            rebuild_library_index(cfg)
+            if getattr(args, "json", False):
+                _print(info, as_json=True)
+                return 0
+            print(f"skill {info['id']} bumped v{info['previous']} -> v{info['version']}: {info['path']}")
+            return 0
+        rows = skill_stats(cfg)
+        if getattr(args, "json", False):
+            _print(rows, as_json=True)
+            return 0
+        if not rows:
+            _say(args, "no skills yet — accept a job then `tower skill save <task>`")
+            return 0
+        for row in rows:
+            print(f"{row['role']:<14} skills={row.get('skills', 0)}  "
+                  f"reused={row.get('reused', 0)}  v-sum={row.get('versions', 0)}")
         return 0
     # list
     roles = list(cfg.roles) if not getattr(args, "role", "") else [args.role]
@@ -1627,6 +1857,20 @@ def cmd_role_list(args) -> int:
     if not rows:
         _say(args, 'no roles yet — add one: tower role add <name> --description "..."')
         return 0
+    if getattr(args, "tree", False):
+        from . import org, sidebar
+
+        board_state = {row["name"]: row for row in sidebar.status(cfg).get("roles", [])}
+        org_rows = org.tree(cfg)
+        if not org_rows:
+            print("flat tower (no leader/report_to set) — add `leader: true` + `report_to: <role>` to layer it")
+        for entry in org_rows:
+            mark = "●" if entry.get("leader") else ("◆" if entry.get("secretary") else "·")
+            depth = "  " * int(entry.get("depth", 0))
+            reg = board_state.get(str(entry.get("role")), {})
+            side = "sidebar:ok" if reg.get("registered") else "sidebar:MISSING"
+            print(f"{depth}{mark} {entry.get('role')}  {side}")
+        return 0
     width = max(len(row["name"]) for row in rows)
     for row in rows:
         scope = ", ".join(row["write_scopes"]) or "-"
@@ -1640,6 +1884,8 @@ def cmd_role_list(args) -> int:
 def cmd_role_add(args) -> int:
     cfg = _cfg(args)
     path = config_file(cfg.workspace)
+    if getattr(args, "guided", False) or getattr(args, "template", ""):
+        return _guided_role_add(cfg, path, args)
     charter = Path(args.charter).read_text(encoding="utf-8") if args.charter else ""
     try:
         info = add_role(
@@ -1682,6 +1928,59 @@ def cmd_role_add(args) -> int:
     print(f"  [x] {info['charter']}")
     if not (wired and titled):
         print("next: tower bootstrap   # wires every role's session + title in one run")
+    return 0
+
+
+def _guided_role_add(cfg, path, args) -> int:
+    """v3 §1/§2: one question ("what is this project?") builds the whole team."""
+    from . import sidebar, templates
+    from .config import reload_config
+
+    pack_name = args.template or "b2b-site"
+    try:
+        specs = templates.roles_for(pack_name)
+    except KeyError:
+        _say(args, f"unknown template {pack_name!r} — one of: {templates.describe()}")
+        return 2
+    if getattr(args, "guided", False) and not getattr(args, "json", False):
+        print(f"building the {pack_name!r} team: " + ", ".join(s["name"] for s in specs))
+        print("(non-interactive: pass --template <pack> to choose another shape)")
+    made = []
+    for spec in specs:
+        charter = templates.charter(spec, cfg.workspace)
+        try:
+            info = add_role(
+                path,
+                str(spec["name"]),
+                description=str(spec.get("description") or ""),
+                adapter=str(spec.get("adapter") or "dsh"),
+                write_scopes=list(spec.get("write_scopes") or []),
+                report_to=str(spec.get("report_to") or ""),
+                leader=bool(spec.get("leader")),
+                secretary=bool(spec.get("secretary")),
+                charter=charter,
+                force=bool(getattr(args, "force", False)),
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            _say(args, f"{spec['name']}: {exc} (pass --force to replace)")
+            continue
+        made.append(info)
+
+    cfg = reload_config(cfg)
+    side = sidebar.register(cfg, apply=False)
+    if getattr(args, "json", False):
+        _print({"template": pack_name, "roles": made, "sidebar": side}, as_json=True)
+        return 0
+    for info in made:
+        print(f"added {info['name']:<12} scope={', '.join(info['write_scopes']) or '-'}")
+    missing = side.get("missing") or []
+    print(f"sidebar: {len(side.get('registered') or [])} registered, {len(missing)} missing")
+    if missing:
+        print("  missing: " + ", ".join(str(m) for m in missing))
+        print("  fix: tower dsh register --apply")
+    print(sidebar.restart_hint())
+    print("next: tower bootstrap   # session ids + titles for every role in one run")
+    print("      tower dsh status  # confirm each role is visible in the sidebar")
     return 0
 
 
@@ -1800,7 +2099,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="where the settlement notice goes: 'inbox' (default) or 'session:<id>' "
                         "to also push one message to the lead's DSH session")
     s.add_argument("--due", default="",
-                   help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; a silent overrun gets chased by `tower supervise`")
+                   help="deadline: 90m / 2h / 3d or '2026-11-09 18:00'; defaults to [deadline].default (4h); "
+                        "a silent overrun is chased through the lane leader")
+    s.add_argument("--group", default="", metavar="G-0001",
+                   help="join the group the kickoff opened; without it one is opened per task")
     s.set_defaults(func=cmd_dispatch)
 
     s = sub.add_parser("say", help="relay one bot-to-bot message; both halves are filed")
@@ -1876,6 +2178,41 @@ def build_parser() -> argparse.ArgumentParser:
     qp.set_defaults(func=cmd_queue)
     s.set_defaults(func=cmd_queue, role="", session="", only="all", max=0, json=False)
 
+    s = sub.add_parser("kickoff", help="agree on plan/scope/acceptance before any dispatch (opens a group)")
+    s.add_argument("brief", nargs="?")
+    s.add_argument("--brief-file", default="", metavar="PATH")
+    s.add_argument("--role", action="append", default=[], help="role in the discussion (repeatable)")
+    s.add_argument("--title", default="")
+    s.add_argument("--discuss", action="store_true", help="also run one huddle round and file the minutes")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_kickoff)
+
+    s = sub.add_parser("group", help="one task = one room: list, show or close groups")
+    gs = s.add_subparsers(dest="group_command", required=True)
+    gp = gs.add_parser("list", help="open groups (--all includes the closed ones)")
+    gp.add_argument("--all", action="store_true")
+    gp.add_argument("--json", action="store_true")
+    gp.set_defaults(func=cmd_group)
+    gp = gs.add_parser("show", help="one group, its package and its tasks")
+    gp.add_argument("group")
+    gp.add_argument("--json", action="store_true")
+    gp.set_defaults(func=cmd_group)
+    gp = gs.add_parser("close", help="close and archive a group")
+    gp.add_argument("group")
+    gp.add_argument("--reason", default="")
+    gp.add_argument("--json", action="store_true")
+    gp.set_defaults(func=cmd_group)
+
+    s = sub.add_parser("dsh", help="the desktop sidebar: is each bot visible, register it, what to restart")
+    ds = s.add_subparsers(dest="dsh_command", required=True)
+    dp = ds.add_parser("status", help="per role: registered in the sidebar or missing")
+    dp.add_argument("--json", action="store_true")
+    dp.set_defaults(func=cmd_dsh)
+    dp = ds.add_parser("register", help="write the missing sessions into the DSH workspace registry")
+    dp.add_argument("--apply", action="store_true", help="write it (a backup is kept)")
+    dp.add_argument("--json", action="store_true")
+    dp.set_defaults(func=cmd_dsh)
+
     s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
     s.add_argument("to", nargs="?", default="",
                    help="target: session id, unique title substring, or the alias 'tower'")
@@ -1941,6 +2278,25 @@ def build_parser() -> argparse.ArgumentParser:
     skl = sk.add_parser("list", help="show each role's skill index (what dispatch injects)")
     skl.add_argument("--role", default="")
     skl.set_defaults(func=cmd_skill)
+    sks = sk.add_parser("search", help="company-wide library: what does anyone already know")
+    sks.add_argument("query", nargs="*")
+    sks.add_argument("--limit", type=int, default=8)
+    sks.add_argument("--json", action="store_true")
+    sks.set_defaults(func=cmd_skill)
+    sks = sk.add_parser("show", help="read one skill in full")
+    sks.add_argument("name")
+    sks.add_argument("--json", action="store_true")
+    sks.set_defaults(func=cmd_skill)
+    sks = sk.add_parser("patch", help="amend a skill: version bump, old body kept under .history")
+    sks.add_argument("name")
+    sks.add_argument("body_file")
+    sks.add_argument("--note", default="")
+    sks.add_argument("--by", default="operator")
+    sks.add_argument("--json", action="store_true")
+    sks.set_defaults(func=cmd_skill)
+    sks = sk.add_parser("stats", help="per role: skills, reuse, versions (is the library alive)")
+    sks.add_argument("--json", action="store_true")
+    sks.set_defaults(func=cmd_skill)
 
     s = sub.add_parser("onboard", help="interview the operator and grow the team from the answers")
     s.add_argument("--from", dest="source", default="", help="notes file: '## <role>' sections + 'scope:' lines")
@@ -2038,9 +2394,13 @@ def build_parser() -> argparse.ArgumentParser:
     rs = s.add_subparsers(dest="role_command", required=True)
     r = rs.add_parser("list", help="list roles and their wired session ids")
     r.add_argument("--json", action="store_true")
+    r.add_argument("--tree", action="store_true", help="draw the org chart and the sidebar state")
     r.set_defaults(func=cmd_role_list)
     r = rs.add_parser("add", help="add a role (bot): writes tower.toml + roles/<name>/AGENT.md")
-    r.add_argument("name")
+    r.add_argument("name", nargs="?")
+    r.add_argument("--guided", action="store_true",
+                   help="build a whole team from one template (all five pieces, incl. sidebar)")
+    r.add_argument("--template", default="", help="b2b-site | service-api | content-site | generic")
     r.add_argument("--description", default="")
     r.add_argument("--adapter", default="dsh", help="mock | cli | dsh | openai")
     r.add_argument("--scope", action="append", default=[], help="write scope, repeatable")
