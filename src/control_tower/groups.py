@@ -59,7 +59,8 @@ def group_dir(cfg: TowerConfig, group_id: str) -> Path:
     return path
 
 
-def _next_id(cfg: TowerConfig) -> str:
+def next_id(cfg: TowerConfig) -> str:
+    """The id `create()` would use, without creating anything (dry-run preview)."""
     existing = [p.name for p in groups_dir(cfg).iterdir() if p.is_dir()]
     numbers = [int(name[2:]) for name in existing if name.startswith("G-") and name[2:].isdigit()]
     return f"G-{max(numbers, default=0) + 1:04d}"
@@ -80,7 +81,7 @@ def load(cfg: TowerConfig, group_id: str) -> Group:
 
 
 def create(cfg: TowerConfig, title: str, roles: list[str] | None = None) -> Group:
-    group = Group(id=_next_id(cfg), title=title or "untitled", roles=list(roles or []))
+    group = Group(id=next_id(cfg), title=title or "untitled", roles=list(roles or []))
     group.history.append({"ts": group.created_at, "event": "created", "title": group.title})
     save(cfg, group)
     return group

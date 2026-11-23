@@ -5,6 +5,70 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.1] - 2026-11-23
+
+Everything in this release came out of using the tower to build the tower: five
+defects were reported by a customer tower running 14 roles in production, and
+four more were found the same day in our own runs on this repository.
+
+### Fixed — a settlement that nobody was told about
+
+With `notify.kind: inbox` a finished task appended a line to `.tower/inbox.jsonl`
+and nothing else, so the secretary never learned that a bot had come back; the
+`lead_session` channel existed but was never exercised end to end. The worker now
+pushes settlements to the lead session (falling back to the lead role's own
+session for inbox towers), the line carries `report: N files, M checks`, and
+`tower notify test` proves the channel in one command. (`worker.py`, `cli.py`)
+
+### Fixed — the async worker could starve the whole queue
+
+One job stuck inside a turn blocked a single-threaded worker for 40+ minutes
+while the heartbeat kept ticking, so `worker alive: true` meant nothing. Every
+job now runs under a deadline, session usability is checked before the prompt is
+sent, and the heartbeat records `current_job`, `current_kind`, `started_at` and
+`task`, which `tower worker --status` prints as a backlog warning. (`worker.py`)
+
+### Fixed — `--dry-run` created a real task
+
+`tower dispatch … --dry-run` saved the task and answered with an id, so probing a
+brief left phantom work on the board. Dry runs now return before anything is
+written. (`dispatch.py`, `cli.py`)
+
+### Fixed — `bootstrap` reported success it never had
+
+A bare scalar `base_url` was never rewritten (the rewrite only matched quoted
+values), the probe targeted the wrong endpoint, and a failed config write still
+printed a success line. All three are gone; bootstrap reports what it changed and
+refuses to claim the rest. (`bootstrap.py`)
+
+### Fixed — `session/observeState` cannot be called over plain RPC
+
+It is a streaming method, so `tower queue list|purge` failed against every real
+gateway with `stream Remote methods must be opened through the stream carrier`.
+The queue helpers now degrade honestly (`QueueUnavailable`) and purge by item id
+through `session/updateQueue`, which is the call that actually removes a message.
+(`adapters/dsh.py`, `queue.py`)
+
+### Fixed — `tower role list --tree` crashed
+
+The tree renderer keyed rows on `name` while the board returns `role`.
+(`cli.py`)
+
+### Fixed — `tower_compact {session: "role:qa"}` could not resolve a role
+
+The tool only read top-level `cfg.sessions`; it now resolves `cfg.sessions` →
+`cfg.adapters.dsh.sessions` → `cfg.adapterOptions.dsh.sessions` and names the
+places it searched when it still cannot find the role.
+(`packages/dsh-tower/index.js`)
+
+### Changed — the acceptance gate tells a timeout apart from a failure
+
+A verify command that exceeds its budget no longer marks the task failed with
+`rework`; it is reported as a timeout with the elapsed time, and the budget is
+configurable. `tower resolve`/`resolve_attention` now lands a terminal status, so
+a dropped task stops appearing as work in progress and is not re-dispatched.
+(`verify.py`, `board.py`, `cli.py`)
+
 ## [0.18.0] - 2026-11-23
 
 The tower grows a shape: guided teams, a kickoff before the first dispatch, one

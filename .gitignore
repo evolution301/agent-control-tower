@@ -22,3 +22,8 @@ workspace/
 docs/assets/demo-tower/
 
 _resolve_conflicts.py
+
+# local tower state for the dogfooding dev tower (holds session ids + secret)
+tower.toml
+roles/
+.tower/

@@ -243,6 +243,24 @@ def _group_for(cfg, task, group_id: str = "") -> str:
     return group.id
 
 
+def _dispatch_refused(exc) -> int:
+    """One line on stderr, not a traceback the operator has to translate."""
+    message = " ".join(str(exc).replace("\\n", " ").split())
+    print("dispatch refused: " + message, file=sys.stderr)
+    return 2
+
+
+def _kickoff_refusal(cfg, task) -> str:
+    """The dispatch gate, checked before an async task is queued."""
+    from . import kickoff
+
+    problems = kickoff.validate(kickoff.load_package(cfg, task.group)) if task.group else ["no group"]
+    if not cfg.kickoff_require or not problems:
+        return ""
+    return ("no task package for this dispatch — run `tower kickoff` first:\n- "
+            + "\n- ".join(problems))
+
+
 def cmd_dispatch(args) -> int:
     cfg = _cfg(args)
     _announce_workspace(cfg)
@@ -357,6 +375,10 @@ def cmd_dispatch(args) -> int:
     async_mode = (getattr(args, "async_", False)
                   or cfg.effective_dispatch_mode(task.role) == "async")
     if async_mode and not args.dry_run:
+        if not getattr(args, "restate", False):
+            refusal = _kickoff_refusal(cfg, task)
+            if refusal:
+                return _dispatch_refused(refusal)
         from .worker import enqueue, ensure_worker
 
         kind = "restate" if getattr(args, "restate", False) else "dispatch"
@@ -399,7 +421,11 @@ def cmd_dispatch(args) -> int:
             print(task.restatement[:1200])
             print(f"\nnext: tower restate ok {task.id}   # work is dispatched only after this")
         return 0
-    task = dispatch(cfg, board, task, dry_run=args.dry_run, group=getattr(args, "group", "") or "")
+    try:
+        task = dispatch(cfg, board, task, dry_run=args.dry_run,
+                        group=getattr(args, "group", "") or "")
+    except ValueError as exc:
+        return _dispatch_refused(exc)
     relayed = [] if args.dry_run else relay_report_messages(cfg, board, task)
     if not args.dry_run and not getattr(args, "no_auto", False):
         _auto_triage(cfg, board, task)
@@ -926,6 +952,9 @@ def cmd_worker(args) -> int:
         print(f"worker alive:     {status['alive']}   (pid {status['pid']}, "
               f"version {status['version'] or '?'})")
         print(f"heartbeat age:    {status['heartbeat_age_s']}s")
+        if status.get("current_job"):
+            print(f"worker: job {status['current_job']} ({status['current_kind']}) "
+                  f"started {round(status['current_age_minutes'] or 0)}m ago")
         print(f"queue:            pending {status['pending']} · claimed "
               f"{status['claimed']} · done {status['done']}")
         if status["oldest_pending_minutes"]:
@@ -1047,6 +1076,39 @@ def cmd_queue(args) -> int:
         return 1
 
 
+def cmd_notify(args) -> int:
+    """`tower notify test` — push one message to the resolved target."""
+    from . import org, worker
+    from .adapters import get_adapter
+
+    cfg = _cfg(args)
+    if str(getattr(args, "notify_action", "") or "") != "test":
+        _say(args, "usage: tower notify test")
+        return 2
+    session, reason = worker.lead_push_target(cfg)
+    if not session:
+        if getattr(args, "json", False):
+            _print({"pushed": False, "session": "", "reason": reason}, as_json=True)
+            return 1
+        print("no target — set [notify] session")
+        return 1
+    role = cfg.roles.get(org.lead(cfg))
+    adapter_name = role.adapter if role else "dsh"
+    options = dict(cfg.adapter_options.get(adapter_name) or {})
+    result = get_adapter(adapter_name, options).deliver_to_session(
+        session, "[tower] notify test"
+    )
+    if getattr(args, "json", False):
+        _print({"pushed": result.exit_code == 0, "session": session,
+                "exit": result.exit_code}, as_json=True)
+        return 0 if result.exit_code == 0 else 1
+    if result.exit_code != 0:
+        print(f"push failed: exit {result.exit_code}")
+        return 1
+    print(f"pushed to {session} (exit 0)")
+    return 0
+
+
 def cmd_kickoff(args) -> int:
     """v3 §3: agree before dispatching — plan / assignments / acceptance / merge order."""
     from . import kickoff as kickoff_mod
@@ -1116,11 +1178,14 @@ def cmd_group(args) -> int:
             print(f"{group.id}  {group.status:<10} tasks={len(group.tasks):<2} {group.title[:60]}")
         return 0
     if args.group_command == "show":
+        from . import kickoff
+
         group = groups_mod.load(cfg, args.group)
-        package = groups_mod.load_package(cfg, group.id) if hasattr(groups_mod, "load_package") else None
+        package = kickoff.load_package(cfg, group.id)
         tasks = [board.load(task_id) for task_id in group.tasks]
         if getattr(args, "json", False):
             _print({"group": group.to_dict(), "package": package,
+                    "package_draft": None if package is None else bool(package.get("draft")),
                     "tasks": [t.to_dict() for t in tasks]}, as_json=True)
             return 0
         print(f"{group.id}  {group.status}  {group.title}")
@@ -1167,15 +1232,16 @@ def cmd_dsh(args) -> int:
         info = sidebar.register(cfg, apply=bool(args.apply))
         if getattr(args, "json", False):
             _print(info, as_json=True)
-            return 0
+            return 0 if info.get("workspace_found") else 3
+        if not info.get("workspace_found"):
+            print(info.get("error") or "no DSH workspace registry on this machine — open the workspace in DSH once")
+            return 3
         print(f"registry: {info.get('registry')}")
-        print(f"would add: {', '.join(info.get('added') or []) or '(nothing)'}")
-        if not info.get("exists"):
-            print("no DSH workspace registry on this machine — open the workspace in DSH once")
+        print(f"would add: {', '.join(info.get('added') or info.get('missing') or []) or '(nothing)'}")
         if not args.apply:
             print("dry run — add --apply to write it (a .bak-<ts> backup is kept)")
         else:
-            print(f"written: {info.get('written')}")
+            print(f"written: {info.get('registry')}")
             print(sidebar.restart_hint())
         return 0
     print(sidebar.restart_hint())
@@ -1594,6 +1660,12 @@ def cmd_status(args) -> int:
         else:
             print(f"adapter dsh {base_url}: DOWN — nothing is listening; the desktop "
                   f"app changes port on restart, update adapters.dsh.base_url (tower doctor)")
+    from .worker import worker_status
+
+    live_worker = worker_status(cfg)
+    if live_worker.get("current_job"):
+        print(f"worker: job {live_worker['current_job']} ({live_worker['current_kind']}) "
+              f"started {round(live_worker['current_age_minutes'] or 0)}m ago")
     if not tasks:
         print("no tasks yet")
         return 0
@@ -1840,6 +1912,12 @@ def cmd_doctor(args) -> int:
     # said "problems: none" with base_url on a closed port.)
     for line in _dsh_preflight(cfg):
         problems.append(line)
+    if cfg.roles and cfg.notify_kind == "inbox" and not cfg.notify_session:
+        warnings.append(
+            "settlements only go to .tower/inbox — the secretary is never told; "
+            "set [notify] kind = lead_session and session = <your session id> "
+            "(tower inbox is pull-only)"
+        )
     print("workspace:", cfg.workspace)
     print("roles:", ", ".join(sorted(cfg.roles)))
     for warning in warnings:
@@ -1860,16 +1938,27 @@ def cmd_role_list(args) -> int:
     if getattr(args, "tree", False):
         from . import org, sidebar
 
-        board_state = {row["name"]: row for row in sidebar.status(cfg).get("roles", [])}
+        board_state = {row["role"]: row for row in sidebar.status(cfg).get("roles", [])}
         org_rows = org.tree(cfg)
-        if not org_rows:
+        if not any(entry.get("members") for entry in org_rows):
             print("flat tower (no leader/report_to set) — add `leader: true` + `report_to: <role>` to layer it")
-        for entry in org_rows:
-            mark = "●" if entry.get("leader") else ("◆" if entry.get("secretary") else "·")
-            depth = "  " * int(entry.get("depth", 0))
-            reg = board_state.get(str(entry.get("role")), {})
+
+        rendered: set[str] = set()
+
+        def render(entry, depth: int) -> None:
+            role = str(entry.get("role"))
+            if role in rendered:
+                return
+            rendered.add(role)
+            reg = board_state.get(role, {})
             side = "sidebar:ok" if reg.get("registered") else "sidebar:MISSING"
-            print(f"{depth}{mark} {entry.get('role')}  {side}")
+            mark = "●" if entry.get("leader") else ("◆" if entry.get("secretary") else "·")
+            print(f"{'  ' * depth}{mark} {role}  {side}")
+            for member in entry.get("members") or []:
+                render(member, depth + 1)
+
+        for entry in org_rows:
+            render(entry, 0)
         return 0
     width = max(len(row["name"]) for row in rows)
     for row in rows:
@@ -1973,11 +2062,17 @@ def _guided_role_add(cfg, path, args) -> int:
         return 0
     for info in made:
         print(f"added {info['name']:<12} scope={', '.join(info['write_scopes']) or '-'}")
-    missing = side.get("missing") or []
-    print(f"sidebar: {len(side.get('registered') or [])} registered, {len(missing)} missing")
-    if missing:
-        print("  missing: " + ", ".join(str(m) for m in missing))
-        print("  fix: tower dsh register --apply")
+    if not sidebar.role_sessions(cfg):
+        print("sidebar: 0 wired — run `tower bootstrap` to create sessions; "
+              "the sidebar only shows roles that have one")
+    else:
+        registered = sum(1 for row in sidebar.status(cfg).get("roles", [])
+                         if row.get("registered"))
+        missing = side.get("missing") or []
+        print(f"sidebar: {registered} registered, {len(missing)} missing")
+        if missing:
+            print("  missing: " + ", ".join(str(m) for m in missing))
+            print("  fix: tower dsh register --apply")
     print(sidebar.restart_hint())
     print("next: tower bootstrap   # session ids + titles for every role in one run")
     print("      tower dsh status  # confirm each role is visible in the sidebar")
@@ -2177,6 +2272,12 @@ def build_parser() -> argparse.ArgumentParser:
     qp.add_argument("--json", action="store_true")
     qp.set_defaults(func=cmd_queue)
     s.set_defaults(func=cmd_queue, role="", session="", only="all", max=0, json=False)
+
+    s = sub.add_parser("notify", help="verify settlements reach the secretary")
+    ns = s.add_subparsers(dest="notify_action")
+    nt = ns.add_parser("test", help="push one message to the resolved notify target")
+    nt.add_argument("--json", action="store_true")
+    nt.set_defaults(func=cmd_notify)
 
     s = sub.add_parser("kickoff", help="agree on plan/scope/acceptance before any dispatch (opens a group)")
     s.add_argument("brief", nargs="?")

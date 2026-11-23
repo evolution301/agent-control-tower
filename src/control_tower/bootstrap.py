@@ -27,8 +27,12 @@ from .adapters.dsh import DshAdapter, DshRpcError
 from .config import load_config
 
 SECRET_RE = re.compile(r'SECRET_B64\s*=\s*"([^"]+)"')
-BASE_URL_LINE = re.compile(r'(?m)^(\s*base_url:\s*)"[^"]*"')
-SECRET_LINE = re.compile(r'(?m)^(\s*secret:\s*)"[^"]*"')
+# A legal YAML value is quoted OR a bare scalar; the old `"[^"]*"`-only pattern
+# missed `base_url: http://127.0.0.1:54250`, so the subn below matched nothing
+# and the command still printed the detected value as written.
+_YAML_VALUE = r'''(?:"[^"\n]*"|'[^'\n]*'|[^\s#]+)'''
+BASE_URL_LINE = re.compile(r'(?m)^([ \t]*base_url:[ \t]*)' + _YAML_VALUE)
+SECRET_LINE = re.compile(r'(?m)^([ \t]*secret:[ \t]*)' + _YAML_VALUE)
 BUILTINS = {
     "echo", "cd", "true", "false", ":", "dir", "copy", "type", "set", "rem",
     "exit", "if", "for", "cat", "printf", "test", "pwd",
@@ -78,6 +82,11 @@ def probe(base_url: str, secret: str, timeout: float = 20) -> tuple[str | None, 
         if exc.code in ("http/401", "http/403"):
             return "needs-secret", payload
         return None, payload
+    if not reply:
+        # A web page that answers 200 with an empty body arrives here as `{}`
+        # (the adapter decodes an empty body as an empty object). The tower's
+        # own panel on :9012 does exactly that — it is not a harness.
+        return None, {"error": "empty reply to session/list", "code": "gateway/empty"}
     return "harness", reply
 
 
@@ -303,6 +312,13 @@ def run_bootstrap(
 
     changed = apply_connection(config_path, base_url=detected, secret=secret)
     summary["steps"].append({"step": "config", "changed": changed})
+    if "base_url" not in changed:
+        # 0.18.0 printed the detected value as written while the file still held
+        # the old one. Nothing was rewritten: refuse instead of reporting a
+        # connection that is not there, and name the line a person must fix.
+        raise ValueError(
+            f"could not write base_url {detected} — edit tower.toml by hand"
+        )
 
     dropped = fix_verify_commands(config_path)
     summary["steps"].append({"step": "verify_commands", "dropped": dropped})

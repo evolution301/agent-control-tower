@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .board import Board, STATUS_ACCEPTED, now_ts
+from .board import Board, STATUS_ACCEPTED, STATUS_FAILED, now_ts
 from .config import TowerConfig, reload_config
 from .locks import tower_lock
 
@@ -98,6 +98,13 @@ def worker_status(cfg: TowerConfig) -> dict:
         "done": len(list(done.glob("*.json"))),
         "oldest_pending_minutes": oldest_minutes,
         "version_matches": info.get("v") == __version__ if info else False,
+        "current_job": str(info.get("current_job") or ""),
+        "current_kind": str(info.get("current_kind") or ""),
+        "current_task": str(info.get("task") or ""),
+        "current_age_minutes": (
+            round((time.time() - float(info["started_at"])) / 60, 1)
+            if info.get("started_at") else None
+        ),
     }
 
 
@@ -249,15 +256,31 @@ def _config_hash(cfg: TowerConfig) -> str:
         return ""
 
 
-def _heartbeat(cfg: TowerConfig) -> None:
+def _heartbeat(cfg: TowerConfig, job: dict | None = None) -> None:
     from . import __version__
 
+    info = {"pid": os.getpid(), "unix_ts": time.time(),
+            "v": __version__, "cfg_sha": _config_hash(cfg)}
+    if job:
+        info.update({
+            "current_job": str(job.get("id", "")),
+            "current_kind": str(job.get("kind", "")),
+            "started_at": float(job.get("started_ts") or time.time()),
+            "task": str(job.get("task", "")),
+        })
     heart = cfg.queue_dir / "worker.json"
     heart.parent.mkdir(parents=True, exist_ok=True)
-    heart.write_text(json.dumps({"pid": os.getpid(), "unix_ts": time.time(),
-                                 "v": __version__,
-                                 "cfg_sha": _config_hash(cfg)},
-                                ensure_ascii=False), encoding="utf-8")
+    heart.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+
+
+def _clear_heartbeat(cfg: TowerConfig, job_id: str) -> None:
+    """Drop the current job, unless another worker thread already claimed the slot."""
+    try:
+        info = json.loads((cfg.queue_dir / "worker.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = {}
+    if str(info.get("current_job") or "") == str(job_id or ""):
+        _heartbeat(cfg)
 
 
 def _requeue_stale(cfg: TowerConfig) -> int:
@@ -297,9 +320,24 @@ def _claim_next(cfg: TowerConfig) -> tuple[Path, dict] | None:
 
 
 def _settlement_notice(cfg: TowerConfig, task, result: dict) -> dict[str, Any]:
-    """The one-line lead notice, in the design doc's format (§5)."""
+    """The lead notice: verdict line, report counts, optional message block."""
     report = task.report or {}
     summary = str(report.get("summary") or "").replace("\n", " ")[:200]
+    lines = [
+        f"[tower] {task.id} settled: {task.status}"
+        + (f" (triage: {result.get('outcome')})" if result.get("outcome") else "")
+        + f" | role={task.role} | summary={summary}",
+        f"report: {len(report.get('files') or [])} files, "
+        f"{len(report.get('checks') or [])} checks",
+    ]
+    lead = _lead_role(cfg)
+    if lead:
+        from .converse import parse_messages
+
+        for item in parse_messages(str(report.get("raw") or "")):
+            if item["to"] == lead:
+                lines.extend([f"## Message to {lead}", item["message"][:400]])
+                break
     return {
         "event": "async_settled",
         "task": task.id,
@@ -307,20 +345,53 @@ def _settlement_notice(cfg: TowerConfig, task, result: dict) -> dict[str, Any]:
         "status": task.status,
         "state": task.state,
         "triage": result.get("outcome", ""),
-        "summary": f"[tower] {task.id} settled: {task.status}"
-                   + (f" (triage: {result.get('outcome')})" if result.get("outcome") else "")
-                   + f" | role={task.role} | summary={summary}",
+        "summary": "\n".join(lines),
     }
 
 
+def _lead_role(cfg: TowerConfig) -> str:
+    """The role settlements are addressed to, or "" when the tower has none."""
+    from . import org
+
+    lead = org.lead(cfg)
+    return lead if lead in cfg.roles else ""
+
+
+def lead_push_target(cfg: TowerConfig) -> tuple[str, str]:
+    """`(session_id, reason)` — where a settlement push should go.
+
+    A `lead_session` notice uses the configured session. An `inbox` tower still
+    pushes when it has a lead with a DSH session pinned; otherwise the reason
+    explains why the settlement stayed in `.tower/inbox`.
+    """
+    if cfg.notify_kind == "lead_session":
+        if cfg.notify_session:
+            return cfg.notify_session, ""
+        return "", "notify.kind=lead_session without notify.session"
+    if cfg.notify_kind != "inbox":
+        return "", f"notify.kind={cfg.notify_kind} (push disabled)"
+    lead = _lead_role(cfg)
+    if not lead:
+        from . import org
+
+        return "", f"no lead role (org.lead={org.lead(cfg)!r})"
+    sessions = dict((cfg.adapter_options.get("dsh") or {}).get("sessions") or {})
+    session = str(sessions.get(lead) or "").strip()
+    if not session:
+        return "", f"no dsh session pinned for lead {lead!r}"
+    return session, ""
+
+
 def _deliver_lead_push(cfg: TowerConfig, board: Board, task, text: str) -> bool:
-    """`notify.kind = lead_session` → push one message to the lead's DSH session.
+    """Push one settlement message to the target from `lead_push_target()`.
 
     Uses the settled task's own adapter (so mock towers work in tests and dsh
     towers in production). Failures never break the settlement: the inbox entry
     is the durable record, the session push is best-effort.
     """
-    if cfg.notify_kind != "lead_session" or not cfg.notify_session:
+    session, reason = lead_push_target(cfg)
+    if not session:
+        board.log("lead_push_skipped", task=task.id, role=task.role, reason=reason)
         return False
     try:
         from .adapters import get_adapter
@@ -329,9 +400,11 @@ def _deliver_lead_push(cfg: TowerConfig, board: Board, task, text: str) -> bool:
         adapter_name = role.adapter if role else "dsh"
         options = dict(cfg.adapter_options.get(adapter_name) or {})
         adapter = get_adapter(adapter_name, options)
-        result = adapter.deliver_to_session(cfg.notify_session, text)
+        result = adapter.deliver_to_session(session, text)
         return result.exit_code == 0
-    except Exception:
+    except Exception as exc:
+        board.log("lead_push_skipped", task=task.id, role=task.role,
+                  reason=f"{type(exc).__name__}: {exc}")
         return False
 
 
@@ -526,6 +599,84 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
             "dropped": len(dropped), "out_of_scope": len(out_of_scope)}
 
 
+def _restate_budget(cfg: TowerConfig, task) -> float:
+    role = cfg.roles.get(task.role)
+    return max(1.0, float(getattr(role, "timeout_s", 1800) or 1800))
+
+
+def _restate_target_problem(cfg: TowerConfig, task) -> str:
+    """Why the restate target cannot answer, or "" when it looks usable."""
+    role = cfg.roles.get(task.role)
+    if role is None:
+        return f"unknown role {task.role!r}"
+    options = dict(cfg.adapter_options.get(role.adapter) or {})
+    session = str((options.get("sessions") or {}).get(task.role) or "").strip()
+    if not session or session == "auto":
+        return ""
+    from .adapters import get_adapter
+
+    check = getattr(get_adapter(role.adapter, options), "session_state", None)
+    if not callable(check):
+        return ""
+    state = check(session) or {}
+    if state.get("error"):
+        return f"projections unavailable: {state['error']}"
+    if not state.get("model_known"):
+        return f"session {session} has no model projection"
+    if not state.get("model"):
+        return f"session {session} has no model selected"
+    return ""
+
+
+class _MutedBoard:
+    """Board proxy the restate thread loses the right to write through on timeout."""
+
+    def __init__(self, board: Board) -> None:
+        self._board = board
+        self._muted = threading.Event()
+
+    def mute(self) -> None:
+        self._muted.set()
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._board, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if self._muted.is_set():
+                return None
+            return attr(*args, **kwargs)
+
+        return call
+
+
+def _restate_failed(cfg: TowerConfig, board: Board, task,
+                    event: str, reason: str) -> dict[str, Any]:
+    with tower_lock(cfg):
+        task = board.load(task.id)
+        board.transition(task, STATUS_FAILED, note=f"{event}: {reason}"[:500])
+        task.attention = {
+            "question": f"Restatement for {task.id} failed ({event}): {reason}. "
+                        "Fix the target session, then re-dispatch."
+        }
+        task.settled_at = now_ts()
+        notice = {
+            "event": "async_settled",
+            "task": task.id,
+            "role": task.role,
+            "status": task.status,
+            "state": task.state,
+            "summary": f"[tower] {task.id} settled: {task.status} | {event}: {reason}",
+        }
+        board.notify(notice)
+        task.notified = _deliver_lead_push(cfg, board, task, notice["summary"])
+        board.save(task)
+    board.event(event, task=task.id, reason=reason[:300])
+    board.log(event, task=task.id, reason=reason[:300])
+    return {"outcome": "failed", "error": f"{event}: {reason}"[:300]}
+
+
 def _settle_restate(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .dispatch import dispatch_restate
 
@@ -533,8 +684,35 @@ def _settle_restate(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]
     if not task.mode:
         task.mode = "async"
         board.save(task)
+    problem = _restate_target_problem(cfg, task)
+    if problem:
+        return _restate_failed(cfg, board, task, "restate_target_unavailable", problem)
+
+    budget = _restate_budget(cfg, task)
+    muted = _MutedBoard(board)
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["task"] = dispatch_restate(cfg, muted, task)
+        except Exception as exc:  # the deadline must report, not die with the thread
+            outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+    runner = threading.Thread(target=run, name=f"restate-{task.id}", daemon=True)
     with tower_lock(cfg):
-        dispatch_restate(cfg, board, task)
+        runner.start()
+        runner.join(budget)
+        timed_out = runner.is_alive()
+        if timed_out:
+            muted.mute()
+    if timed_out:
+        return _restate_failed(cfg, board, task, "restate_timeout",
+                               f"no answer within {budget:.0f}s")
+    if "error" in outcome:
+        raise RuntimeError(outcome["error"])
+
+    task = outcome["task"]
+    with tower_lock(cfg):
         task = board.load(task.id)
         where = ("restating — wait for `tower restate ok`"
                  if task.status == "restating" else f"gate result: {task.status}")
@@ -786,12 +964,17 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
                 time.sleep(POLL_S)
                 continue
             claimed_path, job = pair
+            job.setdefault("started_ts", time.time())
+            _heartbeat(cfg, job)
             role = str((job.get("payload") or {}).get("role") or "")
-            if cfg.serial_requests and role:
-                with role_sem(role):
+            try:
+                if cfg.serial_requests and role:
+                    with role_sem(role):
+                        _process(cfg, claimed_path, job)
+                else:
                     _process(cfg, claimed_path, job)
-            else:
-                _process(cfg, claimed_path, job)
+            finally:
+                _clear_heartbeat(cfg, str(job.get("id") or ""))
 
     def _drain_or_die() -> None:
         """B3: on Ctrl-C, wait for in-flight jobs instead of abandoning them."""

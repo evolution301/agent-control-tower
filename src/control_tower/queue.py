@@ -27,6 +27,19 @@ TOWER_MARK = "[tower] "
 RELAY_MARK = "relay queued into"
 DEFAULT_LIMIT = 20
 KINDS = ("all", "peer", "notice")
+UNAVAILABLE = "queue inspection unavailable on this gateway (session/observeState is stream-only)"
+
+
+class QueueUnavailable(RuntimeError):
+    """This gateway does not serve `session/observeState` over plain RPC.
+
+    Current DSH gateways open it through their stream carrier only; a plain POST
+    is refused with `gateway/signature-invalid`. Queue reading is optional, so
+    callers degrade to `UNAVAILABLE` instead of reporting an empty queue.
+    """
+
+    def __init__(self, message: str = UNAVAILABLE):
+        super().__init__(message)
 
 
 def text_of(entry: dict) -> str:
@@ -90,11 +103,18 @@ def summarise(item: dict, width: int = 100) -> str:
 
 
 def list_items(adapter, session_id: str) -> list[dict]:
-    """The session's live queue, via the adapter when it offers one."""
+    """The session's live queue, via the adapter when it offers one.
+
+    Raises `QueueUnavailable` rather than returning `[]` when the gateway
+    refuses to be inspected: "no items" and "cannot look" are different facts.
+    """
     reader = getattr(adapter, "queue_items", None)
     if callable(reader):
         return list(reader(session_id) or [])
-    return items_from_state(adapter.observe_state(session_id))
+    state = adapter.observe_state(session_id)
+    if state is None:
+        raise QueueUnavailable()
+    return items_from_state(state)
 
 
 def _remove(adapter, session_id: str, item: dict) -> str | None:
@@ -117,20 +137,40 @@ def purge(
 
     `only`: "all" (every item), "peer" (bot-to-bot notes) or "notice" (tower
     generated turns). `limit` stops after that many removals. The result always
-    re-reads the queue, so "0 removed" and "cleared" can never be confused.
+    re-reads the queue, so "0 removed" and "cleared" can never be confused —
+    except an id purge, which never reads the queue at all (see below).
     """
     kind = (only or "all").strip().lower()
     if kind not in KINDS:
         raise ValueError(f"unknown queue filter {only!r}; expected one of {', '.join(KINDS)}")
+    wanted = set(ids or [])
+    if wanted:
+        # Removing known ids needs no observation: `session/updateQueue` is a
+        # plain RPC even where `session/observeState` is stream-only. Queue
+        # depth is genuinely unknown afterwards, and the result says so.
+        removed: list[str] = []
+        errors: list[str] = []
+        for item_id in sorted(wanted):
+            try:
+                adapter.update_queue(session_id, item_id, "remove")
+            except Exception as exc:  # DshRpcError today; a fake adapter may raise anything
+                errors.append(f"{item_id}: {exc}")
+                continue
+            removed.append(item_id)
+        return {
+            "session": session_id,
+            "filter": "ids",
+            "queue_before": "unknown",
+            "removed": removed,
+            "queue_after": "unknown",
+            "errors": errors,
+        }
     items = list_items(adapter, session_id)
     before = len(items)
-    wanted = set(ids or [])
-    removed: list[str] = []
-    errors: list[str] = []
+    removed = []
+    errors = []
     for item in items:
-        if wanted and item["id"] not in wanted:
-            continue
-        if not wanted and kind != "all" and item.get("kind") != kind:
+        if kind != "all" and item.get("kind") != kind:
             continue
         if limit is not None and len(removed) >= limit:
             break
@@ -145,7 +185,7 @@ def purge(
         after = before - len(removed)
     return {
         "session": session_id,
-        "filter": kind if not wanted else "ids",
+        "filter": kind,
         "queue_before": before,
         "removed": removed,
         "queue_after": after,

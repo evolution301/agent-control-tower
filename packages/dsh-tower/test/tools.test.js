@@ -8,6 +8,7 @@ import {
   activeProject,
   apply,
   boundWorkspace,
+  compactTool,
   hasTowerConfig,
   recordBinding,
   resolveWorkspace,
@@ -205,6 +206,89 @@ test('an update cannot re-aim the tools: config wins, binding reconnects', () =>
   } finally {
     if (previous === undefined) delete process.env.TOWER_HOME
     else process.env.TOWER_HOME = previous
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('tower_compact resolves role:<name> from adapters.dsh.sessions', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
+  const previous = process.env.TOWER_HOME
+  try {
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: dsh\n')
+    process.env.TOWER_HOME = home
+    const compacted = []
+    const { ctx, registered } = fakeCtx()
+    ctx.agents = { get: (id) => (id === 'S-QA' ? { id } : null) }
+    ctx.compaction = {
+      compactNow: async (agent) => {
+        compacted.push(agent.id)
+        return { shadowedSeqs: [1, 2, 3], shadowedTokenCount: 42 }
+      },
+    }
+    const dispose = apply(ctx, {
+      workspace: dir,
+      panel: false,
+      adapters: { dsh: { sessions: { qa: 'S-QA' } } },
+    })
+    const out = await registered
+      .find((def) => def.name === 'tower_compact')
+      .execute({ session: 'role:qa' })
+    dispose()
+    assert.equal(out.ok, true)
+    assert.equal(out.text, 'Compacted 3 history items (~42 tokens).')
+    assert.deepEqual(compacted, ['S-QA'])
+  } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('tower_compact names every place it looked for the role session', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
+  const previous = process.env.TOWER_HOME
+  try {
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: dsh\n')
+    process.env.TOWER_HOME = home
+    const tool = compactTool({ workspace: dir }, {})
+    const out = await tool.execute({ session: 'role:qa' })
+    assert.equal(out.ok, false)
+    assert.equal(
+      out.text,
+      "no session configured for role 'qa' (checked sessions, adapters.dsh.sessions)",
+    )
+  } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('tower_compact names the command that enables compaction', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
+  const previous = process.env.TOWER_HOME
+  try {
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: dsh\n')
+    process.env.TOWER_HOME = home
+    const tool = compactTool(
+      { workspace: dir, adapters: { dsh: { sessions: { qa: 'S-QA' } } } },
+      { agents: { get: () => ({ id: 'S-QA' }) } },
+    )
+    const out = await tool.execute({ session: 'role:qa' })
+    assert.equal(out.ok, false)
+    assert.equal(
+      out.text,
+      'compaction service not available in this profile — enable dsh-compaction-basic, or run /compact in that session',
+    )
+  } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(dir, { recursive: true, force: true })
     rmSync(home, { recursive: true, force: true })
   }
 })

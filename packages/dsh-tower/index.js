@@ -33,7 +33,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.18.0'
+export const VERSION = '0.18.1'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -158,6 +158,11 @@ function settings(config = {}) {
     timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
     panel: config.panel !== false,
     panelPort: Number(config.panelPort ?? 8787),
+    // session maps stay on the settings object so tools mounted by `apply`
+    // (tower_compact) can resolve a role to its DSH session id
+    sessions: config.sessions,
+    adapters: config.adapters,
+    adapterOptions: config.adapterOptions,
   }
 }
 
@@ -894,6 +899,31 @@ export function compactErrorText(code) {
   }
 }
 
+/**
+ * Resolve a role's DSH session id from the tower config shapes in the wild:
+ * a top-level `[sessions]` map, and the per-adapter map DSH actually writes.
+ */
+function roleSession(cfg, role) {
+  for (const sessions of [
+    cfg.sessions,
+    cfg.adapters?.dsh?.sessions,
+    cfg.adapterOptions?.dsh?.sessions,
+  ]) {
+    const id = String(sessions?.[role] ?? '')
+    if (id) return id
+  }
+  return ''
+}
+
+function missingSessionText(cfg, role) {
+  const checked = ['sessions', 'adapters.dsh.sessions']
+  if (cfg.adapterOptions?.dsh?.sessions) checked.push('adapterOptions.dsh.sessions')
+  return `no session configured for role '${role}' (checked ${checked.join(', ')})`
+}
+
+const NO_COMPACTION = 'compaction service not available in this profile — '
+  + 'enable dsh-compaction-basic, or run /compact in that session'
+
 /** `tower_compact`: force one manual compaction of a live session, in-process. */
 export function compactTool(cfg, host) {
   return tool({
@@ -901,7 +931,7 @@ export function compactTool(cfg, host) {
     description:
       'Force one manual context compaction (the /compact machinery) on a live session, in-process: no extra turn, no GUI needed. Pass the DSH session id, or \'role:<name>\' to resolve the session from the tower\'s sessions mapping. Returns how much history was shadowed.',
     parameters: {
-      session: { type: 'string', required: true, description: 'DSH session id, or \'role:<name>\' resolved via tower.toml sessions.' },
+      session: { type: 'string', required: true, description: 'DSH session id, or \'role:<name>\' resolved via the tower\'s session mapping.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties:
@@ -913,10 +943,9 @@ export function compactTool(cfg, host) {
       let sessionId = String(args.session ?? '')
       if (sessionId.startsWith('role:')) {
         const role = sessionId.slice(5).trim()
-        const sessions = cfg.sessions ?? {}
-        sessionId = String(sessions[role] ?? '')
+        sessionId = roleSession(cfg, role)
         if (!sessionId) {
-          return { ok: false, text: `no session configured for role '${role}' in tower.toml [sessions]` }
+          return { ok: false, text: missingSessionText(cfg, role) }
         }
       }
       if (!host?.agents) {
@@ -933,14 +962,10 @@ export function compactTool(cfg, host) {
       try {
         compaction = host.compaction
       } catch {
-        return { ok: false, text: 'compaction service not available in this profile — '
-          + 'enable dsh-compaction-basic (cordis patch: - id: compaction-basic) '
-          + 'or use /compact in that session\'s GUI' }
+        return { ok: false, text: NO_COMPACTION }
       }
       if (!compaction || typeof compaction.compactNow !== 'function') {
-        return { ok: false, text: 'compaction service not available in this profile — '
-          + 'enable dsh-compaction-basic (cordis patch: - id: compaction-basic) '
-          + 'or use /compact in that session\'s GUI' }
+        return { ok: false, text: NO_COMPACTION }
       }
       if (!agent) {
         return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }

@@ -162,6 +162,10 @@ class DshAdapter:
         self.queue_max = max(0, int(queue_max))
         self.last_queue: dict = {}
         self.last_queue_label = ""
+        # `session/observeState` is a stream-only RPC on current gateways, so the
+        # plain POST is refused. Remember the refusal once; queue reading then
+        # degrades to "unavailable" instead of re-asking on every delivery.
+        self.observe_error = ""
         self.secret = b64d(secret) if secret else b""
         self.authority = authority or self.base_url.split("://", 1)[-1].split("/", 1)[0]
         self.timezone = timezone
@@ -418,17 +422,29 @@ class DshAdapter:
         return None, "unresolved"
 
     # -- queue ------------------------------------------------------------
-    def observe_state(self, session_id: str, timeout: float = 20) -> dict:
-        """`session/observeState` — queue, running flag, pending input."""
-        reply = self.rpc("session/observeState", {"request": {"sessionId": session_id}}, timeout=timeout)
+    def observe_state(self, session_id: str, timeout: float = 20) -> dict | None:
+        """`session/observeState` — queue, running flag, pending input.
+
+        Current gateways only expose this method through their stream carrier,
+        so a plain POST fails with `gateway/signature-invalid`. Return `None`
+        and record why: queue inspection is optional, `session/prompt` is not.
+        """
+        try:
+            reply = self.rpc("session/observeState", {"request": {"sessionId": session_id}}, timeout=timeout)
+        except DshRpcError as exc:
+            self.observe_error = str(exc)
+            return None
         value = self._result_value(reply)
         return value if isinstance(value, dict) else {}
 
     def queue_items(self, session_id: str) -> list[dict]:
         """The session's queue as [{id, placement, rpcId, text}]."""
-        from ..queue import items_from_state
+        from ..queue import QueueUnavailable, items_from_state
 
-        return items_from_state(self.observe_state(session_id))
+        state = self.observe_state(session_id)
+        if state is None:
+            raise QueueUnavailable()
+        return items_from_state(state)
 
     def update_queue(self, session_id: str, item_id: str, action: str = "remove",
                      content: list | None = None) -> dict:
@@ -449,7 +465,7 @@ class DshAdapter:
 
     def _auto_prune(self, session_id: str) -> dict:
         """Trim the oldest notification items once the queue is over `queue_max`."""
-        if self.queue_max <= 0:
+        if self.queue_max <= 0 or self.observe_error:
             return {}
         try:
             from ..queue import prune

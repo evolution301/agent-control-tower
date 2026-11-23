@@ -28,7 +28,7 @@ from .board import (
     STATUS_RESTATING,
     now_ts,
 )
-from .config import TowerConfig
+from .config import TowerConfig, next_task_id
 
 CONTRACT = """## Contract (read this first)
 
@@ -150,6 +150,46 @@ def _auto_group(cfg: TowerConfig, task: Task) -> str:
         return ""
     groups.attach(cfg, group.id, task.id)
     return group.id
+
+
+DRY_RUN_STATUS = "dry-run (nothing written)"
+
+
+def build_task(
+    cfg: TowerConfig,
+    role_name: str,
+    brief: str,
+    *,
+    batch: str = "",
+    idem_key: str = "",
+    mandate: dict[str, Any] | None = None,
+) -> Task:
+    """A task with the next id, built in memory and never saved.
+
+    `Board.create()` cannot express a dry run: it writes the task file, and the
+    id *is* the highest file on disk, so a preview would burn a T-id. This is
+    `create()` up to the save; `dispatch(dry_run=True)` accepts such a task.
+    """
+    role = cfg.roles[role_name]
+    return Task(
+        id=next_task_id(cfg),
+        role=role_name,
+        brief=brief,
+        batch=batch,
+        write_scopes=list(role.write_scopes),
+        max_rounds=role.max_rounds,
+        idem_key=idem_key,
+        mandate=dict(mandate or {}),
+    )
+
+
+def preview_group(cfg: TowerConfig, task: Task, group: str = "") -> str:
+    """The group a real dispatch would use, without creating or attaching one."""
+    if group:
+        return group
+    if task.group:
+        return task.group
+    return groups.next_id(cfg) if getattr(cfg, "group_auto", True) else ""
 
 
 def _confirmed_block(task: Task) -> str:
@@ -403,6 +443,20 @@ def dispatch(
     for the role's full (often 30 min) budget (B12).
     """
     role = cfg.roles[task.role]
+    if dry_run:
+        # A preview is read-only: no task file, no task dir, no group attach, no
+        # T-id (the id is the highest file on disk) and no G-id consumed. The
+        # task comes from build_task(), which never saves; the status carries
+        # the marker the CLI prints.
+        task.group = preview_group(cfg, task, group)
+        task.status = DRY_RUN_STATUS
+        if not task.due_at:
+            from .supervise import parse_due
+
+            task.due_at = parse_due(due or cfg.default_due or "4h")
+        board.log("dispatch_dry_run", task=task.id, role=task.role, group=task.group,
+                  due_at=task.due_at)
+        return task
     # v0.18 (v3 §3/§7): a group and a deadline are part of every dispatch, not
     # something the caller may forget. The package check is the one gate that
     # can refuse a dispatch outright — that is the point of a kickoff.
@@ -417,7 +471,7 @@ def dispatch(
 
         task.due_at = parse_due(due or cfg.default_due or "4h")
     problems = kickoff.validate(kickoff.load_package(cfg, task.group)) if task.group else ["no group"]
-    if cfg.kickoff_require and not dry_run and problems:
+    if cfg.kickoff_require and problems:
         raise ValueError(
             "no task package for this dispatch — run `tower kickoff` first:\n- "
             + "\n- ".join(problems)
@@ -441,10 +495,6 @@ def dispatch(
         group=task.group,
         due_at=task.due_at,
     )
-
-    if dry_run:
-        board.log("dispatch_dry_run", task=task.id, role=task.role, prompt_len=len(prompt))
-        return task
 
     board.transition(task, STATUS_CLAIMED, note=f"dispatched to {role.name}")
 
@@ -523,13 +573,13 @@ def dispatch_restate(
     role = cfg.roles[task.role]
     prompt = render_restate_prompt(cfg, task)
 
-    task_dir = cfg.task_dir(task.id)
-    task_dir.mkdir(parents=True, exist_ok=True)
-    (task_dir / "restate-prompt.md").write_text(prompt, encoding="utf-8")
-
     if dry_run:
         board.log("restate_dry_run", task=task.id, role=task.role, prompt_len=len(prompt))
         return task
+
+    task_dir = cfg.task_dir(task.id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "restate-prompt.md").write_text(prompt, encoding="utf-8")
 
     board.transition(task, STATUS_CLAIMED, note=f"restatement requested from {role.name}")
 
