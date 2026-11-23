@@ -327,12 +327,41 @@ class Board:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def notify(self, entry: dict[str, Any]) -> None:
-        """Append a notice to the tower inbox (async settlements, relay receipts...)."""
+        """Append a notice to the tower inbox (async settlements, relay receipts...).
+
+        Settlements coalesce (2026-11-23): one task that goes dispatched → rework
+        → settled used to write three unread lines, and a lead session woken 65
+        times by the same task read past all of them. Same unread task → one line
+        with `count: N` and the newest status.
+        """
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
         payload = {"ts": now_ts(), "read": False}
         payload.update(entry)
+        task_id = str(payload.get("task") or "")
+        if payload.get("event") == "async_settled" and task_id:
+            if self._coalesce_settlement(task_id, payload):
+                return
         with self.cfg.inbox_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def _coalesce_settlement(self, task_id: str, payload: dict[str, Any]) -> bool:
+        """Fold a settlement into the newest unread line for the same task."""
+        items = self.inbox()
+        for line in items:
+            if line.get("read") or line.get("event") != "async_settled":
+                continue
+            if str(line.get("task") or "") != task_id:
+                continue
+            line["first_ts"] = line.get("first_ts") or line.get("ts")
+            line["ts"] = payload["ts"]
+            line["count"] = int(line.get("count", 1) or 1) + 1
+            for key in ("status", "state", "summary", "role"):
+                if payload.get(key):
+                    line[key] = payload[key]
+            text = "".join(json.dumps(i, ensure_ascii=False) + "\n" for i in items)
+            self.cfg.inbox_path.write_text(text, encoding="utf-8")
+            return True
+        return False
 
     def event(self, name: str, **payload: Any) -> None:
         """Append to `.tower/events.jsonl` — the async/relay audit trail.

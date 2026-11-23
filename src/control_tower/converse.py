@@ -108,6 +108,32 @@ def run_turn(cfg: TowerConfig, role_name: str, prompt: str, task_id: str = "") -
     return adapter, adapter.run(req)
 
 
+def _send_breaker(cfg: TowerConfig, sender: str, verdict: dict) -> bool:
+    """Tell the throttled sender once per hour — silence reads as a lost message."""
+    from . import peer_policy
+
+    try:
+        if not peer_policy.claim_breaker(cfg, sender):
+            return False
+        role = cfg.roles.get(sender)
+        if role is None:
+            return False
+        options = dict(cfg.adapter_options.get(role.adapter) or {})
+        adapter = get_adapter(role.adapter, options)
+        req = AdapterRequest(
+            role=sender,
+            prompt=peer_policy.breaker_text(verdict),
+            cwd=cfg.role_dir(sender),
+            timeout_s=role.timeout_s,
+            env=role.env,
+            options=options,
+        )
+        adapter.deliver(req)
+        return True
+    except Exception:  # noqa: BLE001 - the notice is best effort, never a failure
+        return False
+
+
 def say(
     cfg: TowerConfig,
     board: Board,
@@ -130,6 +156,10 @@ def say(
     if sender == to:
         raise ValueError("a role cannot send a peer message to itself")
 
+    from . import peer_policy
+
+    verdict = peer_policy.check(cfg, sender, to)
+
     cid = conversation_id or next_conversation_id(cfg)
     record = load_conversation(cfg, cid) if conversation_path(cfg, cid).exists() else {
         "id": cid,
@@ -145,9 +175,30 @@ def say(
         "task": task_id,
         "delivered": None,      # None = not attempted, True/False = queue outcome
         "detail": "",
+        "throttled": False,
     }
     record["messages"].append(entry)
     save_conversation(cfg, record)   # the lead's copy exists before delivery runs
+
+    if not verdict["allow"]:
+        # Filed, never delivered: the lead sees what was said and why it stopped.
+        entry["delivered"] = False
+        entry["throttled"] = True
+        entry["detail"] = str(verdict.get("reason") or "throttled")
+        entry["policy"] = verdict
+        save_conversation(cfg, record)
+        _send_breaker(cfg, sender, verdict)
+        board.log(
+            "peer_message_throttled",
+            conversation=cid,
+            sender=sender,
+            to=to,
+            task=task_id,
+            chars=len(entry["message"]),
+            reason=entry["detail"],
+        )
+        entry["conversation"] = cid
+        return entry
 
     role = cfg.roles[to]
     options = dict(cfg.adapter_options.get(role.adapter) or {})
@@ -165,6 +216,8 @@ def say(
     entry["delivered"] = result.exit_code == 0
     entry["detail"] = result.text[:300]
     entry["adapter"] = adapter.name
+    if entry["delivered"]:
+        peer_policy.record(cfg, sender)
     save_conversation(cfg, record)
     board.log(
         "peer_message",

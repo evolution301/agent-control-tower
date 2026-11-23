@@ -213,14 +213,11 @@ def _dispatch_preflight(cfg, role_name: str) -> str | None:
         from .adapters import get_adapter
 
         adapter = get_adapter("dsh", opts)
-        reply = adapter.rpc("session/list", {"_request": {}}, timeout=3)
-    except Exception as exc:  # noqa: BLE001 - any transport failure is a fail-fast
-        return (f"dsh adapter {base} unreachable: {exc} — check base_url (the desktop "
-                "port changes on every restart) and secret; run `tower doctor`")
-    error = str(reply.get("error") or "")
-    if error:
-        return (f"dsh adapter {base} rejected the connection: {error} — check base_url "
-                "(the desktop port changes on every restart) and secret; run `tower doctor`")
+        adapter.rpc("session/list", {"_request": {}}, timeout=3)
+    except Exception as exc:  # noqa: BLE001 - any failure here is a fail-fast
+        return (f"dsh adapter {base} unreachable or unauthorized: {exc} — "
+                "check base_url (the desktop port changes on every restart) and secret; "
+                "run `tower doctor`")
     return None
 
 
@@ -459,11 +456,23 @@ def cmd_inbox(args) -> int:
     if not entries:
         print("inbox empty")
         return 0
-    for e in entries:
+    total = len(entries)
+    offset = max(0, int(getattr(args, "offset", 0) or 0))
+    limit = int(getattr(args, "limit", 20) or 0)
+    page = entries[offset: offset + limit] if limit > 0 else entries[offset:]
+    if not page:
+        print(f"inbox: offset {offset} is past the end ({total} entries)")
+        return 0
+    for e in page:
         r = e.get("report") or {}
-        print(f"[{e.get('ts', '')}] {e.get('task', '-')} ({e.get('role', '-')})")
+        repeats = int(e.get("count", 1) or 1)
+        suffix = f" ×{repeats}" if repeats > 1 else ""
+        print(f"[{e.get('ts', '')}] {e.get('task', '-')} ({e.get('role', '-')}){suffix}")
         print(f"  summary: {((r.get('summary') or e.get('summary') or '')[:200])}")
         print(f"  files: {len(r.get('files') or [])} | checks: {len(r.get('checks') or [])}")
+    shown_to = offset + len(page)
+    more = f" — more: --offset {shown_to}" if shown_to < total else ""
+    print(f"inbox: {offset + 1}-{shown_to} of {total} ({'all' if args.all else 'unread'}){more}")
     if args.read:
         n = board.mark_inbox_read()
         print(f"marked {n} read")
@@ -939,6 +948,68 @@ def cmd_ctx(args) -> int:
     return 0
 
 
+def cmd_queue(args) -> int:
+    """Inspect or clear one role session's live DSH queue.
+
+    `session/updateQueue` answers `{"ok": false, "error": ...}` when the argument
+    shape is wrong; the adapter used to turn that into `None`, so a purge script
+    read "no error" and reported success while removing nothing (2026-11-23).
+    This command removes all doubt: it prints queue before/after, and exits 1
+    when the host refused anything.
+    """
+    from . import queue as q
+    from .adapters import get_adapter
+
+    cfg = _cfg(args)
+    options = dict(cfg.adapter_options.get("dsh") or {})
+    sessions = dict(options.get("sessions") or {})
+    role = str(getattr(args, "role", "") or "").strip()
+    session_id = str(getattr(args, "session", "") or "").strip()
+    if not session_id and role:
+        session_id = str(sessions.get(role) or "").strip()
+    if not session_id:
+        known = ", ".join(sorted(sessions)) or "none"
+        _say(args, f"role {role or '(none)'} has no pinned session — configured roles: {known}")
+        return 2
+    adapter = get_adapter("dsh", options)
+    action = str(getattr(args, "queue_action", "") or "list")
+    try:
+        if action == "purge":
+            info = q.purge(
+                adapter,
+                session_id,
+                only=str(getattr(args, "only", "all") or "all"),
+                limit=int(getattr(args, "max", 0) or 0) or None,
+            )
+            if getattr(args, "json", False):
+                _print(info, as_json=True)
+            else:
+                print(f"session {session_id}: queue {info['queue_before']} → "
+                      f"{info['queue_after']} ({len(info['removed'])} removed, "
+                      f"filter={info['filter']})")
+                for item_id in info["removed"][:20]:
+                    print(f"  - {str(item_id)[:8]}")
+                if len(info["removed"]) > 20:
+                    print(f"  … and {len(info['removed']) - 20} more")
+                for err in info.get("errors") or []:
+                    print(f"  ! {err}")
+            return 1 if info.get("errors") else 0
+        items = q.list_items(adapter, session_id)
+        if getattr(args, "json", False):
+            _print({"session": session_id, "queue": len(items), "items": items}, as_json=True)
+            return 0
+        print(f"session {session_id}: queue {len(items)}")
+        for index, item in enumerate(items, 1):
+            print(f"  {index:>2}. {str(item['id'])[:8]} {item['placement']:<8} "
+                  f"{item['kind']:<6} {q.summarise(item, 100)}")
+        if not items:
+            print("  (empty)")
+        return 0
+    except Exception as exc:  # noqa: BLE001 - every failure here is worth printing
+        _say(args, f"queue {action} failed: {exc}")
+        return 1
+
+
 def cmd_relay(args) -> int:
     """Deliver a message to any DSH session (or `--to tower` = this inbox)."""
     from .adapters import get_adapter
@@ -1385,22 +1456,15 @@ def _dsh_preflight(cfg) -> list[str]:
             adapter = get_adapter("dsh", opts)
             reply = adapter.rpc("session/list", {"_request": {}}, timeout=15)
         except Exception as exc:  # pragma: no cover - network dependent
-            problems.append(f"dsh adapter {base}: probe failed: {exc}")
-            continue
-        if reply.get("error"):
             problems.append(
-                f"dsh adapter {base} unreachable or unauthorized: {reply['error']} "
-                "— check base_url (the desktop port changes on every restart) and secret"
+                f"dsh adapter {base} unreachable or unauthorized: {exc} — check base_url "
+                "(the desktop port changes on every restart) and secret"
             )
             continue
-        result = reply.get("result") or {}
-        if isinstance(result, dict) and result.get("ok") is False:
-            err = result.get("error") or {}
-            problems.append(
-                f"dsh adapter {base}: {err.get('code')}: {str(err.get('message'))[:200]}"
-            )
-            continue
-        value = result.get("value") if isinstance(result, dict) else None
+        try:
+            value = adapter._result_value(reply)
+        except Exception:  # noqa: BLE001 - doctor reports, never crashes
+            value = None
         items = (value or {}).get("items") if isinstance(value, dict) else None
         known = {str(i.get("sessionId")) for i in (items or []) if isinstance(i, dict)}
         if not known:
@@ -1740,6 +1804,23 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("ctx", help="context pressure per configured session (50 percent or more = compact now)")
     s.set_defaults(func=cmd_ctx)
 
+    s = sub.add_parser("queue", help="inspect or purge one role session's queued turns")
+    qs = s.add_subparsers(dest="queue_action")
+    ql = qs.add_parser("list", help="show queued turns with their kind and a summary")
+    ql.add_argument("role", nargs="?", default="", help="role name (session pinned in tower.toml)")
+    ql.add_argument("--session", default="", help="raw session id (overrides the role)")
+    ql.add_argument("--json", action="store_true")
+    ql.set_defaults(func=cmd_queue)
+    qp = qs.add_parser("purge", help="remove queued turns; prints queue before/after and exits 1 on refusal")
+    qp.add_argument("role", nargs="?", default="", help="role name (session pinned in tower.toml)")
+    qp.add_argument("--session", default="", help="raw session id (overrides the role)")
+    qp.add_argument("--only", default="all", choices=["all", "peer", "notice"],
+                    help="which turns to remove (default all)")
+    qp.add_argument("--max", type=int, default=0, help="stop after this many removals (0 = no cap)")
+    qp.add_argument("--json", action="store_true")
+    qp.set_defaults(func=cmd_queue)
+    s.set_defaults(func=cmd_queue, role="", session="", only="all", max=0, json=False)
+
     s = sub.add_parser("relay", help="deliver a message to any DSH session (or --to tower)")
     s.add_argument("to", nargs="?", default="",
                    help="target: session id, unique title substring, or the alias 'tower'")
@@ -1834,6 +1915,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("inbox", help="show reports filed by roles")
     s.add_argument("--all", action="store_true")
     s.add_argument("--read", action="store_true", help="mark all reports read")
+    s.add_argument("--limit", type=int, default=20,
+                   help="page size (default 20; 0 prints everything)")
+    s.add_argument("--offset", type=int, default=0, help="skip this many entries")
     s.set_defaults(func=cmd_inbox)
 
     s = sub.add_parser("board", help="terminal panel (use --watch to keep it refreshing)")

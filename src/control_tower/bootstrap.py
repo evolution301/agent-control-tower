@@ -23,7 +23,7 @@ import subprocess
 from pathlib import Path
 
 from .adapters.base import AdapterRequest
-from .adapters.dsh import DshAdapter
+from .adapters.dsh import DshAdapter, DshRpcError
 from .config import load_config
 
 SECRET_RE = re.compile(r'SECRET_B64\s*=\s*"([^"]+)"')
@@ -69,13 +69,16 @@ def probe(base_url: str, secret: str, timeout: float = 20) -> tuple[str | None, 
     rows, and a 3s socket timeout looked exactly like a wrong secret.
     """
     adapter = DshAdapter(base_url=base_url, secret=secret, wait_s=0.1, poll_s=0.1)
-    reply = adapter.rpc("session/list", {"_request": {}}, timeout=timeout)
-    error = str(reply.get("error") or "")
-    if not error:
-        return "harness", reply
-    if error.startswith("http 401") or error.startswith("http 403"):
-        return "needs-secret", reply
-    return None, reply
+    try:
+        reply = adapter.rpc("session/list", {"_request": {}}, timeout=timeout)
+    except DshRpcError as exc:
+        # A rejection is a *classification*, not a crash: 401/403 means the host
+        # is there and the secret is wrong; anything else means "not a harness".
+        payload = {"error": str(exc), "code": exc.code}
+        if exc.code in ("http/401", "http/403"):
+            return "needs-secret", payload
+        return None, payload
+    return "harness", reply
 
 
 def detect_base_url(secret: str = "", prefer: str = "") -> tuple[str | None, bool]:
@@ -255,7 +258,10 @@ def resolve_roles(config_path: Path, secret: str = "", base_url: str = "", pin: 
 def delete_session(base_url: str, secret: str, session_id: str) -> dict:
     """Best-effort `session/delete` for one id (e.g. an accidentally created twin)."""
     adapter = DshAdapter(base_url=base_url, secret=secret, wait_s=0.1, poll_s=0.1)
-    return adapter.rpc("session/delete", {"request": {"sessionId": session_id}})
+    try:
+        return adapter.rpc("session/delete", {"request": {"sessionId": session_id}})
+    except DshRpcError as exc:
+        return {"error": str(exc), "code": exc.code}
 
 
 def run_bootstrap(

@@ -60,12 +60,42 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Any
 
 from .base import AdapterRequest, AdapterResult
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 COOKIE_LIFETIME_MS = 30 * 24 * 3600 * 1000
 SESSION_CACHE = Path(".tower") / "dsh-sessions.json"
+
+
+class DshRpcError(RuntimeError):
+    """A gateway call that answered and still failed.
+
+    Before this class existed, `rpc` returned `{"error": …}` on transport trouble
+    and `_result_value` returned `None` for `{"ok": false, …}` — so a caller that
+    checked `if not reply.get("error")` read a rejected `session/updateQueue` as
+    success and reported "queue cleared" while nothing was cleared (2026-11-23,
+    181 messages stuck behind one such lie). Failing loudly is the whole point:
+    a caller that cannot handle the failure has to say so, not guess.
+    """
+
+    def __init__(self, method: str, code: str, message: str, reply: Any = None):
+        self.method = method
+        self.code = code
+        self.message = message
+        self.reply = reply
+        super().__init__("[dsh] %s: %s: %s" % (method, code, message))
+
+    @classmethod
+    def from_error(cls, method: str, error: Any, reply: Any = None) -> "DshRpcError":
+        if isinstance(error, dict):
+            code = str(error.get("code") or "gateway/error")
+            message = str(error.get("message") or error.get("data") or "")[:800]
+        else:
+            code = "gateway/error"
+            message = str(error)[:800]
+        return cls(method, code, message or "(no message)", reply)
 
 
 def b64u(raw: bytes) -> str:
@@ -109,6 +139,7 @@ class DshAdapter:
         create_cwd: str = "",
         projcache_dir: str = "",
         turn_start_s: float = 45,
+        queue_max: int = 20,
         **_,
     ):
         self.base_url = base_url.rstrip("/")
@@ -125,6 +156,12 @@ class DshAdapter:
         # is the difference between "fails in 45s with a reason" and "silently
         # burns wait_s and reports a bare timeout".
         self.turn_start_s = float(turn_start_s)
+        # Auto-prune a session's queue once it grows past this many items. The
+        # queue only ever shrinks when someone removes items; a long task with
+        # notices and peer notes would otherwise accumulate forever. 0 = off.
+        self.queue_max = max(0, int(queue_max))
+        self.last_queue: dict = {}
+        self.last_queue_label = ""
         self.secret = b64d(secret) if secret else b""
         self.authority = authority or self.base_url.split("://", 1)[-1].split("/", 1)[0]
         self.timezone = timezone
@@ -152,8 +189,17 @@ class DshAdapter:
             headers["Cookie"] = auth_cookie(self.authority, self.secret)
         return headers
 
-    def rpc(self, method: str, args: dict, timeout: float = 90) -> dict:
-        data = json.dumps(self.envelope(method, args)).encode("utf-8")
+    def rpc(self, method: str, args: dict | None = None, timeout: float = 90) -> dict:
+        """Call one gateway method; **raise** `DshRpcError` when it did not succeed.
+
+        Args shape: the gateway descriptor for `session/*` methods expects a
+        single `request` object, so a flat `{"sessionId": …}` is wrapped here.
+        `session/list` takes `{"_request": {}}` and is passed through untouched.
+        A reply is only returned when it carries no error and no `ok: false`
+        anywhere a caller could read it as data.
+        """
+        payload_args = self._wrap_args(args)
+        data = json.dumps(self.envelope(method, payload_args)).encode("utf-8")
         request = urllib.request.Request(
             "%s/api/%s" % (self.base_url, method),
             data=data,
@@ -163,7 +209,6 @@ class DshAdapter:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8") or "{}"
-                return json.loads(raw)
         except urllib.error.HTTPError as exc:  # pragma: no cover - network dependent
             # The error body may never arrive (kept-alive socket); a wrong
             # secret must fail fast, not hang for the full timeout.
@@ -172,14 +217,57 @@ class DshAdapter:
                 detail = exc.read()[:300]
             except Exception:
                 detail = b"<no error body>"
-            return {"error": "http %s: %r" % (exc.code, detail)}
+            raise DshRpcError(method, "http/%s" % exc.code, repr(detail)) from None
         except Exception as exc:  # pragma: no cover - network dependent
-            return {"error": "%s: %s" % (type(exc).__name__, exc)}
+            raise DshRpcError(method, type(exc).__name__, str(exc)) from None
+        try:
+            reply = json.loads(raw)
+        except ValueError:
+            raise DshRpcError(method, "gateway/bad-json", raw[:300]) from None
+        if not isinstance(reply, dict):
+            raise DshRpcError(method, "gateway/bad-reply", repr(reply)[:300], reply)
+        self._raise_for_error(method, reply)
+        return reply
+
+    @staticmethod
+    def _wrap_args(args: dict | None) -> dict:
+        """Give a flat argument dict the `request` envelope the descriptor wants."""
+        if not args:
+            return {"request": {}}
+        if "request" in args or "_request" in args:
+            return args
+        return {"request": args}
+
+    @staticmethod
+    def _raise_for_error(method: str, reply: dict) -> None:
+        """Treat every failure shape as a failure, not as data."""
+        if reply.get("error"):
+            raise DshRpcError.from_error(method, reply["error"], reply)
+        result = reply.get("result")
+        if isinstance(result, dict):
+            if result.get("ok") is False:
+                raise DshRpcError.from_error(method, result.get("error") or "gateway/error", reply)
+            # Some hosts answer `{"ok": true, "error": null}` on success; only a
+            # truthy error without a value is a failure.
+            if result.get("error") and "value" not in result:
+                raise DshRpcError.from_error(method, result["error"], reply)
 
     @staticmethod
     def _result_value(reply: dict):
+        """The `value` of a successful reply (`result` itself when it has none).
+
+        Raises instead of returning `None` for an `ok: false` reply: `None` is
+        indistinguishable from "the host said nothing", and that ambiguity is
+        what let a rejected queue purge look like an empty queue.
+        """
+        if not isinstance(reply, dict):
+            return None
+        if reply.get("error"):
+            raise DshRpcError.from_error("result", reply["error"], reply)
         result = reply.get("result")
         if isinstance(result, dict):
+            if result.get("ok") is False:
+                raise DshRpcError.from_error("result", result.get("error") or "gateway/error", reply)
             if "value" in result:
                 return result["value"]
             return result
@@ -209,7 +297,10 @@ class DshAdapter:
             pass
 
     def find_session_by_title(self, title: str, cwd: str | Path = "") -> str | None:
-        reply = self.rpc("session/list", {"_request": {}})
+        try:
+            reply = self.rpc("session/list", {"_request": {}})
+        except DshRpcError:
+            reply = {}
         value = self._result_value(reply)
         items = (value or {}).get("items") if isinstance(value, dict) else None
         if not items:
@@ -277,11 +368,17 @@ class DshAdapter:
         request = {}
         if directory:
             request["cwd"] = directory
-        reply = self.rpc("session/create", {"request": request})
-        if reply.get("error") and request:
+        try:
+            reply = self.rpc("session/create", {"request": request})
+        except DshRpcError:
+            if not request:
+                return None
             # Some hosts reject an explicit cwd (unknown path, workspace rules);
             # fall back to letting the host choose the directory.
-            reply = self.rpc("session/create", {"request": {}})
+            try:
+                reply = self.rpc("session/create", {"request": {}})
+            except DshRpcError:
+                return None
         value = self._result_value(reply)
         sid = None
         if isinstance(value, dict):
@@ -289,7 +386,10 @@ class DshAdapter:
         if not sid:
             return None
         if title:
-            self.rpc("session/rename", {"request": {"sessionId": sid, "title": title}})
+            try:
+                self.rpc("session/rename", {"request": {"sessionId": sid, "title": title}})
+            except DshRpcError:
+                pass  # a created session without its title is still usable
         return sid
 
     def resolve_session(self, req: AdapterRequest) -> tuple[str | None, str]:
@@ -317,6 +417,56 @@ class DshAdapter:
             return created, "created"
         return None, "unresolved"
 
+    # -- queue ------------------------------------------------------------
+    def observe_state(self, session_id: str, timeout: float = 20) -> dict:
+        """`session/observeState` — queue, running flag, pending input."""
+        reply = self.rpc("session/observeState", {"request": {"sessionId": session_id}}, timeout=timeout)
+        value = self._result_value(reply)
+        return value if isinstance(value, dict) else {}
+
+    def queue_items(self, session_id: str) -> list[dict]:
+        """The session's queue as [{id, placement, rpcId, text}]."""
+        from ..queue import items_from_state
+
+        return items_from_state(self.observe_state(session_id))
+
+    def update_queue(self, session_id: str, item_id: str, action: str = "remove",
+                     content: list | None = None) -> dict:
+        """Add/remove one queued item. `remove` is the only one the tower needs."""
+        if action == "edit":
+            payload: dict = {"kind": "edit", "content": list(content or [])}
+        elif action == "steer":
+            payload = {"kind": "steer"}
+        else:
+            payload = {"kind": "remove"}
+        reply = self.rpc(
+            "session/updateQueue",
+            {"request": {"sessionId": session_id, "itemId": item_id, "action": payload}},
+            timeout=30,
+        )
+        value = self._result_value(reply)
+        return value if isinstance(value, dict) else {"accepted": True}
+
+    def _auto_prune(self, session_id: str) -> dict:
+        """Trim the oldest notification items once the queue is over `queue_max`."""
+        if self.queue_max <= 0:
+            return {}
+        try:
+            from ..queue import prune
+
+            info = prune(self, session_id, limit=self.queue_max)
+        except Exception:  # a queue read must never break delivery
+            return {}
+        self.last_queue = info
+        return info
+
+    def _queue_meta(self) -> dict:
+        info = getattr(self, "last_queue", {}) or {}
+        if not info:
+            return {}
+        return {"queue_before": info.get("queue_before"), "pruned": info.get("pruned", 0),
+                "queue_after": info.get("queue_after")}
+
     # -- adapter ---------------------------------------------------------
     def report_path(self, req: AdapterRequest) -> Path:
         name = self.report_file.format(task_id=req.task_id, role=req.role)
@@ -336,30 +486,35 @@ class DshAdapter:
                 exit_code=2,
                 meta={"missing_session": req.role, "resolution": how},
             )
-        reply = self.rpc(
-            "session/prompt",
-            {
-                "request": {
-                    "sessionId": session_id,
-                    "requestId": str(uuid.uuid4()),
-                    "mode": "queue",
-                    "content": [{"type": "text", "text": req.prompt}],
-                    "clientTimeZone": self.timezone,
-                }
-            },
-            timeout=90,
-        )
-        if reply.get("error"):
-            return AdapterResult(
-                text="[dsh] queue failed: %s" % reply["error"],
-                exit_code=3,
-                meta={"rpc": "session/prompt", "session_id": session_id, "resolution": how},
+        queue = self._auto_prune(session_id)
+        try:
+            self.rpc(
+                "session/prompt",
+                {
+                    "request": {
+                        "sessionId": session_id,
+                        "requestId": str(uuid.uuid4()),
+                        "mode": "queue",
+                        "content": [{"type": "text", "text": req.prompt}],
+                        "clientTimeZone": self.timezone,
+                    }
+                },
+                timeout=90,
             )
-        return AdapterResult(
-            text="[dsh] queued into %s" % session_id,
-            exit_code=0,
-            meta={"session_id": session_id, "resolution": how},
-        )
+        except DshRpcError as exc:
+            return AdapterResult(
+                text="[dsh] queue failed: %s" % exc,
+                exit_code=3,
+                meta={"rpc": "session/prompt", "session_id": session_id,
+                      "resolution": how, **self._queue_meta()},
+            )
+        meta = {"session_id": session_id, "resolution": how, **self._queue_meta()}
+        text = "[dsh] queued into %s" % session_id
+        if queue.get("pruned"):
+            from ..queue import label
+
+            text += " · " + label(queue)
+        return AdapterResult(text=text, exit_code=0, meta=meta)
 
     def session_state(self, session_id: str) -> dict[str, Any]:
         """Best-effort read of turns/llmMs/model for one session.
@@ -369,9 +524,10 @@ class DshAdapter:
         methods genuinely disagree, and getting it wrong silently returns an
         argument error instead of data).
         """
-        reply = self.rpc("session/projections", {"request": {"sessionId": session_id}}, timeout=20)
-        if reply.get("error"):
-            return {"error": reply["error"]}
+        try:
+            reply = self.rpc("session/projections", {"request": {"sessionId": session_id}}, timeout=20)
+        except DshRpcError as exc:
+            return {"error": str(exc)}
         value = self._result_value(reply)
         if not isinstance(value, dict):
             return {}
@@ -406,8 +562,11 @@ class DshAdapter:
         headless 262,144 — the size comes from the data, never hardcoded).
         Returns None when the host answers nothing usable.
         """
-        reply = self.rpc("session/projections",
-                         {"request": {"sessionId": session_id}}, timeout=30)
+        try:
+            reply = self.rpc("session/projections",
+                             {"request": {"sessionId": session_id}}, timeout=30)
+        except DshRpcError:
+            return None
         value = self._result_value(reply)
         if not isinstance(value, dict):
             return None
@@ -437,30 +596,34 @@ class DshAdapter:
         (a session id, a title match, or the tower's own inbox alias handled
         upstream in `relay.send_relay`).
         """
-        reply = self.rpc(
-            "session/prompt",
-            {
-                "request": {
-                    "sessionId": session_id,
-                    "requestId": str(uuid.uuid4()),
-                    "mode": "queue",
-                    "content": [{"type": "text", "text": text}],
-                    "clientTimeZone": self.timezone,
-                }
-            },
-            timeout=90,
-        )
-        if reply.get("error"):
-            return AdapterResult(
-                text="[dsh] relay queue failed: %s" % reply["error"],
-                exit_code=3,
-                meta={"rpc": "session/prompt", "session_id": session_id},
+        queue = self._auto_prune(session_id)
+        try:
+            self.rpc(
+                "session/prompt",
+                {
+                    "request": {
+                        "sessionId": session_id,
+                        "requestId": str(uuid.uuid4()),
+                        "mode": "queue",
+                        "content": [{"type": "text", "text": text}],
+                        "clientTimeZone": self.timezone,
+                    }
+                },
+                timeout=90,
             )
-        return AdapterResult(
-            text="[dsh] relay queued into %s" % session_id,
-            exit_code=0,
-            meta={"session_id": session_id},
-        )
+        except DshRpcError as exc:
+            return AdapterResult(
+                text="[dsh] relay queue failed: %s" % exc,
+                exit_code=3,
+                meta={"rpc": "session/prompt", "session_id": session_id, **self._queue_meta()},
+            )
+        meta = {"session_id": session_id, **self._queue_meta()}
+        result_text = "[dsh] relay queued into %s" % session_id
+        if queue.get("pruned"):
+            from ..queue import label
+
+            result_text += " · " + label(queue)
+        return AdapterResult(text=result_text, exit_code=0, meta=meta)
 
     def run(self, req: AdapterRequest) -> AdapterResult:
         session_id, how = self.resolve_session(req)
@@ -483,32 +646,31 @@ class DshAdapter:
             + str(report)
             + " （覆盖写，包含 summary / files / checks），并回复一行摘要。"
         )
-        reply = self.rpc(
-            "session/prompt",
-            {
-                "request": {
-                    "sessionId": session_id,
-                    "requestId": str(uuid.uuid4()),
-                    "mode": "queue",
-                    "content": [{"type": "text", "text": prompt}],
-                    "clientTimeZone": self.timezone,
-                }
-            },
-            timeout=90,
-        )
-        if reply.get("error"):
-            return AdapterResult(
-                text="[dsh] prompt failed: %s" % reply["error"],
-                exit_code=3,
-                meta={"rpc": "session/prompt", "resolution": how},
+        queue = self._auto_prune(session_id)
+        try:
+            self.rpc(
+                "session/prompt",
+                {
+                    "request": {
+                        "sessionId": session_id,
+                        "requestId": str(uuid.uuid4()),
+                        "mode": "queue",
+                        "content": [{"type": "text", "text": prompt}],
+                        "clientTimeZone": self.timezone,
+                    }
+                },
+                timeout=90,
             )
-        result = reply.get("result")
-        if isinstance(result, dict) and result.get("ok") is False:
+        except DshRpcError as exc:
             return AdapterResult(
-                text="[dsh] prompt rejected: " + json.dumps(result, ensure_ascii=False)[:300],
+                text="[dsh] prompt failed: %s" % exc,
                 exit_code=3,
-                meta={"rpc": "session/prompt", "result": result, "resolution": how},
+                meta={"rpc": "session/prompt", "resolution": how, **self._queue_meta()},
             )
+        if queue.get("pruned"):
+            from ..queue import label
+
+            self.last_queue_label = label(queue)
 
         # A session with no model selected accepts the prompt and then never
         # starts a turn. Catch that inside turn_start_s and say why, instead of
@@ -542,7 +704,8 @@ class DshAdapter:
                 return AdapterResult(
                     text=report.read_text(encoding="utf-8"),
                     exit_code=0,
-                    meta={"report_file": str(report), "session_id": session_id, "resolution": how},
+                    meta={"report_file": str(report), "session_id": session_id,
+                          "resolution": how, **self._queue_meta()},
                 )
             time.sleep(self.poll_s)
         state = self.session_state(session_id)

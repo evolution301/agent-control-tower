@@ -32,7 +32,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.17.1'
+export const VERSION = '0.17.2'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -897,6 +897,8 @@ export function inboxTool(cfg) {
     parameters: {
       all: { type: 'boolean', description: 'Include reports already marked read (default false).' },
       mark_read: { type: 'boolean', description: 'Mark every listed report as read afterwards.' },
+      limit: { type: 'number', description: 'Page size (default 20; 0 = everything). The CLI truncates each summary to 200 characters, so a big inbox no longer floods the context.' },
+      offset: { type: 'number', description: 'Skip this many entries (page through a long inbox).' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true } } },
@@ -907,6 +909,8 @@ export function inboxTool(cfg) {
       const argv = ['inbox']
       if (args.all) argv.push('--all')
       if (args.mark_read) argv.push('--read')
+      if (typeof args.limit === 'number' && args.limit >= 0) argv.push('--limit', String(Math.floor(args.limit)))
+      if (typeof args.offset === 'number' && args.offset > 0) argv.push('--offset', String(Math.floor(args.offset)))
       const { data } = await runTower(cfg, argv)
       const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
       return { text: text || 'inbox empty' }

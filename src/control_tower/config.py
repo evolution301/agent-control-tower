@@ -78,6 +78,16 @@ class TowerConfig:
     # 2026-11-10: a pending job older than this (minutes) while no worker consumes
     # it is surfaced on `tower status` / `tower inbox` / `tower doctor`.
     queue_alert_minutes: int = 15
+    # 2026-11-23: bot-to-bot notes are what filled a live queue to 181 items —
+    # the cost of two bots talking beat the cost of them working. `mode` is
+    # "quota" (default: lead always reachable, peers capped per hour),
+    # "lead-only" (peers may only write the lead) or "open" (the old behaviour).
+    peer_note_mode: str = "quota"       # quota | lead-only | open
+    peer_note_lead: str = "lead"        # the role that is never rate-limited
+    peer_notes_per_hour: int = 10
+    # re-inject the full task contract every N dispatches per role; 0 = always
+    # inject (the pre-2026-11-23 behaviour, now the fallback rather than the norm)
+    contract_repeat_every: int = 5
     # v0.16 — deploy guard: how to read a remote file before an upload.
     # `deploy.fetch` in tower.toml, a list (placeholders expanded) or a shell string.
     deploy_fetch: list[str] | str | None = None
@@ -239,6 +249,10 @@ def parse_config(path: Path) -> TowerConfig:
         staleness_minutes=max(1, int(raw.get("staleness_minutes", 30))),
         stale_hours=float(raw.get("stale_hours", 12.0)),
         queue_alert_minutes=max(1, int(raw.get("queue_alert_minutes", 15))),
+        peer_note_mode=str((raw.get("peer_notes") or {}).get("mode", "quota")).strip().lower(),
+        peer_note_lead=str((raw.get("peer_notes") or {}).get("lead", "lead")).strip(),
+        peer_notes_per_hour=max(0, int((raw.get("peer_notes") or {}).get("per_hour", 10))),
+        contract_repeat_every=max(0, int((raw.get("contract") or {}).get("repeat_every", 5))),
         deploy_fetch=(raw.get("deploy") or {}).get("fetch") or None,
         self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),

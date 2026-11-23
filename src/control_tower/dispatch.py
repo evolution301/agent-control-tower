@@ -11,6 +11,7 @@ and from the fact that the lead never *accepts* a report without verifying it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,26 @@ You are the **{role}** role inside a control-tower workflow.
 """
 
 
+# 2026-11-23: a long-lived role session was fed the full 60-line contract on
+# every dispatch (19 copies in one session). The contract only changes when the
+# report format or a role's scopes change, so after the first dispatch the
+# follow-ups get this compact header and the full text is re-sent every
+# `[contract] repeat_every` dispatches (default 5) as an anchor refresher.
+CONTRACT_COMPACT = """## Contract (unchanged — same as your earlier dispatch)
+
+Role `{role}` · task `{task_id}` · batch `{batch}`. Your folder: `{role_dir}`.
+Report file: `{report_file}` — same sections as before (## Status / ## Summary /
+## Files / ## Checks / ## Open issues / ## Self-review / ## Attention), and the
+same closed status vocabulary: progress, waiting, ready, blocked, failed, dropped.
+Write scope: {scopes}
+Never claim a check you did not run. Blocked means exactly one concrete question
+under "## Attention".
+
+{confirmed}## Task {task_id} ({batch})
+
+{brief}
+"""
+
 # v0.8 — the restate gate (playbook point 7: "voice brain-dump, then restate it").
 # The first answer is deliberately *not* work: it is the role's own words about
 # the brief, so a misread costs one short turn instead of a full dispatch.
@@ -130,11 +151,92 @@ def _confirmed_block(task: Task) -> str:
     )
 
 
-def render_prompt(cfg: TowerConfig, task: Task) -> str:
+def _contract_path(cfg: TowerConfig, role_name: str):
+    return cfg.state_dir / "contracts" / f"{role_name}.json"
+
+
+def _contract_key(role_dir, scopes: str) -> str:
+    """What makes the contract text change: the template, the folder, the scopes.
+
+    The report file name carries the task id, so it is deliberately left out —
+    including it would make every dispatch look like a new contract.
+    """
+    material = "\x00".join([CONTRACT, str(role_dir), scopes])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def contract_plan(cfg: TowerConfig, task: Task) -> dict:
+    """Full contract or compact header? Pure: reads state, never writes it.
+
+    Compact only when the same role already got this exact contract text at least
+    once and fewer than `contract_repeat_every` dispatches have gone by since the
+    last full send. Anything new or different (first job, edited scopes, edited
+    report format) sends the full thing again.
+    """
+    role_dir = cfg.role_dir(task.role)
+    report_file = role_dir / f"{task.id}-REPORT.md"
+    scopes = ", ".join(f"`{s}`" for s in task.write_scopes) or "(the whole workspace)"
+    key = _contract_key(role_dir, scopes)
+    repeat = int(getattr(cfg, "contract_repeat_every", 5) or 0)
+    plan = {"compact": False, "key": key, "reason": "first dispatch for this role"}
+    if repeat <= 0:
+        plan["reason"] = "contract.repeat_every=0 (always full)"
+        return plan
+    path = _contract_path(cfg, task.role)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return plan
+    if not isinstance(state, dict) or state.get("key") != key:
+        plan["reason"] = "contract text changed since the last dispatch"
+        return plan
+    since_full = int(state.get("since_full", 0) or 0)
+    if since_full >= repeat:
+        plan["reason"] = f"full re-send every {repeat} dispatches"
+        return plan
+    plan.update(
+        compact=True,
+        reason=f"contract sent in full {since_full} dispatch(es) ago",
+        since=str(state.get("since", "")),
+    )
+    return plan
+
+
+def record_contract(cfg: TowerConfig, task: Task, plan: dict) -> None:
+    """Remember what this role was sent, so the next dispatch can go compact."""
+    path = _contract_path(cfg, task.role)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous: dict = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            previous = loaded
+    except (OSError, ValueError):
+        previous = {}
+    same = previous.get("key") == plan.get("key")
+    if plan.get("compact") and same:
+        since_full = int(previous.get("since_full", 0) or 0) + 1
+        since = str(previous.get("since", ""))
+    else:
+        since_full = 0
+        since = now_ts()
+    path.write_text(
+        json.dumps(
+            {"key": plan.get("key"), "since": since, "since_full": since_full,
+             "last_task": task.id, "last_full": since},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def render_prompt(cfg: TowerConfig, task: Task, compact: bool = False) -> str:
     role = cfg.roles[task.role]
     role_dir = cfg.role_dir(task.role)
     scopes = ", ".join(f"`{s}`" for s in task.write_scopes) or "(the whole workspace)"
-    prompt = CONTRACT.format(
+    template = CONTRACT_COMPACT if compact else CONTRACT
+    prompt = template.format(
         role=task.role,
         workspace=cfg.workspace,
         role_dir=role_dir,
@@ -241,12 +343,21 @@ def dispatch(
     for the role's full (often 30 min) budget (B12).
     """
     role = cfg.roles[task.role]
-    prompt = render_prompt(cfg, task)
+    plan = contract_plan(cfg, task)
+    prompt = render_prompt(cfg, task, compact=bool(plan.get("compact")))
 
     task_dir = cfg.task_dir(task.id)
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "prompt.md").write_text(prompt, encoding="utf-8")
     (task_dir / "brief.md").write_text(task.brief, encoding="utf-8")
+    board.log(
+        "dispatch_contract",
+        task=task.id,
+        role=task.role,
+        compact=bool(plan.get("compact")),
+        reason=plan.get("reason", ""),
+        prompt_len=len(prompt),
+    )
 
     if dry_run:
         board.log("dispatch_dry_run", task=task.id, role=task.role, prompt_len=len(prompt))
@@ -274,6 +385,10 @@ def dispatch(
     (task_dir / "adapter-meta.json").write_text(
         json.dumps(result.meta or {}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    if result.exit_code == 0:
+        # Only a delivered prompt counts: a crashed turn never read the contract.
+        record_contract(cfg, task, plan)
 
     if result.exit_code != 0:
         board.transition(task, STATUS_FAILED, note=f"adapter exit {result.exit_code}", output=result.text[:2000])

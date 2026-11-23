@@ -5,7 +5,52 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
-## [Unreleased]
+## [0.17.2] - 2026-11-23
+
+### Fixed — a rejected queue call looked like a successful purge
+
+Found on a live tower with 181 messages stuck across three bots. The clean-up
+script read `{"ok": false, ...}` as "no error" and printed *cleared* while not a
+single message was removed.
+
+- **`DshAdapter.rpc()` now raises `DshRpcError`** instead of handing back a
+  reply the caller can misread. A top-level `error`, a `result.ok is False`, or
+  an `error` next to no `value` is an exception carrying the gateway code
+  (`gateway/arguments-invalid`, `http/401`, …). `_result_value()` raises for the
+  same shapes rather than returning `None`. Scripts can no longer mistake a
+  refusal for an empty result. (`adapters/dsh.py`)
+- **Flat arguments are wrapped for you.** `rpc("session/updateQueue", {…})`
+  sends `{"request": {…}}`; `session/list` keeps its `{"_request": {}}` shape.
+  This was the reported failure: `session/updateQueue` with a flat payload
+  answers `missing "request"; unexpected "sessionId", "itemId", "action"`.
+- **`tower queue list <role>` / `tower queue purge <role>`** (`--only
+  peer|notice|all`, `--max N`, `--session ID`, `--json`) list and clear a
+  session's queue through `session/observeState` + `session/updateQueue`. Purge
+  re-reads the queue afterwards and prints `queue N → M`, so *"0 removed"* is
+  visible instead of implied success; a refusal exits non-zero with the error.
+  (`cli.cmd_queue`, `queue.py`)
+- **Peer notes are rate-limited and direction-aware.** New `[peer_notes]`
+  config: `mode` = `quota` (default) | `lead-only` | `open`, `lead` = `lead`,
+  `per_hour` = `10`. Bots may always write to the lead; anything over quota is
+  filed with `delivered: false, throttled: true` and answered once per hour with
+  a breaker note telling the sender to fold it into the next report. Work briefs
+  are never throttled. (`peer_policy.py`, `converse.say`)
+
+### Changed — less context burned per dispatch
+
+- **The contract is sent in full once per role.** Later dispatches get a compact
+  header (task, report file, scopes, status vocabulary) unless the contract text
+  or write scopes changed, or `contract.repeat_every` (default 5) full sends have
+  passed. One live session had eaten 19 full copies. (`dispatch.contract_plan`)
+- **Settlement notices coalesce per task.** Repeated `dispatched → rework →
+  settled` states update one unread inbox line (`count`, `first_ts`) instead of
+  appending a new one. (`board.notify`)
+- **`tower inbox --limit/--offset`** pages the inbox (default 20, `0` = all) and
+  prints `inbox: 1-20 of 74 — more: --offset 20`; `tower_inbox` in the bundle
+  takes the same two parameters. A single `all=true` read used to dump 74KB.
+- Queues above `queue_max` (default 20) auto-prune only the oldest
+  notification items before a delivery, and the delivery result carries
+  `queue: N (auto-pruned M)`.
 
 ### Fixed — the four ways a dispatch used to fail silently (found on a live tower)
 
