@@ -422,7 +422,7 @@ def stage_rework(board: Board, task, reasons: str, staged: list) -> None:
 
 def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .converse import relay_report_messages
-    from .dispatch import dispatch
+    from .dispatch import dispatch, is_progress_report
     from .triage import redispatch_with_reasons, triage_task
 
     task = board.load(job["task"])
@@ -432,6 +432,15 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     # adapter turn runs OUTSIDE the tower lock (a dsh turn can take minutes —
     # holding the lock here starved every other dispatch: Q-00002, 2026-11-09)
     dispatch(cfg, board, task)
+    task = board.load(task.id)
+    if is_progress_report(task.report):
+        # 2026-11-24: a progress report keeps the task where it is. Settling it
+        # (or handing it to triage) would fail and rework a lane that is simply
+        # still working — the very thing this signal exists to prevent.
+        board.log("async_progress", task=task.id, seen=(task.escalation.get("progress") or {}).get("seen", 0))
+        board.notify({"event": "async_progress", "task": task.id,
+                      "summary": f"[tower] {task.id} still running — progress report filed"})
+        return {"outcome": "progress", "task": task.id}
     relay_report_messages(cfg, board, task)
     staged = []
     with tower_lock(cfg):
@@ -898,6 +907,22 @@ def _adopt_orphans(cfg: TowerConfig) -> int:
     return adopted
 
 
+_PROGRESS_TICK_S = 60.0
+_last_progress_tick = 0.0
+
+
+def _tick_progress(cfg: TowerConfig) -> None:
+    """Ask long-running tasks for a heartbeat line, at most once a minute."""
+    global _last_progress_tick
+    now = time.time()
+    if now - _last_progress_tick < _PROGRESS_TICK_S:
+        return
+    _last_progress_tick = now
+    from .dispatch import progress_window_notice
+
+    progress_window_notice(cfg, Board(cfg))
+
+
 def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int:
     """The worker loop with a thread pool (`workers: N`, design doc §1).
 
@@ -911,10 +936,15 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
     claimed jobs half-dead. It prints the in-flight task ids and waits for them
     to finish; a second Ctrl-C (or `--force`) exits immediately with a warning.
     """
+    global _last_progress_tick
+
     root_existed = cfg.workspace.exists()
     _dirs(cfg)
     _requeue_stale(cfg)
     _adopt_orphans(cfg)
+    # A fresh loop asks for heartbeats on its first idle poll — a global left
+    # over from an earlier run in the same process would silently skip it.
+    _last_progress_tick = 0.0
     pool = max(1, int(getattr(cfg, "workers", 4) or 1))
     role_locks: dict[str, threading.Semaphore] = {}
     locks_guard = threading.Lock()
@@ -961,6 +991,7 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
             if pair is None:
                 if once:
                     return
+                _tick_progress(cfg)
                 time.sleep(POLL_S)
                 continue
             claimed_path, job = pair
@@ -1035,6 +1066,26 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
     return 0
 
 
+def _settle_failure(board: Board, job: dict, outcome: str, error: str) -> dict[str, Any]:
+    """A job that never ran: fail its task so the board says what the ledger said.
+
+    The task file can be gone, or it can still be sitting there `pending` while
+    the worker only wrote a `missing-task` line — aimigao-zh saw the latter for
+    a `--group` that did not exist, and read it as silence.
+    """
+    result: dict[str, Any] = {"outcome": outcome, "error": error[:300]}
+    try:
+        task = board.load(job.get("task", ""))
+    except (FileNotFoundError, OSError):
+        return result
+    board.transition(task, STATUS_FAILED, note=f"settlement failed: {error}"[:500])
+    result["failed_task"] = task.id
+    board.notify({"event": "async_failed", "task": task.id,
+                  "summary": f"job {job.get('id')} failed: {error}"[:300]})
+    board.log("async_failed", job=job.get("id"), error=error[:300], failed_task=task.id)
+    return result
+
+
 def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
     # a detached worker can outlive a tower.toml edit: re-read the roles/config
     # for every job, so "unknown role 'auditor'" never happens again
@@ -1052,10 +1103,9 @@ def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
         else:
             result = {"outcome": "unknown-kind"}
     except FileNotFoundError as exc:
-        result = {"outcome": "missing-task", "error": str(exc)}
-        board.notify({"event": "async_failed", "task": job.get("task", ""),
-                      "summary": f"job {job.get('id')} failed: {exc}"[:300]})
-        board.log("async_failed", job=job.get("id"), error=str(exc)[:300])
+        result = _settle_failure(board, job, "missing-task", str(exc))
+    except ValueError as exc:
+        result = _settle_failure(board, job, "refused", str(exc))
     except Exception as exc:  # a worker must never die on one bad job
         result = {"outcome": "error", "error": str(exc)[:300]}
         board.notify({"event": "async_failed", "task": job.get("task", ""),

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,10 @@ You are the **{role}** role inside a control-tower workflow.
    `progress` (still working) · `waiting` (turn finished, waiting for a trigger)
    · `ready` (deliverable ready for review) · `blocked` (need a human decision)
    · `failed` (gave up) · `dropped` (nothing to do).
-   A prose status is rejected by the verifier.
+   A prose status is rejected by the verifier. If the work is still running when
+   the deadline gets close, file `Status: progress` with what you have — the
+   tower keeps waiting and extends the window; a progress report is never read
+   as a failure or as a rework trigger.
 
 {confirmed}## Task {task_id} ({batch})
 
@@ -96,6 +100,8 @@ Role `{role}` · task `{task_id}` · batch `{batch}`. Your folder: `{role_dir}`.
 Report file: `{report_file}` — same sections as before (## Status / ## Summary /
 ## Files / ## Checks / ## Open issues / ## Self-review / ## Attention), and the
 same closed status vocabulary: progress, waiting, ready, blocked, failed, dropped.
+Still running when the deadline gets close? File `Status: progress` with what you
+have — the tower keeps waiting and extends the window.
 Write scope: {scopes}
 Never claim a check you did not run. Blocked means exactly one concrete question
 under "## Attention".
@@ -190,6 +196,145 @@ def preview_group(cfg: TowerConfig, task: Task, group: str = "") -> str:
     if task.group:
         return task.group
     return groups.next_id(cfg) if getattr(cfg, "group_auto", True) else ""
+
+
+GROUP_REFUSAL = "no such group {group} in {workspace} — run `tower group list`"
+
+
+def require_group(cfg: TowerConfig, group_id: str):
+    """The room a dispatch names has to exist in this workspace.
+
+    `groups.attach()` used to swallow the miss (the CLI's `_group_for` catches
+    and returns ""), so the task kept a phantom group id, the job was enqueued,
+    and the worker only logged `missing-task` while the board still showed a
+    task that never moved. Returns the group, or raises the refusal.
+    """
+    try:
+        return groups.load(cfg, group_id)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError(GROUP_REFUSAL.format(
+            group=group_id, workspace=cfg.workspace)) from exc
+
+
+def group_refusal(cfg: TowerConfig, group_id: str) -> str:
+    """`""` when the room exists, else the line the dispatch refuses with."""
+    if not group_id:
+        return ""
+    try:
+        require_group(cfg, group_id)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+PROGRESS_STATUS = "progress"
+PROGRESS_HINT = (
+    "if the work is still running, file `Status: progress` in {task}-REPORT.md "
+    "with what you have; the tower will keep waiting."
+)
+_TS_FMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def _ts(text: str) -> datetime | None:
+    """A tower timestamp as local wall-clock: `created_at` carries an offset,
+    `due_at` (from parse_due) does not, and the two are compared to each other."""
+    for fmt in (_TS_FMT + "%z", _TS_FMT):
+        try:
+            return datetime.strptime((text or "").strip(), fmt).replace(tzinfo=None)
+        except ValueError:
+            continue
+    return None
+
+
+def is_progress_report(report: dict[str, Any] | None) -> bool:
+    """A heartbeat, not a result: `Status: progress`, or nothing filed yet.
+
+    2026-11-24 (aimigao-zh): a 38-minute verification was judged "no report"
+    while it was still running. Neither shape proves work is done, so neither
+    may settle a task, fail it, or trigger a rework.
+    """
+    if not report:
+        return False
+    if str(report.get("state") or "").strip().lower() == PROGRESS_STATUS:
+        return True
+    return not (report.get("summary") or report.get("files") or report.get("checks"))
+
+
+def progress_window(task: Task) -> timedelta:
+    """The slice a progress report buys: the window the task was given."""
+    start, due = _ts(task.created_at), _ts(task.due_at)
+    if start is None or due is None:
+        return timedelta(0)
+    return max(timedelta(0), due - start)
+
+
+def record_progress(board: Board, task: Task, report: dict[str, Any]) -> dict[str, Any]:
+    """File a progress report: keep waiting, extend one slice, settle nothing.
+
+    The slice is fixed at the first heartbeat — recomputing it from an already
+    extended deadline would double the wait on every report.
+    """
+    before = task.due_at
+    due = _ts(before)
+    escal = dict(task.escalation or {})
+    progress = dict(escal.get("progress") or {})
+    slice_s = int(progress.get("slice_s") or progress_window(task).total_seconds())
+    if due is not None:
+        task.due_at = (due + timedelta(seconds=slice_s)).strftime(_TS_FMT)
+    progress["seen"] = int(progress.get("seen", 0)) + 1
+    progress["slice_s"] = slice_s
+    progress["at"] = now_ts()
+    progress["summary"] = str(report.get("summary") or "")[:300]
+    progress["due_before"] = before
+    progress["due_after"] = task.due_at
+    escal["progress"] = progress
+    task.escalation = escal
+    task.report = report
+    task.state = PROGRESS_STATUS
+    task.overdue = False
+    board.save(task)
+    board.log("progress_report", task=task.id, role=task.role, seen=progress["seen"],
+              due_before=before, due_after=task.due_at)
+    return progress
+
+
+def progress_window_notice(cfg: TowerConfig, board: Board,
+                           now: datetime | None = None) -> list[dict[str, Any]]:
+    """One nudge per task at the halfway point of its deadline.
+
+    Half a deadline with nothing filed is the moment to ask for a
+    `Status: progress` line — not the moment to declare a stall. One-shot per
+    task: `escalation.half_note_at` records that the ask went out.
+    """
+    stamp = (now or datetime.now()).replace(tzinfo=None)
+    out: list[dict[str, Any]] = []
+    for task in board.all():
+        if task.status not in (STATUS_CLAIMED, STATUS_IN_PROGRESS):
+            continue
+        if (task.escalation or {}).get("half_note_at"):
+            continue
+        if is_progress_report(task.report):
+            continue
+        start, due = _ts(task.created_at), _ts(task.due_at)
+        if start is None or due is None:
+            continue
+        half = start + (due - start) / 2
+        if stamp < half:
+            continue
+        text = PROGRESS_HINT.format(task=task.id)
+        task_dir = cfg.task_dir(task.id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "progress-hint.md").write_text(text + "\n", encoding="utf-8")
+        escal = dict(task.escalation or {})
+        escal["half_note_at"] = now_ts()
+        task.escalation = escal
+        board.save(task)
+        board.notify({"event": "progress_hint", "task": task.id,
+                      "summary": f"[tower] {task.id}: {text}"})
+        board.log("progress_window_notice", task=task.id, role=task.role,
+                  due_at=task.due_at, half_at=half.strftime(_TS_FMT))
+        out.append({"task": task.id, "due_at": task.due_at})
+    return out
 
 
 def _confirmed_block(task: Task) -> str:
@@ -448,6 +593,8 @@ def dispatch(
         # T-id (the id is the highest file on disk) and no G-id consumed. The
         # task comes from build_task(), which never saves; the status carries
         # the marker the CLI prints.
+        if group or task.group:
+            require_group(cfg, group or task.group)
         task.group = preview_group(cfg, task, group)
         task.status = DRY_RUN_STATUS
         if not task.due_at:
@@ -465,6 +612,7 @@ def dispatch(
     elif group and group != task.group:
         task.group = group
     if task.group:
+        require_group(cfg, task.group)
         kickoff.attach_task(cfg, task.group, task.id)
     if not task.due_at:
         from .supervise import parse_due
@@ -547,10 +695,17 @@ def dispatch(
         return task
 
     report = parse_report(result.text)
+    board.add_assignment(task, adapter.name, result.exit_code)
+    if is_progress_report(report):
+        # 2026-11-24 (aimigao-zh): `Status: progress` is the lane saying "still
+        # working". Filing it as a report settled the task and then failed its
+        # verification — the tower punished a lane for answering honestly.
+        board.transition(task, STATUS_IN_PROGRESS, note="progress report — still running")
+        record_progress(board, task, report)
+        return task
     task.report = report
     task.state = report.get("state", "")
     task.attention = report.get("attention")
-    board.add_assignment(task, adapter.name, result.exit_code)
     board.transition(task, STATUS_REPORTED, note="report filed", report=report)
     board.push_report(task, report)
     return task
@@ -571,6 +726,8 @@ def dispatch_restate(
     `tower restate ok <task>` unlocks the actual dispatch.
     """
     role = cfg.roles[task.role]
+    if task.group:
+        require_group(cfg, task.group)
     prompt = render_restate_prompt(cfg, task)
 
     if dry_run:

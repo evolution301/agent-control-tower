@@ -292,3 +292,75 @@ test('tower_compact names the command that enables compaction', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+function writeFakeTower(root, body) {
+  const pkg = join(root, 'control_tower')
+  mkdirSync(pkg, { recursive: true })
+  // A bare __main__.py would be a namespace package, and the real installed
+  // package wins over it; the __init__.py makes this fake the one imported.
+  writeFileSync(join(pkg, '__init__.py'), '')
+  writeFileSync(join(pkg, '__main__.py'), body.join('\n'))
+  return root
+}
+
+test('tower_accept resolves a zero exit even when stderr carries the workspace banner', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-accept-'))
+  const previousPath = process.env.PYTHONPATH
+  const previousHome = process.env.TOWER_HOME
+  try {
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: mock\n')
+    process.env.TOWER_HOME = dir
+    process.env.PYTHONPATH = writeFakeTower(join(dir, 'fake'), [
+      'import sys',
+      'print("resolved workspace = C:\\\\\\\\tower", file=sys.stderr)',
+      'print("T-0019 ACCEPTED")',
+    ])
+    const def = acceptTool({ workspace: dir, towerBin: '__python__', python: 'python3' })
+    const value = await def.execute({ task: 'T-0019' })
+    assert.equal(value.ok, true)
+    assert.equal(value.accepted, true)
+    assert.match(value.text, /T-0019 ACCEPTED/)
+    assert.match(value.text, /resolved workspace = C:/)
+  } finally {
+    if (previousPath === undefined) delete process.env.PYTHONPATH
+    else process.env.PYTHONPATH = previousPath
+    if (previousHome === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previousHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('tower_accept reports the exit code and the last lines of a real failure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-accept-'))
+  const previousPath = process.env.PYTHONPATH
+  const previousHome = process.env.TOWER_HOME
+  try {
+    writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: mock\n')
+    process.env.TOWER_HOME = dir
+    process.env.PYTHONPATH = writeFakeTower(join(dir, 'fake'), [
+      'import sys',
+      'print("resolved workspace = C:\\\\\\\\tower", file=sys.stderr)',
+      'print("T-0019 REJECTED")',
+      'print("checks: 2 failed", file=sys.stderr)',
+      'sys.exit(3)',
+    ])
+    const def = acceptTool({ workspace: dir, towerBin: '__python__', python: 'python3' })
+    await assert.rejects(
+      () => def.execute({ task: 'T-0019' }),
+      (error) => {
+        assert.match(error.message, /tower accept T-0019 exited 3/)
+        assert.match(error.message, /T-0019 REJECTED/)
+        assert.match(error.message, /checks: 2 failed/)
+        assert.ok(!/resolved workspace =/.test(error.message), 'the banner is not the error')
+        assert.equal(error.code, 3)
+        return true
+      },
+    )
+  } finally {
+    if (previousPath === undefined) delete process.env.PYTHONPATH
+    else process.env.PYTHONPATH = previousPath
+    if (previousHome === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previousHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

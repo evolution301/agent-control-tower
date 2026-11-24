@@ -59,6 +59,14 @@ def _expand_braces(text: str, limit: int = 64) -> list[str]:
 
 
 _FILE_SPLIT = re.compile(r"[、,;，；|·•\t]+")
+# A candidate must look like a path before it is stat'ed: a separator, or a
+# filename ending in an extension. Prose bullets ("两份交付都在这两个路径",
+# "无新增文件（仅修改）") are notes, not claims about files that should exist.
+_PATH_SHAPE = re.compile(r"[\\/]|\.[A-Za-z][A-Za-z0-9]{0,7}$")
+
+
+def _path_shaped(text: str) -> bool:
+    return bool(_PATH_SHAPE.search(text))
 
 
 def split_file_candidates(line: str) -> list[str]:
@@ -67,13 +75,15 @@ def split_file_candidates(line: str) -> list[str]:
     Each segment is checked on its own; a path with an annotation (` — why`) keeps
     the old behaviour of checking the path part only. A line carrying a brace
     pattern (`shots/{home,faq}.png`) is NOT split: its commas belong to the
-    pattern, which `_expand_braces` handles.
+    pattern, which `_expand_braces` handles. Segments that are prose rather than
+    paths are dropped, so a note like "无新增文件（仅修改）" is not stat'ed and
+    cannot reject an otherwise valid report.
     """
     base = line.split(" — ")[0].split(" - ")[0].strip().strip("`")
     if "{" in base and "}" in base and base.find("{") < base.find("}"):
-        return [base]
+        return [base] if _path_shaped(base) else []
     parts = [seg.strip().strip("`") for seg in _FILE_SPLIT.split(base)]
-    return [part for part in parts if part]
+    return [part for part in parts if part and _path_shaped(part)]
 
 
 def _fresh_report(cfg: TowerConfig, task: Task) -> dict[str, Any] | None:

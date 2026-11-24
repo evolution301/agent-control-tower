@@ -5,6 +5,46 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.2] - 2026-11-24
+
+Two acceptance bugs reported by a customer tower (aimigao-zh) after their
+T-0019, plus one defect found while reproducing them.
+
+### Fixed — the MCP accept wrapper called a success a failure
+
+`tower_accept` decided the outcome from the output text: `runTower` rejected
+whenever `execFile` reported an error and `acceptTool` looked for the literal
+`ACCEPTED`, so the informational `resolved workspace = …` line produced
+`Error: … failed: resolved workspace = …` for a task the CLI had accepted. Both
+now judge by exit code; informational lines travel in the success payload and a
+real failure carries the exit code plus the last meaningful lines.
+(`packages/dsh-tower/index.js`, `test/tools.test.js`)
+
+### Fixed — accept and verify_gate disagreed about `## Files`
+
+Every line of the report's Files section was stat'ed, so a prose line
+(`无新增文件（仅修改）`) failed the whole report with `reported files do not exist`
+while `tools/verify_gate.py` — run against the same report — passed. One shared
+rule now decides what is a path: a candidate needs a path separator or a filename
+extension, the same rule guards brace patterns, and a Files section with no paths
+at all means "no files claimed", not "files missing". (`verify.py`)
+
+### Fixed — a dispatch to a group that does not exist died silently
+
+`tower dispatch --group G-0002` with no such group saved the task, queued the
+job, and the worker settled it in under a second with `no such group` while the
+board kept showing `pending`. The group is now validated before anything is
+written, an async dispatch never enqueues a job its own gate would refuse, and a
+task that reaches the worker with a missing group is marked `failed` with the
+reason. (`dispatch.py`, `cli.py`, `worker.py`)
+
+### Added — a progress report keeps a long turn alive
+
+When half the deadline is gone and no report exists, the lane is asked to file
+`Status: progress`. A progress report neither settles nor fails the task: it
+refreshes the wait window, is logged as `progress_report`, and is visible in
+`tower show`. A real report still settles normally. (`worker.py`, `supervise.py`)
+
 ## [0.18.1] - 2026-11-23
 
 Everything in this release came out of using the tower to build the tower: five

@@ -33,7 +33,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.18.1'
+export const VERSION = '0.18.2'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -166,6 +166,22 @@ function settings(config = {}) {
   }
 }
 
+/** A failed run: the exit code and the last lines that say what happened. */
+function towerFailure(args, error, stdout, stderr) {
+  const lines = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('resolved workspace ='))
+  const tail = lines.slice(-8).join('\n') || (error?.message ?? 'no output')
+  const code = typeof error?.code === 'number' ? error.code : null
+  const reason = code !== null ? `exited ${code}` : error?.killed ? 'was stopped' : 'could not run'
+  const failure = new Error(`tower ${args.join(' ')} ${reason}: ${tail}`)
+  failure.code = code ?? undefined
+  failure.stdout = stdout
+  failure.stderr = stderr
+  return failure
+}
+
 /** Run the tower CLI and parse its JSON output. */
 function runTower(settings, args) {
   const usePython = !settings.towerBin || settings.towerBin === '__python__'
@@ -180,16 +196,18 @@ function runTower(settings, args) {
       (error, stdout, stderr) => {
         const text = (stdout ?? '').trim()
         const errText = (stderr ?? '').trim()
+        // Only a non-zero exit is a failure: the CLI writes its workspace
+        // banner to stderr on success, and output text is not a verdict.
+        if (error && error.code !== 0) {
+          reject(towerFailure(args, error, text, errText))
+          return
+        }
         if (text) {
           const parsed = parseJsonOutput(text)
           if (parsed !== undefined) {
-            resolvePromise({ ok: !error, code: error?.code ?? 0, data: parsed, stderr: errText })
+            resolvePromise({ ok: true, code: 0, data: parsed, stderr: errText })
             return
           }
-        }
-        if (error) {
-          reject(new Error(`tower ${args.join(' ')} failed: ${errText || error.message}`))
-          return
         }
         resolvePromise({ ok: true, code: 0, data: text, stderr: errText })
       },
@@ -534,7 +552,8 @@ function runTowerText(settings, args, timeoutMs) {
       { cwd: settings.workspace, timeout: timeoutMs ?? 60_000, maxBuffer: 20 * 1024 * 1024,
         env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
       (error, stdout, stderr) => {
-        resolve({ code: error?.code ?? 0, stdout: (stdout ?? '').trim(), stderr: (stderr ?? '').trim() })
+        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0
+        resolve({ code, stdout: (stdout ?? '').trim(), stderr: (stderr ?? '').trim() })
       },
     )
   })
@@ -1051,16 +1070,12 @@ export function acceptTool(cfg) {
       const aim = workspaceLine(cfg)
       const argv = ['accept', String(args.task ?? '')]
       if (args.note) argv.push('--note', String(args.note))
-      let data, code
-      try {
-        ({ data, code } = await runTower(cfg, argv))
-      } catch (error) {
-        throw new Error(`${aim}\n${error?.message ?? error}`)
-      }
+      const { data, code, stderr } = await runTower(cfg, argv)
       const body = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
-      const text = `${aim}\n${body}`
-      const accepted = /ACCEPTED/.test(body) && code === 0
-      return { ok: code === 0, accepted, text }
+      // The CLI exits 0 only after the task moved to accepted; stdout may also
+      // carry informational lines, so the exit code is the verdict.
+      const text = [aim, body, stderr].filter(Boolean).join('\n')
+      return { ok: code === 0, accepted: code === 0, text }
     },
     presentCall() {
       return { card: 'generic', title: 'Verify and accept report', kind: 'other' }
