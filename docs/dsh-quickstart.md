@@ -117,7 +117,7 @@ What happens:
    unverified check"), writes it to `.tower/tasks/T-0001/prompt.md`;
 2. the DSH adapter queues it into the session (`session/prompt`, `mode: queue`) so the session picks
    it up at its next step boundary instead of mid-turn;
-3. the adapter polls `session/list` until the session is idle again;
+3. the adapter polls the report file (`roles/frontend/T-0001-REPORT.md`) until the session writes it;
 4. the tower reads `roles/frontend/T-0001-REPORT.md`, parses the four sections, files it in the inbox
    and flips the task to `reported`.
 

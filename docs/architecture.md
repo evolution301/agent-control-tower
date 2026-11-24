@@ -66,8 +66,11 @@ reports the same verifier can read.
 
 ## Concurrency
 
-Default is sequential: one dispatch at a time, which is what you want for file-based workspaces.
-`tower batch` loops over roles with `serial_requests` / `request_gap_s` protecting fragile targets.
+Dispatches run on a thread pool (`workers`, default 4). Tasks for the same role serialize on a
+per-role semaphore, so one role never runs two adapter turns at once; different roles run in
+parallel. Board writes take the workspace lock (`tower_lock`), and the adapter turn happens outside
+that lock so a slow model call cannot starve the rest of the tower. `tower batch` still loops over
+targets with `serial_requests` / `request_gap_s` for fragile remote systems.
 
-If you need true parallelism, run one tower workspace per role (separate working directories) and
-have a thin supervisor merge the inboxes. Keeping that outside the core avoids a lock manager here.
+For separate repos, one tower workspace per repo is still the simpler boundary: merge the inboxes
+with a thin supervisor instead of sharing one board across unrelated codebases.

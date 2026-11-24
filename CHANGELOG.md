@@ -5,6 +5,78 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.4] - 2026-11-24
+
+An outside auditor read the 0.18.3 tree, found six defects and four stale
+documents, and was right about every one of them. This release is those fixes.
+The interesting part is not the list; it is that all six were invisible to a
+green test suite, because the tests were written from the same assumptions as
+the code.
+
+### Fixed — the lock manager only worked on Windows
+
+`locks.py` imported `msvcrt` unconditionally while its docstring promised a
+POSIX branch, so `fcntl` was never used and 18 async tests could only ever pass
+on this machine. The backend is now chosen at import (`os.name == "nt"` →
+`msvcrt`, otherwise `fcntl.flock(LOCK_EX | LOCK_NB)` with the same
+busy-wait-until-timeout), and a host with neither raises
+`no file-locking backend: need msvcrt (Windows) or fcntl (POSIX)`.
+(`locks.py`)
+
+### Fixed — `worker --status` forgot every job once the pool grew
+
+With the default `workers: 4` the main loop rewrote the heartbeat file between
+jobs, so a running job's entry was overwritten about 0.2 s after it started and
+`tower worker --status` could only ever show the process, never the work. The
+heartbeat now keeps `jobs: {<job id>: …}` and clears one key at a time, so the
+same command lists every in-flight job with its task and elapsed time.
+(`worker.py`)
+
+### Fixed — `serial_requests` never applied to async work
+
+The worker read `payload["role"]` to decide whether two jobs for one role may
+run at once, but no `enqueue()` caller ever set that key, so the setting was
+dead for the only path that needs it. The worker now resolves the role from the
+task file when the payload lacks it. (`worker.py`)
+
+### Fixed — the panel wrote tasks for anyone who asked
+
+`POST /api/actions` and `POST /api/ask` accepted any request the panel received:
+no `Origin` or `Host` check, and `?project=` could address any registered tower.
+A page open in the same browser could therefore dispatch text into another
+project. Writes now require a loopback `Host` on the panel's own port, an
+absent or same-origin `Origin`, and `Sec-Fetch-Site` absent or same-origin,
+else `403`; `?project=` stays inside a registered project the panel was started
+for. (`panel.py`, `scene_actions.py`)
+
+### Fixed — the acceptance rate could not go down
+
+`analytics.py` divided accepted tasks by the tasks currently in rework, so a
+reworked-then-accepted task vanished from the denominator and the tower printed
+`verified rate: 100%` no matter what. The denominator is now every task that
+reached a settlement, the report prints `accepted / settled`, and
+`rework_rate` is reported separately. On this repository it reads
+`70% (19 accepted / 27 settled), rework rate 11%`. (`analytics.py`)
+
+### Fixed — adversarial review silently never ran
+
+`review_roles` defaults to `["auditor"]`, a role this tower does not have, so
+every verdict was empty and nobody noticed. `effective_review_roles()` now
+returns only roles that exist, records the missing ones as
+`review_roles_missing`, and `doctor` warns
+`adversarial review never runs: review role 'auditor' is not a role here`.
+(`config.py`, `cli.py`)
+
+### Docs — four documents described an older tower
+
+The READMEs and `cordis.patch.yml` said the bundle registers `five tools`
+(it registers 19); `docs/architecture.md` still described a sequential loop
+with no lock manager; `docs/dsh-quickstart.md` said the adapter polls
+`session/list` when it polls the report file; `docs/superagent-ideas.md` said
+`ready` needs a human when only `blocked` and `failed` do. All five are
+corrected and `tests/test_docs_drift_2026_11_24.py` fails if the stale phrasing
+returns.
+
 ## [0.18.3] - 2026-11-24
 
 Both defects came out of the 0.18.2 run itself: a human acceptance that a late

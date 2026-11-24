@@ -12,6 +12,38 @@ import os
 import time
 from typing import Iterator
 
+if os.name == "nt":
+    try:
+        import msvcrt as _msvcrt
+    except ImportError:                 # a POSIX-shaped test host hides it
+        _msvcrt = None
+else:
+    _msvcrt = None
+
+if _msvcrt is None:
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        raise RuntimeError(
+            "no file-locking backend: need msvcrt (Windows) or fcntl (POSIX)"
+        ) from None
+else:
+    _fcntl = None
+
+
+def _acquire(fd: int) -> None:
+    if _msvcrt is not None:
+        _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+    else:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+
+
+def _release(fd: int) -> None:
+    if _msvcrt is not None:
+        _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+    else:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+
 
 def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
     """Exclusive `.tower/.lock` for board-mutating sections.
@@ -19,7 +51,6 @@ def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
     msvcrt on Windows, fcntl elsewhere; busy-waits up to `timeout_s` so a long
     adapter settle does not fail the next triage — it just waits its turn.
     """
-    import msvcrt
 
     @contextlib.contextmanager
     def _locked() -> Iterator[None]:
@@ -30,7 +61,7 @@ def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
         try:
             while True:
                 try:
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    _acquire(fh.fileno())
                     break
                 except OSError:
                     if time.time() >= deadline:
@@ -41,7 +72,7 @@ def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
                 yield
             finally:
                 fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                _release(fh.fileno())
         finally:
             fh.close()
 

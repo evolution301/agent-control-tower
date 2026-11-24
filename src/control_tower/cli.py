@@ -545,7 +545,7 @@ def cmd_board(args) -> int:
 
 
 def cmd_panel(args) -> int:
-    """Local web panel (read-only), bound to 127.0.0.1 by default.
+    """Local web panel, bound to 127.0.0.1 by default.
 
     No `--port`: the panel keeps a stable URL — it reuses the port this workspace
     used last time, else 8787, else the next free one, and remembers the result.
@@ -553,7 +553,8 @@ def cmd_panel(args) -> int:
     from .panel import serve
 
     cfg = _cfg(args)
-    serve(cfg, host=args.host, port=args.port, open_browser=args.open_browser)
+    serve(cfg, host=args.host, port=args.port, open_browser=args.open_browser,
+          allow_projects=args.allow_projects)
     return 0
 
 
@@ -1918,6 +1919,12 @@ def cmd_doctor(args) -> int:
             "set [notify] kind = lead_session and session = <your session id> "
             "(tower inbox is pull-only)"
         )
+    for reviewer in cfg.review_roles:
+        if reviewer not in cfg.roles:
+            warnings.append(
+                "adversarial review never runs: review role %r is not a role here — "
+                "add it or set review_roles" % reviewer
+            )
     print("workspace:", cfg.workspace)
     print("roles:", ", ".join(sorted(cfg.roles)))
     for warning in warnings:
@@ -2444,6 +2451,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--workspace", default=None, help="tower workspace (same as the global flag)")
     s.add_argument("--open-browser", action="store_true")
+    s.add_argument("--allow-projects", action="store_true",
+                   help="let writes target any registered project, not just the workspace the panel started in")
     s.set_defaults(func=cmd_panel)
 
     s = sub.add_parser("attention", help="list / claim / resolve what needs a person")

@@ -43,7 +43,8 @@ REJECTED -> rework
 **Their model:** "A panel that shows only what needs a person. It lists first what waits for a
 person. A healthy state takes no space."
 
-**Ours:** `tower attention` lists only tasks in person-states (`ready` / `blocked` / `failed`).
+**Ours:** `tower attention` lists only tasks in person-states (`blocked` / `failed`); `ready` is the
+normal flow and does not need you.
 `tower inbox` stays as the full log — it is the audit trail, not the queue.
 
 ```text

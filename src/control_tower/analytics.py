@@ -10,11 +10,14 @@ Definitions are deliberately stated, because a rate without a denominator is a
 story, not a measurement:
 
 * **lead time** — created → the first `accepted` transition, in seconds.
-* **verified rate** — accepted / (accepted + reworked), i.e. how often delivered
-  work survives `tower accept` on the first try. A tower with no verdicts reports
-  no rate (`None`), never 0 %.
+* **acceptance rate** — accepted / settled, where a settled task reached a
+  verdict at least once (reported, accepted, failed or rework). Counting only
+  the tasks currently in rework let reworked-then-accepted and failed work fall
+  out of the denominator, so the tower could report 100 %. A tower with no
+  verdicts reports no rate (`None`), never 0 %.
 * **throughput** — accepted tasks per calendar day, oldest first.
-* **rework** — tasks that came back at least once (round > 0).
+* **rework** — settled tasks that came back at least once (round > 0 or a
+  rework transition).
 """
 
 from __future__ import annotations
@@ -36,6 +39,21 @@ from .board import (
 from .config import TowerConfig
 
 TS_FMT = "%Y-%m-%dT%H:%M:%S%z"
+SETTLED_STATUSES = (STATUS_ACCEPTED, STATUS_FAILED, STATUS_REPORTED, STATUS_REWORK)
+
+
+def _settled(task: Task) -> bool:
+    """True once the task reached a verdict; rework is still a verdict."""
+    if task.status in SETTLED_STATUSES:
+        return True
+    return any(entry.get("status") in SETTLED_STATUSES for entry in (task.history or []))
+
+
+def _reworked(task: Task) -> bool:
+    """True when the task came back at least once, even if later accepted."""
+    if (task.round or 0) > 0 or task.status == STATUS_REWORK:
+        return True
+    return any(entry.get("status") == STATUS_REWORK for entry in (task.history or []))
 
 
 def _ts(text: str) -> datetime | None:
@@ -142,8 +160,12 @@ def build_report(cfg: TowerConfig, board: Board | None = None, days: int = 14,
         "restating": sum(1 for t in tasks if t.status == STATUS_RESTATING),
         "overdue": sum(1 for t in tasks if t.overdue),
     }
-    decided = verdicts["accepted"] + verdicts["rework"]
-    verified_rate = (verdicts["accepted"] / decided) if decided else None
+    settled_tasks = [task for task in tasks if _settled(task)]
+    settled = len(settled_tasks)
+    accepted = sum(1 for task in settled_tasks if task.status == STATUS_ACCEPTED)
+    acceptance_rate = (accepted / settled) if settled else None
+    reworked = sum(1 for task in settled_tasks if _reworked(task))
+    rework_rate = (reworked / settled) if settled else None
 
     leads = [value for value in (lead_time_s(t) for t in tasks) if value is not None]
     lead = {
@@ -197,11 +219,13 @@ def build_report(cfg: TowerConfig, board: Board | None = None, days: int = 14,
         "totals": {
             "tasks": len(tasks),
             "open": sum(1 for t in tasks if t.status not in (STATUS_ACCEPTED, STATUS_FAILED)),
+            "settled": settled,
             **verdicts,
         },
         "rates": {
-            "verified": verified_rate,
-            "rework": (sum(1 for t in tasks if (t.round or 0) > 0) / len(tasks)) if tasks else None,
+            "acceptance": acceptance_rate,
+            "verified": acceptance_rate,  # one release: the pre-0.18.4 key
+            "rework": rework_rate,
             "restated": (sum(1 for t in tasks if t.restatement) / len(tasks)) if tasks else None,
         },
         "lead_time": lead,
@@ -247,7 +271,8 @@ def render_text(report: dict[str, Any]) -> str:
         f"window: last {report['window_days']} days · generated {report['generated_at']}",
         f"tasks: {totals['tasks']}  open {totals['open']}  accepted {totals['accepted']}  "
         f"rework {totals['rework']}  failed {totals['failed']}  restating {totals['restating']}",
-        f"verified rate: {_pct(rates['verified'])}   rework rate: {_pct(rates['rework'])}   "
+        f"verified rate: {_pct(rates['verified'])} ({totals['accepted']} accepted / "
+        f"{totals['settled']} settled)   rework rate: {_pct(rates['rework'])}   "
         f"restated: {_pct(rates['restated'])}",
         f"lead time: p50 {_dur(lead['p50_s'])}  p90 {_dur(lead['p90_s'])}  "
         f"avg {_dur(lead['avg_s'])}  (n={lead['count']})",

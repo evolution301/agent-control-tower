@@ -19,7 +19,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from .board import Board
 from .config import TowerConfig
@@ -335,7 +335,22 @@ def _project_configs(cfg: TowerConfig):
     return entries, configs, active_name
 
 
-def make_handler(cfg: TowerConfig):
+def _loopback(host: str | None) -> bool:
+    """Does this hostname mean "this machine, over loopback"?"""
+    name = (host or "").strip().lower()
+    return name in ("localhost", "::1") or name.startswith("127.")
+
+
+def _split_host(value: str) -> tuple[str | None, int | None]:
+    """(hostname, port) from a Host header or an http(s) Origin; malformed → (None, None)."""
+    try:
+        parsed = urlsplit(value if "//" in value else "//" + value)
+        return parsed.hostname, parsed.port
+    except ValueError:
+        return None, None
+
+
+def make_handler(cfg: TowerConfig, allow_projects: bool = False):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -450,6 +465,12 @@ def make_handler(cfg: TowerConfig):
             if path not in ("/api/actions", "/api/ask"):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
+            refusal = self._post_refusal()
+            if refusal:
+                self.close_connection = True
+                self._send(403, json.dumps({"ok": False, "error": refusal}).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             try:
                 length = min(int(self.headers.get("Content-Length", "0")), 64 * 1024)
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -457,7 +478,12 @@ def make_handler(cfg: TowerConfig):
                 self._send(400, b'{"ok":false,"error":"bad json"}', "application/json")
                 return
             query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
-            target = self._cfg_for(query, cfg)
+            target, refusal = self._post_target(query)
+            if target is None:
+                self.close_connection = True
+                self._send(403, json.dumps({"ok": False, "error": refusal}).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             board = Board(target)
             try:
                 if path == "/api/ask":
@@ -480,6 +506,56 @@ def make_handler(cfg: TowerConfig):
                 return
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
+
+        def _post_refusal(self) -> str:
+            """Why this POST is not from the panel's own page, or "".
+
+            The panel binds loopback, so the threat is a browser tab on another
+            origin posting here. A browser always sends Origin; a non-browser
+            client (a test, curl) may not, and cannot be tricked into it by a
+            web page, so a missing Origin is allowed.
+            """
+            port = self.server.server_address[1]
+            raw_host = self.headers.get("Host", "")
+            host_name, host_port = _split_host(raw_host)
+            if not _loopback(host_name) or host_port != port:
+                shown = raw_host or "(missing)"
+                return f"write refused: Host {shown} is not this panel's loopback address"
+            origin = self.headers.get("Origin", "")
+            if origin:
+                origin_name, origin_port = _split_host(origin)
+                scheme = origin.split(":", 1)[0].lower()
+                if (scheme not in ("http", "https") or not _loopback(origin_name)
+                        or origin_port != port):
+                    return f"write refused: Origin {origin} is not this panel"
+            site = self.headers.get("Sec-Fetch-Site", "")
+            if site and site != "same-origin":
+                return f"write refused: Sec-Fetch-Site {site} is not same-origin"
+            return ""
+
+        def _post_target(self, query: dict):
+            """(config, "") for this write, or (None, reason) when it is not allowed.
+
+            Reads may fan out to every registered project; writes stay in the
+            workspace the panel was started in unless --allow-projects says
+            otherwise.
+            """
+            name = (query.get("project") or [""])[0]
+            if not name or name == "__all__":
+                return cfg, ""
+            _entries, configs, _active = _project_configs(cfg)
+            chosen = configs.get(name)
+            if chosen is None or chosen[1] is None:
+                return None, f"write refused: project {name!r} is not registered here"
+            started = str(Path(cfg.workspace).resolve())
+            if str(Path(chosen[0]["path"]).resolve()) == started:
+                return cfg, ""
+            if allow_projects:
+                return chosen[1], ""
+            return None, (
+                f"write refused: project {name!r} is not enabled for writes — "
+                "start the panel in it or pass --allow-projects"
+            )
 
         def _cfg_for(self, query: dict, fallback: TowerConfig):
             """Project from `?project=`, else the workspace the panel was started in.
@@ -627,11 +703,11 @@ def choose_port(cfg: TowerConfig, requested: int | None = None,
 
 
 def serve(cfg: TowerConfig, host: str = "127.0.0.1", port: int | None = None,
-          open_browser: bool = False) -> None:
+          open_browser: bool = False, allow_projects: bool = False) -> None:
     """Block on the panel server. Ctrl-C stops it."""
     chosen = choose_port(cfg, port, host)
     try:
-        httpd = PanelServer((host, chosen), make_handler(cfg))
+        httpd = PanelServer((host, chosen), make_handler(cfg, allow_projects=allow_projects))
     except OSError as exc:
         raise SystemExit(
             f"port {chosen} is taken on {host} ({exc}). Pass another one: tower panel --port {chosen + 1}"

@@ -76,6 +76,7 @@ class TowerConfig:
     # and accepted-quality reports face an adversarial review pass before accept.
     self_review: bool = True
     review_roles: list[str] = field(default_factory=lambda: ["auditor"])
+    review_roles_missing: list[str] = field(default_factory=list)
     review_budget: int = 1
     # B3: a claimed/in_progress task older than this (minutes) is marked
     # ⧗stale on `tower status` — free it with `tower unstick <id>`.
@@ -187,6 +188,19 @@ class TowerConfig:
     def skills_dir(self) -> Path:
         """v3 §5: the company-wide skill library, shared by every role."""
         return self.state_dir / "skills"
+
+
+def effective_review_roles(cfg: TowerConfig) -> list[str]:
+    """Configured reviewers that exist on this tower; records the ones that do not.
+
+    A default ["auditor"] on a tower without an auditor used to disable
+    adversarial review with no signal at all. Unknown names are left in
+    review_roles_missing so `tower doctor` can say so.
+    """
+    configured = [name for name in (cfg.review_roles or []) if name]
+    effective = [name for name in configured if name in cfg.roles]
+    cfg.review_roles_missing = [name for name in configured if name not in cfg.roles]
+    return effective
 
 
 def _load_yaml_or_toml(path: Path) -> dict[str, Any]:

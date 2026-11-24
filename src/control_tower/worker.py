@@ -67,6 +67,31 @@ def wait_for_worker(cfg: TowerConfig, timeout_s: float = 6.0, poll_s: float = 0.
         time.sleep(max(0.05, poll_s))
 
 
+def _inflight_jobs(info: dict) -> list[dict]:
+    """Every job one worker process has claimed and not finished, oldest first."""
+    raw = info.get("jobs")
+    if not isinstance(raw, dict):
+        # a 0.18.3 worker kept one flat job at the top level
+        job_id = str(info.get("current_job") or "")
+        raw = ({job_id: {"kind": info.get("current_kind"), "task": info.get("task"),
+                         "started_at": info.get("started_at")}} if job_id else {})
+    now = time.time()
+    jobs = []
+    for job_id, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        started = float(entry.get("started_at") or 0)
+        jobs.append({
+            "id": str(job_id),
+            "kind": str(entry.get("kind") or ""),
+            "task": str(entry.get("task") or ""),
+            "role": str(entry.get("role") or ""),
+            "age_minutes": round((now - started) / 60, 1) if started else None,
+        })
+    jobs.sort(key=lambda item: item["age_minutes"] or 0.0, reverse=True)
+    return jobs
+
+
 def worker_status(cfg: TowerConfig) -> dict:
     """Live snapshot of the async consumer for this workspace.
 
@@ -82,6 +107,8 @@ def worker_status(cfg: TowerConfig) -> dict:
         info = json.loads((cfg.queue_dir / "worker.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         info = {}
+    jobs = _inflight_jobs(info)
+    current = jobs[0] if jobs else {}
     age = time.time() - float(info.get("unix_ts", 0) or 0)
     oldest_minutes = 0.0
     files = sorted(pending.glob("*.json"), key=lambda f: f.stat().st_mtime)
@@ -98,13 +125,11 @@ def worker_status(cfg: TowerConfig) -> dict:
         "done": len(list(done.glob("*.json"))),
         "oldest_pending_minutes": oldest_minutes,
         "version_matches": info.get("v") == __version__ if info else False,
-        "current_job": str(info.get("current_job") or ""),
-        "current_kind": str(info.get("current_kind") or ""),
-        "current_task": str(info.get("task") or ""),
-        "current_age_minutes": (
-            round((time.time() - float(info["started_at"])) / 60, 1)
-            if info.get("started_at") else None
-        ),
+        "current_job": current.get("id", ""),
+        "current_kind": current.get("kind", ""),
+        "current_task": current.get("task", ""),
+        "current_age_minutes": current.get("age_minutes"),
+        "jobs": jobs,
     }
 
 
@@ -125,6 +150,23 @@ def backlog_warning(cfg: TowerConfig) -> str | None:
     return None
 
 
+def _task_role(cfg: TowerConfig, task_id: str) -> str:
+    try:
+        return str(Board(cfg).load(str(task_id or "")).role or "")
+    except (OSError, ValueError, KeyError):     # no task file: nothing to serialise
+        return ""
+
+
+def _job_role(cfg: TowerConfig, job: dict) -> str:
+    """Which role's session this job drives: payload first, task file second.
+
+    `serial_requests` never engaged for async work because nobody filled
+    payload.role; the task file is the record that always has it.
+    """
+    role = str((job.get("payload") or {}).get("role") or "")
+    return role or _task_role(cfg, job.get("task", ""))
+
+
 def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None = None) -> dict:
     """Write one job and return it. Jobs are ordered by a monotonic counter.
 
@@ -132,6 +174,9 @@ def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None
     in-process claim lock, and a cross-process `os.replace` collision retries with
     a bumped id instead of clobbering an existing job.
     """
+    payload = dict(payload or {})
+    if not payload.get("role") and task_id:
+        payload["role"] = _task_role(cfg, task_id)
     with _CLAIM_LOCK:
         _, pending, _, _ = _dirs(cfg)
         seq = 0
@@ -145,7 +190,7 @@ def enqueue(cfg: TowerConfig, kind: str, task_id: str = "", payload: dict | None
             "id": f"Q-{seq + 1:05d}",
             "kind": kind,                       # dispatch | restate | relay_watch
             "task": task_id,
-            "payload": payload or {},
+            "payload": payload,
             "enqueued_at": now_ts(),
             "attempts": 0,
         }
@@ -256,31 +301,65 @@ def _config_hash(cfg: TowerConfig) -> str:
         return ""
 
 
-def _heartbeat(cfg: TowerConfig, job: dict | None = None) -> None:
+_HEART_LOCK = threading.Lock()
+
+
+def _heartbeat_jobs(cfg: TowerConfig) -> dict[str, dict]:
+    try:
+        info = json.loads((cfg.queue_dir / "worker.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    raw = info.get("jobs")
+    if isinstance(raw, dict):
+        return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
+    job_id = str(info.get("current_job") or "")
+    if not job_id:
+        return {}
+    return {job_id: {"kind": str(info.get("current_kind") or ""),
+                     "task": str(info.get("task") or ""),
+                     "started_at": float(info.get("started_at") or 0)}}
+
+
+def _write_heartbeat(cfg: TowerConfig, jobs: dict[str, dict]) -> None:
     from . import __version__
 
-    info = {"pid": os.getpid(), "unix_ts": time.time(),
-            "v": __version__, "cfg_sha": _config_hash(cfg)}
-    if job:
-        info.update({
-            "current_job": str(job.get("id", "")),
-            "current_kind": str(job.get("kind", "")),
-            "started_at": float(job.get("started_ts") or time.time()),
-            "task": str(job.get("task", "")),
-        })
+    info: dict[str, Any] = {"pid": os.getpid(), "unix_ts": time.time(),
+                            "v": __version__, "cfg_sha": _config_hash(cfg), "jobs": jobs}
+    if len(jobs) == 1:                  # keep the one-job view `tower doctor` prints
+        job_id, entry = next(iter(jobs.items()))
+        info.update({"current_job": job_id,
+                     "current_kind": str(entry.get("kind") or ""),
+                     "started_at": float(entry.get("started_at") or time.time()),
+                     "task": str(entry.get("task") or "")})
     heart = cfg.queue_dir / "worker.json"
     heart.parent.mkdir(parents=True, exist_ok=True)
     heart.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
 
 
+def _heartbeat(cfg: TowerConfig, job: dict | None = None) -> None:
+    """Refresh liveness, merging this job into the map of in-flight jobs.
+
+    Every pool thread writes heartbeats; merging is what stops the supervisor's
+    bare call from erasing the job a worker thread is actually running.
+    """
+    with _HEART_LOCK:
+        jobs = _heartbeat_jobs(cfg)
+        if job:
+            jobs[str(job.get("id") or "")] = {
+                "kind": str(job.get("kind") or ""),
+                "task": str(job.get("task") or ""),
+                "role": str(job.get("role") or ""),
+                "started_at": float(job.get("started_ts") or time.time()),
+            }
+        _write_heartbeat(cfg, jobs)
+
+
 def _clear_heartbeat(cfg: TowerConfig, job_id: str) -> None:
-    """Drop the current job, unless another worker thread already claimed the slot."""
-    try:
-        info = json.loads((cfg.queue_dir / "worker.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        info = {}
-    if str(info.get("current_job") or "") == str(job_id or ""):
-        _heartbeat(cfg)
+    """Drop just this job; the pool's other threads keep theirs."""
+    with _HEART_LOCK:
+        jobs = _heartbeat_jobs(cfg)
+        if jobs.pop(str(job_id or ""), None) is not None:
+            _write_heartbeat(cfg, jobs)
 
 
 def _requeue_stale(cfg: TowerConfig) -> int:
@@ -1039,11 +1118,11 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
                 continue
             claimed_path, job = pair
             job.setdefault("started_ts", time.time())
+            job["role"] = _job_role(cfg, job)
             _heartbeat(cfg, job)
-            role = str((job.get("payload") or {}).get("role") or "")
             try:
-                if cfg.serial_requests and role:
-                    with role_sem(role):
+                if cfg.serial_requests and job["role"]:
+                    with role_sem(job["role"]):
                         _process(cfg, claimed_path, job)
                 else:
                     _process(cfg, claimed_path, job)

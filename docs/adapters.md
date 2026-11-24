@@ -71,8 +71,9 @@ adapters:
     poll_s: 5
 ```
 
-Flow: `session/prompt` (queued, so it lands at a step boundary) → poll `session/list` until the
-session is idle → read `<cwd>/<task_id>-REPORT.md`. Because DSH does not expose a "final answer"
+Flow: `session/prompt` (queued, so it lands at a step boundary) → the role writes
+`<cwd>/<task_id>-REPORT.md` → the adapter polls that file until it is non-empty and reads it.
+Because DSH does not expose a "final answer"
 RPC in this version, the file is the contract.
 
 If the session id is missing, the adapter fails fast with `missing_session` instead of hanging.

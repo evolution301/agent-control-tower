@@ -11,7 +11,7 @@ DSH 优先，适配器可换，无 SaaS、无数据库、无守护进程。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-299%20python%20%2B%2031%20node-brightgreen?style=flat)](tests)
+[![Tests](https://img.shields.io/badge/tests-CI%20green-brightgreen?style=flat)](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml)
 [![CI](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml/badge.svg)](https://github.com/evolution301/agent-control-tower/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/evolution301/agent-control-tower?style=flat&label=release)](https://github.com/evolution301/agent-control-tower/releases)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-D97757?style=flat)](packages/dsh-tower)
@@ -209,7 +209,7 @@ adapters:
 
 ### 在 DSH 会话里直接调用：`packages/dsh-tower`
 
-配套插件在 harness 工具注册表里注册 5 个工具，会话不用离开对话窗口：
+配套插件在 harness 工具注册表里注册 19 个工具，会话不用离开对话窗口；最常用的五个：
 
 ```bash
 dsh plugin --profile <name> add ./packages/dsh-tower
