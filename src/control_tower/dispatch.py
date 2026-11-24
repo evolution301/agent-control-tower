@@ -22,6 +22,7 @@ from .adapters import AdapterRequest, get_adapter
 from .board import (
     Board,
     Task,
+    STATUS_ACCEPTED,
     STATUS_CLAIMED,
     STATUS_IN_PROGRESS,
     STATUS_REPORTED,
@@ -159,6 +160,28 @@ def _auto_group(cfg: TowerConfig, task: Task) -> str:
 
 
 DRY_RUN_STATUS = "dry-run (nothing written)"
+
+# A task a person already closed. A settling turn must not reopen it: on 0.18.2 an
+# in-flight async turn overwrote `accepted` with `reported` and triage reworked it
+# back to `rework`, throwing away the acceptance (T-0023).
+FROZEN_STATUSES = frozenset({STATUS_ACCEPTED, STATUS_FAILED, "dropped"})
+
+
+def closed_task(board: Board, task_id: str) -> Task | None:
+    """The task as it is on disk when a person already closed it, else None."""
+    current = board.load(task_id)
+    return current if current.status in FROZEN_STATUSES else None
+
+
+def note_late_report(board: Board, task: Task, report: dict[str, Any]) -> Task:
+    """Keep a report that landed after the task was closed — as history only."""
+    payload = {"at": now_ts(), "status": task.status, "state": task.state, "report": report}
+    task.escalation["late_report"] = payload   # the durable copy
+    task.late_report = payload                 # a board.Task field would make this one
+    board.save(task)
+    board.log("settle_ignored", task=task.id, status=task.status, phase="post",
+              report_chars=len(str(report.get("raw") or "")))
+    return task
 
 
 def build_task(
@@ -588,6 +611,11 @@ def dispatch(
     for the role's full (often 30 min) budget (B12).
     """
     role = cfg.roles[task.role]
+    if not dry_run:
+        closed = closed_task(board, task.id)
+        if closed is not None:
+            board.log("settle_ignored", task=task.id, status=closed.status, phase="pre")
+            return closed
     if dry_run:
         # A preview is read-only: no task file, no task dir, no group attach, no
         # T-id (the id is the highest file on disk) and no G-id consumed. The
@@ -677,6 +705,9 @@ def dispatch(
         # complete REPORT landed at 12:44. A report on disk is work to verify,
         # not a failure, so hand it to the acceptance gate instead.
         late = _late_report(cfg, task)
+        closed = closed_task(board, task.id)
+        if closed is not None:
+            return note_late_report(board, closed, late or {})
         if late is not None:
             board.log("late_report", task=task.id, role=task.role,
                       exit_code=result.exit_code, report_chars=len(late.get("raw") or ""))
@@ -695,6 +726,9 @@ def dispatch(
         return task
 
     report = parse_report(result.text)
+    closed = closed_task(board, task.id)
+    if closed is not None:
+        return note_late_report(board, closed, report)
     board.add_assignment(task, adapter.name, result.exit_code)
     if is_progress_report(report):
         # 2026-11-24 (aimigao-zh): `Status: progress` is the lane saying "still
@@ -726,6 +760,11 @@ def dispatch_restate(
     `tower restate ok <task>` unlocks the actual dispatch.
     """
     role = cfg.roles[task.role]
+    if not dry_run:
+        closed = closed_task(board, task.id)
+        if closed is not None:
+            board.log("settle_ignored", task=task.id, status=closed.status, phase="restate")
+            return closed
     if task.group:
         require_group(cfg, task.group)
     prompt = render_restate_prompt(cfg, task)
@@ -782,6 +821,11 @@ def dispatch_restate(
         }
         board.save(task)
         return task
+
+    closed = closed_task(board, task.id)
+    if closed is not None:
+        board.log("settle_ignored", task=task.id, status=closed.status, phase="restate")
+        return closed
 
     task.restatement = parsed["restatement"]
     task.restated_at = now_ts()

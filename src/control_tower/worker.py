@@ -420,19 +420,60 @@ def stage_rework(board: Board, task, reasons: str, staged: list) -> None:
     staged.append(task)
 
 
+def cancel_jobs(cfg: TowerConfig, task_id: str, except_job: str = "") -> int:
+    """Drop queued jobs for a task that was closed while they waited."""
+    _, pending, _, done_dir = _dirs(cfg)
+    dropped = 0
+    for path in sorted(pending.glob("*.json")):
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if job.get("task") != task_id or job.get("id") == except_job:
+            continue
+        job["settled_at"] = now_ts()
+        job["result"] = {"outcome": "cancelled", "reason": "task already closed"}
+        (done_dir / path.name).write_text(json.dumps(job, indent=2), encoding="utf-8")
+        path.unlink(missing_ok=True)
+        dropped += 1
+    if dropped:
+        Board(cfg).log("jobs_cancelled", task=task_id, count=dropped)
+    return dropped
+
+
+def _settle_ignored(cfg: TowerConfig, board: Board, job: dict, task) -> dict[str, Any]:
+    """A settlement that arrives after a person closed the task.
+
+    The acceptance record wins: no triage, no rework, no status flip, no
+    settled_at. The notice still goes out, marked informational, and queued jobs
+    for the same task are cancelled so a second settlement cannot resurrect it.
+    """
+    board.log("settle_ignored", job=job.get("id"), task=task.id, status=task.status,
+              note=f"settle_ignored: task already {task.status}")
+    board.notify({"event": "async_settled", "task": task.id, "status": task.status,
+                  "summary": f"[tower] {task.id} is already {task.status} — late "
+                             "settlement ignored (informational)"})
+    cancel_jobs(cfg, task.id, except_job=job.get("id", ""))
+    return {"outcome": "ignored", "status": task.status}
+
+
 def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .converse import relay_report_messages
-    from .dispatch import dispatch, is_progress_report
+    from .dispatch import closed_task, dispatch, is_progress_report
     from .triage import redispatch_with_reasons, triage_task
 
     task = board.load(job["task"])
     if not task.mode:
         task.mode = "async"
         board.save(task)
+    if closed_task(board, task.id) is not None:
+        return _settle_ignored(cfg, board, job, task)
     # adapter turn runs OUTSIDE the tower lock (a dsh turn can take minutes —
     # holding the lock here starved every other dispatch: Q-00002, 2026-11-09)
     dispatch(cfg, board, task)
     task = board.load(task.id)
+    if closed_task(board, task.id) is not None:
+        return _settle_ignored(cfg, board, job, task)
     if is_progress_report(task.report):
         # 2026-11-24: a progress report keeps the task where it is. Settling it
         # (or handing it to triage) would fail and rework a lane that is simply
@@ -687,12 +728,14 @@ def _restate_failed(cfg: TowerConfig, board: Board, task,
 
 
 def _settle_restate(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
-    from .dispatch import dispatch_restate
+    from .dispatch import closed_task, dispatch_restate
 
     task = board.load(job["task"])
     if not task.mode:
         task.mode = "async"
         board.save(task)
+    if closed_task(board, task.id) is not None:
+        return _settle_ignored(cfg, board, job, task)
     problem = _restate_target_problem(cfg, task)
     if problem:
         return _restate_failed(cfg, board, task, "restate_target_unavailable", problem)

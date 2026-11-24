@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.3] - 2026-11-24
+
+Both defects came out of the 0.18.2 run itself: a human acceptance that a late
+turn overwrote, and a verification that mistook two other lanes' edits for a
+broken change.
+
+### Fixed — a settlement can no longer reopen what a person closed
+
+A task that was accepted while its turn was still running was flipped back to
+`reported` by the settlement and auto-triaged as `reworked`. `dispatch()` now
+reloads the task before writing any outcome: when the status is `accepted`,
+`failed` or `dropped` the settlement is dropped with `settle_ignored: task
+already <status>`, the report is kept for the audit trail, and accepting also
+cancels the in-flight job so a later turn cannot resurrect the task. (`worker.py`,
+`dispatch.py`, `board.py`)
+
+### Fixed — a moving tree is not a defect
+
+`python -m pytest -q` ran in the live tree while two other lanes were editing
+`src/` and `packages/`; the run exited 1, triage called it `rework`, and the lane
+had to prove with four clean runs and a pristine worktree that nothing was wrong.
+`verify_report()` now runs the configured checks in a temporary `git worktree` of
+HEAD carrying only the accepted task's own files whenever the live tree is dirty
+with edits the task does not claim; a run whose inputs change underneath it is
+reported as `verify-deferred` (attention, not rework), never as a failure.
+(`verify.py`, `cli.py`)
+
 ## [0.18.2] - 2026-11-24
 
 Two acceptance bugs reported by a customer tower (aimigao-zh) after their

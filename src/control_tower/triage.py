@@ -124,8 +124,19 @@ def triage_task(cfg: TowerConfig, board: Board, task: Task, dispatch_fn=None) ->
                 return {"task": task.id, "outcome": "review_queued"}
             board.transition(task, STATUS_ACCEPTED, note="auto-accepted: verification passed",
                              verification=verdict.as_dict())
+            if (task.attention or {}).get("question", "").startswith("verify-deferred"):
+                task.attention = None
+                board.save(task)
             board.log("auto_accepted", task=task.id, role=task.role)
             return {"task": task.id, "outcome": "accepted"}
+
+        if verdict.deferred:
+            reason = verdict.reason or "the tree changed during the run"
+            task.attention = {"question": f"verify-deferred: {reason}", "status": "open"}
+            board.transition(task, task.status, note=f"verify-deferred: {reason}",
+                             verification=verdict.as_dict())
+            board.log("verify_deferred", task=task.id, role=task.role, reason=reason)
+            return {"task": task.id, "outcome": "verify_deferred", "reasons": reason}
 
         reasons = "; ".join(verdict.problems)[:400]
         remaining = int(task.max_rounds or 0) - int(task.round or 0)

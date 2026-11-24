@@ -9,7 +9,11 @@ Two layers:
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,9 +29,12 @@ class Verification:
     ok: bool
     problems: list[str] = field(default_factory=list)
     ran: list[dict[str, Any]] = field(default_factory=list)
+    deferred: bool = False
+    reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {"ok": self.ok, "problems": self.problems, "ran": self.ran}
+        return {"ok": self.ok, "problems": self.problems, "ran": self.ran,
+                "deferred": self.deferred, "reason": self.reason}
 
 
 def _expand_braces(text: str, limit: int = 64) -> list[str]:
@@ -137,6 +144,236 @@ def _before(task: Task, since: str) -> bool:
     return created < boundary
 
 
+def _git(repo: Path, *args: str, timeout: float = 120):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout,
+    )
+
+
+def _repo_root(start: Path) -> Path | None:
+    try:
+        proc = _git(start, "rev-parse", "--show-toplevel")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip())
+
+
+# Changes under these paths belong to the tower itself (board, heartbeat, test
+# caches), not to a lane: counting them would defer every second verify run.
+_NOISE = ("__pycache__/", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/",
+          ".tower/", ".git/")
+
+
+def _noise(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return any(marker in normalized for marker in _NOISE)
+
+
+def _status_entries(repo: Path, untracked: bool = True) -> dict[str, str]:
+    args = ["status", "--porcelain", "-z",
+            "--untracked-files=all" if untracked else "--untracked-files=no"]
+    try:
+        proc = _git(repo, *args)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    entries: dict[str, str] = {}
+    for record in proc.stdout.split("\0"):
+        if len(record) > 3 and record[2] == " ":
+            entries[record[3:]] = record[:2]
+    return entries
+
+
+def _tree_signature(repo: Path) -> tuple:
+    """Identity of the live tree, not just which paths are dirty: another lane
+    rewriting an already-modified file keeps the same status letter."""
+    signature = []
+    for path, code in sorted(_status_entries(repo, untracked=False).items()):
+        if _noise(path):
+            continue
+        try:
+            stat = (repo / path).stat()
+        except OSError:
+            signature.append((path, code, None, None))
+            continue
+        signature.append((path, code, stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
+
+
+def _owned_files(cfg: TowerConfig, repo: Path, report: dict[str, Any]) -> set[str]:
+    """Repo-relative paths this task claims — its own diff, as a set."""
+    roots = [Path(cfg.workspace)]
+    project_root = getattr(cfg, "project_root", None)
+    if project_root:
+        roots.append(Path(project_root))
+    raw_cwd = str(getattr(cfg, "verify_cwd", "") or "").strip()
+    if raw_cwd:
+        extra = Path(raw_cwd).expanduser()
+        if not extra.is_absolute():
+            extra = (Path(cfg.workspace) / extra).resolve()
+        roots.append(extra)
+    owned: set[str] = set()
+    repo = repo.resolve()
+    for raw in report.get("files") or []:
+        for candidate in split_file_candidates(str(raw)):
+            for item in _expand_braces(candidate):
+                path = Path(item)
+                if not path.is_absolute():
+                    found = next(
+                        (root / item for root in roots if (root / item).exists()), None)
+                    if found is None:
+                        continue
+                    path = found.resolve()
+                try:
+                    owned.add(path.resolve().relative_to(repo).as_posix())
+                except ValueError:
+                    continue  # outside this repo: not part of the isolated diff
+    return owned
+
+
+def _execute(commands: list[str], cwd: Path, isolated: bool = False) -> list[dict[str, Any]]:
+    ran: list[dict[str, Any]] = []
+    for cmd in commands:
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=str(cwd), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=900,
+            )
+            row = {"command": cmd, "cwd": str(cwd), "exit_code": proc.returncode,
+                   "tail": (proc.stdout or proc.stderr or "")[-800:]}
+            if isolated:
+                row["isolated"] = True
+            ran.append(row)
+        except Exception as exc:
+            ran.append({"command": cmd, "error": f"{type(exc).__name__}: {exc}"})
+    return ran
+
+
+def _failed(ran: list[dict[str, Any]]) -> bool:
+    return any("error" in row or row.get("exit_code", 0) != 0 for row in ran)
+
+
+def _command_problems(ran: list[dict[str, Any]]) -> list[str]:
+    problems = []
+    for row in ran:
+        if "error" in row:
+            problems.append(f"verify command error: {row['command']}")
+            continue
+        code = row.get("exit_code", 0)
+        if code == 0:
+            continue
+        tail = (row.get("tail") or "").lower()
+        if code == 127 or "not found" in tail or "not recognized" in tail:
+            problems.append(
+                f"verify command is not runnable from {row['cwd']} ({code}): "
+                f"{row['command']} — likely a relative path; use an absolute one")
+        else:
+            problems.append(f"verify command failed ({code}): {row['command']}")
+    return problems
+
+
+def _run_isolated(repo: Path, verify_dir: Path, owned: set[str],
+                  commands: list[str]) -> list[dict[str, Any]] | None:
+    """HEAD plus this task's files only; None when a worktree is not viable."""
+    try:
+        inside = verify_dir.resolve().relative_to(repo.resolve())
+    except ValueError:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="tower-verify-"))
+    worktree = tmp / "wt"
+    try:
+        try:
+            added = _git(repo, "worktree", "add", "--detach", str(worktree), "HEAD")
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if added.returncode != 0:
+            return None
+        for rel in owned:
+            src, dst = repo / rel, worktree / rel
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            elif dst.exists():
+                dst.unlink()
+        return _execute(commands, worktree / inside, isolated=True)
+    finally:
+        try:
+            _git(repo, "worktree", "remove", "--force", str(worktree))
+        except (OSError, subprocess.SubprocessError):
+            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _quiet_window() -> float:
+    """Seconds the tree must stay unchanged before a live verify run.
+
+    `TOWER_VERIFY_QUIET` (default 0 = run immediately) is the fallback knob for
+    checkouts where a worktree is too heavy.
+    """
+    try:
+        return max(0.0, float(os.environ.get("TOWER_VERIFY_QUIET", "0")))
+    except ValueError:
+        return 0.0
+
+
+def _wait_quiet(repo: Path, window: float) -> None:
+    if window <= 0:
+        return
+    end = time.monotonic() + window * 4
+    last = _tree_signature(repo)
+    stable_at = time.monotonic()
+    while time.monotonic() < end:
+        time.sleep(min(0.2, window))
+        current = _tree_signature(repo)
+        if current != last:
+            last = current
+            stable_at = time.monotonic()
+        elif time.monotonic() - stable_at >= window:
+            return
+
+
+def _run_commands(cfg: TowerConfig, verify_dir: Path, report: dict[str, Any],
+                  commands: list[str]) -> tuple[list[dict[str, Any]], bool, str]:
+    """Run the checks where other lanes cannot perturb them.
+
+    Dirty tree with edits this task does not claim → HEAD worktree carrying only
+    the task's files. If that is not viable, a live run whose failure coincides
+    with a tree change is deferred, not a defect (and retried once).
+    """
+    if not commands:
+        return [], False, ""
+    repo = _repo_root(verify_dir)
+    if repo is not None:
+        owned = _owned_files(cfg, repo, report)
+        foreign = [path for path in _status_entries(repo)
+                   if path not in owned and not _noise(path)]
+        if foreign:
+            isolated = _run_isolated(repo, verify_dir, owned, commands)
+            if isolated is not None:
+                return isolated, False, ""
+    window = _quiet_window()
+    if repo is not None:
+        _wait_quiet(repo, window)
+    before = _tree_signature(repo) if repo is not None else ()
+    ran = _execute(commands, verify_dir)
+    if repo is None or not _failed(ran):
+        return ran, False, ""
+    after = _tree_signature(repo)
+    if after == before:
+        return ran, False, ""
+    _wait_quiet(repo, window)
+    ran = _execute(commands, verify_dir)
+    if not _failed(ran):
+        return ran, False, ""
+    if _tree_signature(repo) != after:
+        return ran, True, "the tree changed during the run"
+    return ran, False, ""
+
+
 def verify_report(cfg: TowerConfig, task: Task, legacy: bool = False) -> Verification:
     problems: list[str] = []
     # B15: the markdown file wins over the cached parse when it exists
@@ -242,25 +479,13 @@ def verify_report(cfg: TowerConfig, task: Task, legacy: bool = False) -> Verific
             verify_dir = (Path(cfg.workspace) / verify_dir).resolve()
     else:
         verify_dir = Path(cfg.workspace)
-    for cmd in commands:
-        try:
-            proc = subprocess.run(
-                cmd, shell=True, cwd=str(verify_dir), capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=900,
-            )
-            tail = (proc.stdout or proc.stderr or "")[-800:]
-            ran.append({"command": cmd, "cwd": str(verify_dir), "exit_code": proc.returncode, "tail": tail})
-            if proc.returncode != 0:
-                lowered = tail.lower()
-                if proc.returncode == 127 or "not found" in lowered or "not recognized" in lowered:
-                    problems.append(
-                        f"verify command is not runnable from {verify_dir} ({proc.returncode}): {cmd} "
-                        "— likely a relative path; use an absolute one"
-                    )
-                else:
-                    problems.append(f"verify command failed ({proc.returncode}): {cmd}")
-        except Exception as exc:  # pragma: no cover
-            ran.append({"command": cmd, "error": f"{type(exc).__name__}: {exc}"})
-            problems.append(f"verify command error: {cmd}")
+    prior = len(problems)
+    ran, deferred, reason = _run_commands(cfg, verify_dir, report, commands)
+    problems.extend(_command_problems(ran))
+    if deferred and prior:
+        deferred, reason = False, ""  # structural problems still mean rework
+    if deferred:
+        problems.append(f"verify-deferred: {reason}")
 
-    return Verification(ok=not problems, problems=problems, ran=ran)
+    return Verification(ok=not problems, problems=problems, ran=ran,
+                        deferred=deferred, reason=reason)
