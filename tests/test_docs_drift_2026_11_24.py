@@ -14,7 +14,7 @@ def _text(*parts: str) -> str:
 
 
 def test_readmes_do_not_hardcode_test_counts():
-    for name in ("README.md", "README.zh.md"):
+    for name in ("README.md", "README.en.md"):
         text = _text(name)
         assert "299%20python" not in text
         assert "299 python" not in text
@@ -22,13 +22,13 @@ def test_readmes_do_not_hardcode_test_counts():
 
 
 def test_docs_do_not_understate_the_tool_count():
-    for name in ("README.md", "README.zh.md"):
+    for name in ("README.md", "README.en.md"):
         text = _text(name)
         assert "five tools" not in text
         assert "5 个工具" not in text
     assert "five tools" not in _text("packages", "dsh-tower", "cordis.patch.yml")
-    assert "19 tools" in _text("README.md")
-    assert "19 个工具" in _text("README.zh.md")
+    assert "19 tools" in _text("README.en.md")
+    assert "19 个工具" in _text("README.md")
 
 
 def test_architecture_doc_describes_the_thread_pool():

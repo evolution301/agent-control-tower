@@ -21,176 +21,88 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="/assets/pico.css">
 <title>__NAME__ — 控制塔 HQ</title>
 <style>
-  :root{
-    --bg:#05080d; --bg2:#070b12; --card:#0b1119; --card2:#0e1520; --ink:#e9eef6;
-    --dim:#7d8aa0; --dim2:#55627a; --line:rgba(120,150,200,.14); --line2:rgba(120,150,200,.22);
-    --blue:#3b82f6; --pink:#ec4899; --orange:#f59e0b; --green:#22c55e; --teal:#14b8a6;
-    --slate:#64748b; --red:#ef4444;
-    --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
-    --sans:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
-  }
-  html[data-theme="light"]{
-    --bg:#eef1f8; --bg2:#f6f3fa; --card:#fff; --card2:#fff; --ink:#14161f; --dim:#5c6478;
-    --dim2:#8b93a7; --line:rgba(24,30,56,.10); --line2:rgba(24,30,56,.18);
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans)}
-  body{
-    background-image:
-      radial-gradient(1100px 520px at 18% -8%, rgba(59,130,246,.16), transparent 60%),
-      radial-gradient(900px 460px at 92% 0%, rgba(236,72,153,.10), transparent 55%),
-      linear-gradient(var(--line) 1px, transparent 1px),
-      linear-gradient(90deg, var(--line) 1px, transparent 1px);
-    background-size: auto, auto, 44px 44px, 44px 44px;
-    background-color: var(--bg);
-    padding-bottom:170px;
-  }
-  .wrap{max-width:1520px;margin:0 auto;padding:18px 22px 26px}
-  /* ---------- header ---------- */
-  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-  .mark{width:46px;height:46px;display:grid;place-items:center;flex:none}
-  h1{font-size:23px;margin:0;letter-spacing:-.02em;font-weight:750}
-  .sub{color:var(--dim);font-size:12px;margin-top:1px}
-  .live{display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--dim);font:12px var(--mono)}
-  .live .pulse{width:9px;height:9px;border-radius:50%;background:var(--green);
-                box-shadow:0 0 10px var(--green);animation:pulse 2s infinite}
-  .grow{flex:1}
-  .kpis{display:flex;gap:8px;flex-wrap:wrap}
-  .kpi{min-width:74px;padding:7px 11px;border:1px solid var(--line);border-radius:10px;
-       background:linear-gradient(180deg,var(--card2),var(--card));text-align:center}
-  .kpi b{display:block;font:17px/1.2 var(--mono);letter-spacing:-.02em}
-  .kpi span{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
-  .kpi.alarm b{color:var(--red)}
-  .iconbtn{height:32px;width:32px;border-radius:9px;border:1px solid var(--line);
-           background:var(--card);color:var(--ink);cursor:pointer;font-size:14px}
-  /* ---------- terminal strip ---------- */
-  .term{margin:14px 0 0;background:#02050a;border:1px solid var(--line2);border-radius:12px;
-        padding:10px 14px;font:12.5px/1.5 var(--mono);color:#cfd8e6;
-        display:flex;align-items:center;gap:10px;overflow:hidden}
-  .term .prompt{color:var(--green)}
-  .term .cmd{color:#8ab4ff}
-  .term .hash{color:var(--dim2)}
-  .term .body{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .term .lights{display:flex;gap:6px;flex:none}
-  .term .lights i{width:9px;height:9px;border-radius:50%}
-  .cur{display:inline-block;width:7px;height:14px;background:#cfd8e6;vertical-align:-2px;
-       animation:blink 1s steps(2) infinite}
-  /* ---------- layout ---------- */
-  .grid{display:grid;grid-template-columns:322px 1fr;gap:18px;margin-top:18px;align-items:start}
-  @media (max-width:1040px){.grid{grid-template-columns:1fr}}
-  .panel{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
-         border-radius:16px;padding:14px}
-  /* ---------- left: coordinator ---------- */
-  .coord{display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 12px 14px}
-  .coord .big{margin:2px 0 6px;filter:drop-shadow(0 0 18px rgba(59,130,246,.35))}
-  .coord .nm{font:700 13px var(--mono);letter-spacing:.14em}
-  .coord .desc{color:var(--dim);font-size:12px}
-  .countdown{margin-top:10px;width:100%;border:1px solid var(--line2);border-radius:10px;
-             padding:8px;text-align:center;background:#04070d}
-  .countdown span{display:block;color:var(--dim);font-size:11px;letter-spacing:.06em}
-  .countdown b{display:block;font:600 20px var(--mono);color:#ffd479;margin-top:2px}
-  .label{font:600 10.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;
-         color:var(--dim2);margin:16px 4px 8px}
-  .team{display:grid;grid-template-columns:10px 1fr auto;gap:9px;align-items:center;
-        padding:8px 10px;border-radius:10px;border:1px solid transparent;cursor:pointer}
-  .team:hover{background:rgba(120,150,200,.07)}
-  .team[aria-pressed="true"]{background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.35)}
-  .team .dot{width:10px;height:10px;border-radius:50%;box-shadow:0 0 8px currentColor}
-  .team .nm{font-weight:650;font-size:13px}
-  .team .meta{color:var(--dim);font:11px var(--mono)}
-  .dots{display:flex;gap:3px;margin-top:3px}
-  .dots i{width:5px;height:5px;border-radius:50%;background:var(--line2)}
-  .dots i.ok{background:var(--green)} .dots i.run{background:var(--orange)}
-  .dots i.bad{background:var(--red)} .dots i.warn{background:#eab308}
-  .tag{font:600 10px var(--mono);padding:2px 7px;border-radius:5px;letter-spacing:.05em}
-  .tag.ready{background:rgba(34,197,94,.16);color:#4ade80}
-  .tag.blocked,.tag.failed{background:rgba(239,68,68,.16);color:#f87171}
-  .tag.progress{background:rgba(59,130,246,.16);color:#7dd3fc}
-  .tag.restating{background:rgba(245,158,11,.16);color:#fbbf24}
-  .tag.overdue{background:rgba(239,68,68,.16);color:#f87171}
-  /* ---------- right: bot rows ---------- */
-  .auto{padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:#04070d;
-        color:#c7d2e3;font-size:13px;margin-bottom:12px}
-  .auto .ok{color:var(--green)}
-  .botrow{border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--card2),var(--card));
-          margin-bottom:9px;overflow:hidden}
-  .botrow .head{display:grid;grid-template-columns:52px 1fr auto;gap:12px;align-items:center;
-                padding:10px 14px;cursor:pointer}
-  .botrow .head:hover{background:rgba(120,150,200,.05)}
-  .botrow .info{min-width:0}
-  .botrow .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .botrow .who{font-weight:700;font-size:13.5px}
-  .botrow .what{margin-top:3px;font-weight:650;font-size:13.5px;color:#dbe6f5;
-               overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  html[data-theme="light"] .botrow .what{color:#1f2937}
-  .botrow .what.empty{font-weight:500;color:var(--dim)}
-  .botrow .tail{display:flex;align-items:center;gap:12px;color:var(--dim);font:11px var(--mono)}
-  .running{display:flex;align-items:center;gap:6px;color:#cfd8e6}
-  .running b{font:600 13px var(--mono)}
-  .chev{color:var(--dim2);transition:transform .2s}
-  .botrow[open] .chev{transform:rotate(180deg)}
-  .botrow .body{display:none;padding:0 14px 12px 78px;border-top:1px solid var(--line)}
+  :root{--page:#FAFAF8;--section:#F4F3F0;--card:#FFFFFF;--line:#D2CDC2;--ink:#1F1F24;--ink2:#6E6A61;--radius:14px;
+    --dim:var(--ink2);--dim2:#8C877C;--orange:#B07A1F;--red:#B3402E;--green:#2F7D4F;--blue:#2F5FA8;--slate:#6B4FA8;
+    --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+    --pico-background-color:var(--page);--pico-color:var(--ink);--pico-muted-color:var(--ink2);
+    --pico-muted-border-color:var(--line);--pico-card-background-color:var(--card);--pico-card-border-color:var(--line);
+    --pico-card-box-shadow:none;--pico-border-radius:var(--radius);--pico-form-element-background-color:var(--card);
+    --pico-form-element-border-color:var(--line);--pico-primary:#2F5FA8;--pico-primary-background:#2F5FA8;
+    --pico-primary-hover-background:#274F8C}
+  [data-theme="dark"]{--page:#1F1F26;--section:#26262F;--card:#2C2C36;--line:#3B3B48;--ink:#ECEAE4;--ink2:#A9A5A0;--dim2:#7C7884;color-scheme:dark}
+  *{box-shadow:none!important;text-shadow:none!important}
+  html body{background:var(--page);color:var(--ink)}
+  main.container{padding-block:24px}
+  header{gap:12px;align-items:center;flex-wrap:wrap;background:none;border:0;margin-bottom:8px}
+  header h1{font-size:24px;margin:0;color:var(--ink)}
+  .kpis{display:flex;gap:8px;flex-wrap:wrap;margin:0}
+  .kpi{min-width:72px;padding:8px 12px;background:var(--section);border:1px solid var(--line);border-radius:var(--radius);text-align:center}
+  .kpi b{display:block;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .kpi span{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--ink2)}
+  article{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  table{width:100%;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);border-collapse:separate;border-spacing:0;overflow:hidden}
+  th{background:var(--section);color:var(--ink);text-align:left}
+  th,td{padding:5px 8px;border-bottom:1px solid var(--line)}
+  tr:last-child td{border-bottom:0}
+  .tag,.state{display:inline-block;min-height:20px;padding:0 8px;border:0;border-radius:var(--radius);background:var(--section);color:#fff;font:600 11px/20px var(--mono);letter-spacing:.4px;text-transform:uppercase;text-align:center}
+  .tag.ready,.tag.accepted,.state.ready{background:#2F7D4F}
+  .tag.failed,.tag.blocked,.state.failed,.state.blocked{background:#B3402E}
+  .tag.progress,.tag.in_progress,.state.progress,.state.in_progress{background:#2F5FA8}
+  .tag.overdue,.tag.late,.tag.restating,.state.overdue,.state.late{background:#B07A1F}
+  .tag.reported,.state.reported{background:#6B4FA8}
+  .id,.term,.countdown b,.tag,.botrow .tail{font-family:var(--mono)}
+  .askbox{display:flex;gap:8px;margin:16px 0 4px;padding:12px;background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
+  .askbox input{flex:1;margin:0;background:var(--page);border:1px solid var(--line);border-radius:var(--radius)}
+  .askbox button{width:auto;margin:0;padding-inline:16px;background:#2F5FA8;border:0;border-radius:10px}
+  .askbox button:hover{background:#28508D}
+  .askbox button:disabled{background:#4A4A55}
+  .logochip{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:var(--section);border:1px solid var(--line);border-radius:8px;color:var(--ink);font:600 13px/1 var(--mono)}
+  .logochip.big{width:32px;height:32px;font-size:14px}
+  .seg{display:flex;gap:4px;align-items:center}
+  .seg a,.seg button{width:auto;margin:0;padding:2px 8px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--ink2);font:600 11px/18px var(--mono);text-decoration:none}
+  .seg .on,html[lang^="zh"] .seg a[data-lang="zh"],html[lang="en"] .seg a[data-lang="en"]{background:#2F5FA8;border-color:#2F5FA8;color:#fff}
+  .sub,.live,.label,.empty,.how{color:var(--ink2)}
+  .label{font-size:11px;letter-spacing:1px;text-transform:uppercase;margin:16px 0 8px;color:var(--ink2)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:var(--radius)}
+  .botrow{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:12px;margin-bottom:8px}
+  .botrow .body{display:none}
   .botrow[open] .body{display:block}
-  .taskline{padding:8px 0;border-bottom:1px dashed var(--line)}
-  .taskline:last-child{border-bottom:0}
-  .taskline .t1{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
-  .taskline .id{font:11px var(--mono);color:var(--dim)}
-  .taskline .brief{font-size:12.5px;margin-top:3px;color:#c7d2e3}
-  html[data-theme="light"] .taskline .brief{color:#374151}
-  .empty{color:var(--dim);font-size:13px;padding:10px 2px}
-  /* ---------- business strip ---------- */
-  .business{display:flex;gap:22px;flex-wrap:wrap;margin-top:6px;padding:12px 14px;
-            border:1px solid var(--line);border-radius:12px;background:#04070d}
-  .business .k b{display:block;font:16px var(--mono)}
-  .business .k span{color:var(--dim);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
-  /* ---------- bottom dock ---------- */
-  .dock{position:fixed;left:0;right:0;bottom:0;display:grid;grid-template-columns:1fr 1fr;gap:14px;
-        padding:10px 22px 12px;background:linear-gradient(180deg,rgba(5,8,13,.9),#05080d);
-        border-top:1px solid var(--line2);backdrop-filter:blur(6px)}
-  html[data-theme="light"] .dock{background:linear-gradient(180deg,rgba(238,241,248,.94),#eef1f8)}
-  .dock .col{min-width:0}
-  .dock .hdr{display:flex;align-items:baseline;gap:10px;margin-bottom:5px}
-  .dock .hdr b{font:700 11px var(--mono);letter-spacing:.18em;color:var(--dim)}
-  .dock .hdr span{color:var(--dim2);font-size:11px}
-  .dock .line{display:flex;align-items:center;gap:10px;padding:5px 0;font:12.5px var(--mono);
-              border-bottom:1px solid var(--line)}
-  .dock .line .t{color:var(--dim2);width:58px;flex:none}
-  .dock .line .what2{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#cfd8e6}
-  html[data-theme="light"] .dock .line .what2{color:#374151}
-  .dock .line .when{color:var(--dim);flex:none}
-  .dock .bar{height:2px;background:var(--line);margin-top:6px;border-radius:2px;overflow:hidden}
-  .dock .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--green))}
-  @keyframes fill{from{width:0}to{width:100%}}
-  @keyframes pulse{50%{opacity:.35}}
-  @keyframes blink{50%{opacity:0}}
-  .bot .face{fill:var(--card);stroke:rgba(150,180,220,.35);stroke-width:1.2}
-  .bot .e{fill:#cfe3ff}
-  .bot .ant{fill:var(--c)} .bot .cheek{fill:var(--c);opacity:.35}
-  .bot .ant-l{stroke:rgba(150,180,220,.35);stroke-width:1.4;stroke-linecap:round}
-  .bot .xeye{stroke:#ef4444;stroke-width:2.4;stroke-linecap:round}
-  .bot.st-working .ant{animation:antblink .5s steps(2) infinite}
-  .bot.st-working{filter:drop-shadow(0 0 9px var(--c))}
-  @keyframes antblink{to{opacity:.25}}
-  @media (prefers-reduced-motion:reduce){*{animation:none !important}}
+  .dock{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px;padding:16px;background:var(--section);border:1px solid var(--line);border-radius:var(--radius)}
+  .line{display:flex;gap:8px;align-items:baseline;font-size:13px;padding:4px 0;border-bottom:1px solid var(--line)}
+  .line .what2{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{height:4px;background:var(--line);margin-top:8px}
+  .bar i{display:block;height:100%;width:0;background:var(--ink2)}
+  [data-theme="dark"] body::before{content:"";position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.3;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  main,footer{position:relative;z-index:2}
 </style>
 </head>
 <body>
-<div class="wrap">
+<main class="container">
   <header>
-    <span class="mark" id="mark"></span>
+    <span class="logochip" id="mark" aria-hidden="true">__MARK__</span>
     <span>
       <h1 id="title">__NAME__</h1>
       <div class="sub">值守台 · 一眼看清：谁在干、谁要你决定、哪些塔自己会处理</div>
     </span>
     <span class="grow"></span>
     <span class="kpis" id="kpis"></span>
-    <a href="?lang=zh" style="color:var(--dim);font:11px var(--mono);text-decoration:none">中文</a>
-    <span style="color:var(--dim2)">/</span>
-    <a href="?lang=en" style="color:var(--dim);font:11px var(--mono);text-decoration:none">EN</a>
-    <button class="iconbtn" id="theme" title="theme">◐</button>
+    <span class="seg">
+      <a href="?lang=zh" data-lang="zh">中文</a>
+      <a href="?lang=en" data-lang="en">EN</a>
+      <button type="button" data-theme-choice="dark">暗</button>
+      <button type="button" data-theme-choice="light">亮</button>
+    </span>
   </header>
+
+  <form class="askbox" id="askform">
+    <input id="asktext" name="text" placeholder="问塔台：谁卡住了？" autocomplete="off" required>
+    <button type="submit">发送</button>
+  </form>
+  <p id="askmsg" role="status"></p>
 
   <div class="live">
     <span class="pulse"></span>
@@ -206,9 +118,12 @@ PAGE = r"""<!doctype html>
 
   <div class="grid">
     <div>
-      <div class="panel coord" id="coord"></div>
+      <article class="coord" id="coord"></article>
       <div class="label">项目 PROJECTS · 一个塔 = 一个工作区，点一个只看它</div>
-      <div id="teams"></div>
+      <table>
+        <thead><tr><th>项目</th><th>Bot</th><th>未完成</th><th>需要你</th><th>逾期</th></tr></thead>
+        <tbody id="teams"></tbody>
+      </table>
     </div>
     <div>
       <div class="auto" id="auto">规则：待总控 = 已交付待验收 / 打回重试中（塔自己收口）· 需要你 = blocked/failed 且重试用尽</div>
@@ -224,20 +139,20 @@ PAGE = r"""<!doctype html>
           </div>
         </details>
       </div>
-      <div id="bots"></div>
+      <section id="bots"></section>
       <details class="how" style="margin-top:14px">
         <summary style="font:600 10.5px var(--mono);letter-spacing:.12em;color:var(--dim2)">统计 STATS · 验收率 / 周期 / 每日吞吐（复盘时再看）</summary>
         <div class="business" id="business" style="margin-top:8px"></div>
       </details>
       <div class="label">Ledger · 操作日志</div>
-      <div class="panel" style="max-height:220px;overflow:auto">
-        <div id="log" style="font:11.5px/1.7 var(--mono);color:var(--dim)"></div>
-      </div>
+      <article style="max-height:220px;overflow:auto">
+        <div id="log" style="font-size:.8rem;color:var(--pico-muted-color)"></div>
+      </article>
     </div>
   </div>
-</div>
+</main>
 
-<div class="dock">
+<footer class="dock">
   <div class="col">
     <div class="hdr"><b>NOW · 需要你处理</b><span id="nowcount"></span>
       <span style="color:var(--dim2);font-size:11px">只有你能做的决定</span></div>
@@ -250,7 +165,7 @@ PAGE = r"""<!doctype html>
     <div id="next"></div>
     <div class="bar"><i id="nextbar"></i></div>
   </div>
-</div>
+</footer>
 
 <script>
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -264,11 +179,34 @@ window.addEventListener("error", (event) => {
 });
 const QS = new URLSearchParams(location.search);
 const THEME = "tower-hq-theme";
+const paintTheme = () => document.querySelectorAll("[data-theme-choice]").forEach((b) =>
+  b.classList.toggle("on", b.dataset.themeChoice === document.documentElement.getAttribute("data-theme")));
 document.documentElement.setAttribute("data-theme", QS.get("theme") || localStorage.getItem(THEME) || "dark");
-$("theme").onclick = () => {
-  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem(THEME, next);
+paintTheme();
+document.querySelectorAll("[data-theme-choice]").forEach((b) => {
+  b.onclick = () => {
+    document.documentElement.setAttribute("data-theme", b.dataset.themeChoice);
+    localStorage.setItem(THEME, b.dataset.themeChoice);
+    paintTheme();
+  };
+});
+
+$("askform").onsubmit = async (event) => {
+  event.preventDefault();
+  const text = $("asktext").value.trim();
+  if (!text) return;
+  $("askmsg").textContent = "转发中…";
+  try {
+    const r = await fetch("/api/ask", {method: "POST", headers: {"Content-Type": "application/json"},
+                                       body: JSON.stringify({text})});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+    $("askmsg").textContent = `→ ${data.role} · ${data.task}`;
+    $("asktext").value = "";
+    load();
+  } catch (err) {
+    $("askmsg").textContent = "转发失败：" + (err.message || err);
+  }
 };
 
 const TEAM_COLOURS = ["#3b82f6", "#ec4899", "#f59e0b", "#22c55e", "#14b8a6", "#64748b", "#a855f7", "#06b6d4"];
@@ -317,7 +255,6 @@ function dotString(project) {
 }
 
 function drawHeader() {
-  $("mark").innerHTML = bot("ok", "#3b82f6", 42);
   const selected = state.projects.find((p) => p.name === state.project);
   const title = state.project === "__all__" ? L.all : (selected?.name || state.project || "");
   if (title) { $("title").textContent = title; document.title = title + " — 控制塔 HQ"; }
@@ -344,54 +281,46 @@ function drawHeader() {
 function drawTeams() {
   const active = state.project;
   const totals = state.overview?.totals || {};
-  const allChip = `
-    <div class="team" data-p="__all__" aria-pressed="${active === "__all__"}">
-      <i class="dot" style="background:var(--slate);color:var(--slate)"></i>
-      <div>
-        <div class="nm">${esc(L.all)} ${totals.projects ?? 0}</div>
-        <div class="meta">${esc(L.bots)} ${totals.bots ?? 0} · ${esc(L.open)} ${totals.open ?? 0}</div>
-        <div class="dots">${dotString({ bots: totals.bots, needs_you: totals.needs_you, overdue: totals.overdue, working: totals.working })}</div>
-      </div>
-      <span class="meta">${totals.needs_you ? totals.needs_you + " " + L.needs : ""}</span>
-    </div>`;
-  const rows = state.projects.map((p) => `
-    <div class="team" data-p="${esc(p.name)}" aria-pressed="${p.name === active}">
-      <i class="dot" style="background:${esc(p.color)};color:${esc(p.color)}"></i>
-      <div>
-        <div class="nm">${esc(p.name)}</div>
-        <div class="meta">${p.ok ? `${p.bots} ${esc(L.bots)} · ${p.open} ${esc(L.open)}` : `<span style="color:var(--red)">${esc(L.broken)}</span>`}</div>
-        <div class="dots">${dotString(p)}</div>
-      </div>
-      <span class="meta">${p.ok
-        ? (p.needs_you ? `<span style="color:var(--red)">${esc(L.needs_you)} ${p.needs_you}</span>`
-           : ((p.lead ?? 0) > 0 ? `<span style="color:var(--orange)">${esc(L.lead_queue)} ${p.lead}</span>` : "—"))
-        : ""}</span>
-    </div>`).join("");
-  $("teams").innerHTML = allChip + rows;
+  const row = (key, colour, label, bots, open, needs, late, pressed) =>
+    `<tr data-p="${esc(key)}"${pressed ? ' aria-selected="true"' : ""}>
+      <td><i class="dot" style="background:${esc(colour)}"></i> ${label}</td>
+      <td>${bots}</td><td>${open}</td><td>${needs}</td><td>${late}</td></tr>`;
+  const rows = state.projects.map((p) => row(p.name, p.color || "#64748b",
+    p.ok ? esc(p.name) : `${esc(p.name)} <small>${esc(L.broken)}</small>`,
+    p.bots, p.open, p.needs_you || 0, p.overdue || 0, p.name === active));
+  const allRow = `<tr data-p="__all__"${active === "__all__" ? ' aria-selected="true"' : ""}>
+    <td><i class="dot" style="background:#64748b"></i> ${esc(L.all)} ${totals.projects ?? 0}</td>
+    <td>${totals.bots ?? 0}</td><td>${totals.open ?? 0}</td>
+    <td>${totals.needs_you ?? 0}</td><td>${totals.overdue ?? 0}</td></tr>`;
+  $("teams").innerHTML = allRow + rows.join("");
   $("teams").querySelectorAll("[data-p]").forEach((el) => {
     el.onclick = () => { state.project = el.dataset.p; load(); };
   });
+}
+
+function nextLine(next) {
+  if (!next || !next.due) return "";
+  const due = String(next.due);
+  return `<div class="countdown"><span>下一次到期</span><b>${esc(parseDue(due) ? countdownTo(due) : due)}</b></div>`;
 }
 
 function drawCoord() {
   if (state.project === "__all__") {
     const t = state.overview?.totals || {};
     $("coord").innerHTML = `
-      ${bot("ok", "#3b82f6", 96)}
+      <span class="logochip big">${esc((L.all || "A").slice(0, 1).toUpperCase())}</span>
       <div class="nm">${esc(L.all)} · ${t.projects ?? 0} ${esc(L.projects)}</div>
       <div class="desc">${esc(L.bots)} ${t.bots ?? 0} · ${esc(L.open)} ${t.open ?? 0} · ${esc(L.accepted)} ${t.accepted ?? 0}</div>
       <div class="countdown"><span>${esc(L.overdue)}</span><b>${t.overdue ?? 0}</b></div>`;
     return;
   }
   const proj = state.projects.find((p) => p.name === state.project);
-  const colour = proj?.color || "#3b82f6";
   const next = nextDue();
-  const countdown = next ? countdownTo(next.due) : "—";
   $("coord").innerHTML = `
-    ${bot(next ? "ok" : "ok", colour, 96)}
+    <span class="logochip big">${esc((state.project || "—").trim().slice(0, 1).toUpperCase())}</span>
     <div class="nm">${esc(state.project || "—")}</div>
     <div class="desc">coordinator · 管 ${proj?.bots ?? 0} 个 bot · ${proj?.path ?? ""}</div>
-    <div class="countdown"><span>下一次到期</span><b>${esc(countdown)}</b></div>`;
+    ${nextLine(next)}`;
 }
 
 function parseDue(text) {
@@ -729,6 +658,7 @@ def render(cfg, lang: str = "en") -> str:
 
     page = PAGE.replace("__NAME__", display_name(cfg)).replace("__WS__", str(cfg.workspace))
     page = page.replace("__PROJECT__", display_name(cfg))
+    page = page.replace("__MARK__", (display_name(cfg)[:1] or "T").upper())
     page = page.replace("__LANG__", "zh-CN" if lang == "zh" else "en")
     page = page.replace("__LABELS__", _json.dumps(LABELS.get(lang, LABELS["en"]), ensure_ascii=False))
     if lang == "zh":

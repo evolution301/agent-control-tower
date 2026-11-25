@@ -113,6 +113,10 @@ class TowerConfig:
     # v3 §2: the DSH sidebar registry lives in $DSH_HOME/storages/workspace.json.
     # `tower dsh status` reads it; `tower dsh register` writes it (with a backup).
     sidebar_register: bool = True
+    # 2026-11-25: pre-registered DSH sessions a new role can claim, so a bot is
+    # visible without a second app restart. 0 disables the pool (old towers).
+    dsh_pool_size: int = 0
+    dsh_pool_warning: str = ""
     # v0.16 — deploy guard: how to read a remote file before an upload.
     # `deploy.fetch` in tower.toml, a list (placeholders expanded) or a shell string.
     deploy_fetch: list[str] | str | None = None
@@ -206,6 +210,29 @@ def effective_review_roles(cfg: TowerConfig) -> list[str]:
     return effective
 
 
+def _parse_pool_size(value: Any) -> tuple[int, str]:
+    """adapters.dsh.pool_size -> (size, warning); anything unusable is 0.
+
+    0..64 is the hard range; above 16 is still valid but `tower doctor` warns
+    that the sidebar cannot sanely use it. Non-integers and negatives never
+    become a pool.
+    """
+    bad = f"adapters.dsh.pool_size must be an integer in 0..64 (got {value!r}) — using 0"
+    if isinstance(value, bool):
+        return 0, bad
+    if isinstance(value, float):
+        if not value.is_integer():
+            return 0, bad
+        value = int(value)
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return 0, bad
+    if not 0 <= size <= 64:
+        return 0, bad
+    return size, ""
+
+
 def _load_yaml_or_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     if path.suffix in (".yaml", ".yml"):
@@ -251,6 +278,8 @@ def parse_config(path: Path) -> TowerConfig:
         workspace = (path.parent / workspace).resolve()
 
     adapter_options = raw.get("adapters") or {}
+    dsh_options = adapter_options.get("dsh") or {}
+    dsh_pool_size, dsh_pool_warning = _parse_pool_size(dsh_options.get("pool_size", 0))
 
     project_root = Path(raw.get("project_root") or workspace).expanduser()
     if not project_root.is_absolute():
@@ -309,6 +338,8 @@ def parse_config(path: Path) -> TowerConfig:
         huddle_timeout_s=max(1, min(120, int((raw.get("huddle") or {}).get("timeout_s", 90)))),
         group_auto=bool((raw.get("groups") or {}).get("auto", True)),
         sidebar_register=bool((raw.get("sidebar") or {}).get("register", True)),
+        dsh_pool_size=dsh_pool_size,
+        dsh_pool_warning=dsh_pool_warning,
         deploy_fetch=(raw.get("deploy") or {}).get("fetch") or None,
         self_review_since=str(raw.get("self_review_since", "")),
         escalation_enabled=bool((raw.get("escalation") or {}).get("enabled", True)),

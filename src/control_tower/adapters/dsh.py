@@ -532,7 +532,7 @@ class DshAdapter:
             text += " · " + label(queue)
         return AdapterResult(text=text, exit_code=0, meta=meta)
 
-    def session_state(self, session_id: str) -> dict[str, Any]:
+    def session_state(self, session_id: str, detail: bool = False) -> dict[str, Any]:
         """Best-effort read of turns/llmMs/model for one session.
 
         `session/projections` is the only RPC that answers these; its args live
@@ -557,7 +557,7 @@ class DshAdapter:
         used = selection.get("lastUsed") or selection.get("next") or {}
         if not isinstance(used, dict):
             used = {}
-        return {
+        state = {
             "turns": int(stats.get("turns") or 0),
             "llmMs": int(stats.get("llmMs") or 0),
             "steps": int(stats.get("steps") or 0),
@@ -568,6 +568,12 @@ class DshAdapter:
             # proof that a turn cannot start.
             "model_known": "modelSelection" in values,
         }
+        if detail:
+            # `asOfSeq` is the page cursor `session/page` needs; `turnOutline`
+            # is the host's own turn index ({turn, seq, prompt, response}).
+            state["asOfSeq"] = int(value.get("asOfSeq") or 0)
+            state["outline"] = values.get("turnOutline") or []
+        return state
 
     def session_pressure(self, session_id: str) -> dict[str, Any] | None:
         """Read contextPressure from session/projections and return percent.
@@ -642,6 +648,11 @@ class DshAdapter:
         return AdapterResult(text=result_text, exit_code=0, meta=meta)
 
     def run(self, req: AdapterRequest) -> AdapterResult:
+        if (req.options or {}).get("expect_report", True) is False:
+            return self._run_discussion(req)
+        return self._run_with_report(req)
+
+    def _run_with_report(self, req: AdapterRequest) -> AdapterResult:
         session_id, how = self.resolve_session(req)
         self.resolution[req.role] = how
         if not session_id:
@@ -653,8 +664,9 @@ class DshAdapter:
 
         report = self.report_path(req)
         report.parent.mkdir(parents=True, exist_ok=True)
-        if report.exists():
-            report.unlink()
+        # Freshness, not existence: a rolling report another task left behind
+        # (`roles/<role>/-REPORT.md`) must not be read as this turn's answer.
+        base = self._report_stamp(report)
 
         prompt = (
             req.prompt
@@ -716,7 +728,7 @@ class DshAdapter:
 
         deadline = time.time() + self.wait_s
         while time.time() < deadline:
-            if report.exists() and report.stat().st_size > 0:
+            if self._fresh_report(report, base):
                 return AdapterResult(
                     text=report.read_text(encoding="utf-8"),
                     exit_code=0,
@@ -733,4 +745,226 @@ class DshAdapter:
             exit_code=4,
             meta={"expected_report": str(report), "session_id": session_id,
                   "resolution": how, "state": state},
+        )
+
+    @staticmethod
+    def _report_stamp(report: Path) -> tuple[int, int]:
+        """(mtime_ns, size) of a report file, (0, 0) when it does not exist."""
+        try:
+            st = report.stat()
+        except OSError:
+            return (0, 0)
+        return (st.st_mtime_ns, st.st_size)
+
+    @classmethod
+    def _fresh_report(cls, report: Path, base: tuple[int, int]) -> bool:
+        """True when the file was written after `base` was taken."""
+        mtime_ns, size = cls._report_stamp(report)
+        if size <= 0:
+            return False
+        return mtime_ns > base[0] or size != base[1]
+
+    @staticmethod
+    def _message_text(message: dict) -> str:
+        parts = message.get("content") or []
+        return "".join(
+            part.get("text") or ""
+            for part in parts
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+
+    def _page(self, session_id: str, as_of: int, before: int | None = None,
+              max_messages: int = 200) -> tuple[list[dict], bool]:
+        """One backwards history page: (records oldest-first, hasMore)."""
+        request: dict[str, Any] = {
+            "address": {"kind": "session", "sessionId": session_id},
+            "throughSeq": as_of,
+            "maxMessages": max_messages,
+        }
+        if before is not None:
+            request["beforeSeq"] = before
+        try:
+            reply = self.rpc("session/page", {"request": request}, timeout=20)
+        except DshRpcError:
+            return [], False
+        value = self._result_value(reply)
+        if not isinstance(value, dict):
+            return [], False
+        return list(value.get("records") or []), bool(value.get("hasMore"))
+
+    def _turn_end(self, session_id: str, as_of: int, turn_no: int) -> dict[str, Any]:
+        """Whether `turn/end` for this turn is logged, plus its final text.
+
+        `sessionStats.turns` counts a turn at its first closed STEP (DSH
+        `session-stats/src/projection.ts:33,184-186`), so it cannot gate an
+        answer: a multi-step turn would be read at its first step. `turn/end` is
+        the real boundary, and the final text is the newest text-bearing
+        assistant message of that turn, across steps and up to four pages back.
+        A step counts as in flight only while it is open: the scan pairs
+        `step/start` with the `step/end` that follows it, so a closed step does
+        not keep the settled fallback from firing.
+        """
+        text = ""
+        ended = False
+        busy = False
+        closed: set[int] = set()
+        newest_read = False
+        before: int | None = None
+        for _ in range(4):
+            records, has_more = self._page(session_id, as_of, before)
+            if not records:
+                break
+            for record in reversed(records):
+                event = record.get("event") if isinstance(record, dict) else None
+                if not isinstance(event, dict):
+                    continue
+                data = event.get("data") or {}
+                if int(data.get("turn") or 0) != turn_no:
+                    continue
+                kind = event.get("type")
+                if kind == "turn/end":
+                    ended = True
+                elif kind == "step/end":
+                    closed.add(int(data.get("step") or 0))
+                elif kind == "step/start" and int(data.get("step") or 0) not in closed:
+                    busy = True
+                elif kind == "assistant/message":
+                    message = data.get("message") or {}
+                    if not newest_read:
+                        newest_read = True
+                        busy = busy or any(
+                            isinstance(block, dict) and block.get("type") != "text"
+                            for block in message.get("content") or []
+                        )
+                    if not text:
+                        text = self._message_text(message)
+            if ended and text:
+                break
+            if not has_more:
+                break
+            first = records[0].get("event") if isinstance(records[0], dict) else None
+            before = int((first or {}).get("seq") or 0) or None
+            if before is None:
+                break
+        return {"ended": ended, "text": text, "busy": busy}
+
+    def _run_discussion(self, req: AdapterRequest) -> AdapterResult:
+        """A discussion turn: return when the TURN finishes, never wait for a report.
+
+        `sessionStats.turns` only counts completed turns (checked against the
+        live gateway: 0 while the model runs, 1 the moment the answer lands),
+        so `turns > baseline` is the completion signal; the answer itself comes
+        from the newest `assistant/message` in `session/page`.
+        """
+        session_id, how = self.resolve_session(req)
+        self.resolution[req.role] = how
+        if not session_id:
+            return AdapterResult(
+                text="[dsh] could not resolve a session for role %r (config, title match and create all failed)" % req.role,
+                exit_code=2,
+                meta={"missing_session": req.role, "resolution": how, "mode": "turn"},
+            )
+        before = self.session_state(session_id, detail=True)
+        if before.get("error"):
+            return AdapterResult(
+                text="[dsh] cannot read session state for %s: %s" % (session_id, before["error"]),
+                exit_code=4,
+                meta={"mode": "turn", "session_id": session_id, "resolution": how},
+            )
+        if before.get("model_known") and not before.get("model"):
+            return AdapterResult(
+                text="[dsh] session %s has no model selected; pick one before discussing" % session_id,
+                exit_code=4,
+                meta={"mode": "turn", "session_id": session_id, "resolution": how,
+                      "cold_session": True},
+            )
+        marker = "tower-turn-" + uuid.uuid4().hex[:8]
+        prompt = "[" + marker + "]\n\n" + req.prompt
+
+        queue = self._auto_prune(session_id)
+        try:
+            self.rpc(
+                "session/prompt",
+                {
+                    "request": {
+                        "sessionId": session_id,
+                        "requestId": str(uuid.uuid4()),
+                        "mode": "queue",
+                        "content": [{"type": "text", "text": prompt}],
+                        "clientTimeZone": self.timezone,
+                    }
+                },
+                timeout=90,
+            )
+        except DshRpcError as exc:
+            return AdapterResult(
+                text="[dsh] prompt failed: %s" % exc,
+                exit_code=3,
+                meta={"mode": "turn", "rpc": "session/prompt", "resolution": how,
+                      **self._queue_meta()},
+            )
+        if queue.get("pruned"):
+            from ..queue import label
+
+            self.last_queue_label = label(queue)
+
+        wait = min(self.wait_s, float(req.timeout_s or self.wait_s))
+        deadline = time.time() + wait
+        started = False
+        settled = ""
+        while time.time() < deadline:
+            state = self.session_state(session_id, detail=True)
+            turns = int(state.get("turns") or 0)
+            entry = next(
+                (row for row in state.get("outline") or []
+                 if marker in str(row.get("prompt") or "")),
+                None,
+            )
+            if entry is not None:
+                started = True
+                turn_no = int(entry.get("turn") or 0)
+                if turns >= turn_no:
+                    facts = self._turn_end(
+                        session_id, int(state.get("asOfSeq") or 0), turn_no,
+                    )
+                    stable = facts["text"] != "" and facts["text"] == settled
+                    settled = facts["text"] or settled
+                    if facts["ended"] and facts["text"]:
+                        return AdapterResult(
+                            text=facts["text"],
+                            exit_code=0,
+                            meta={"mode": "turn", "session_id": session_id,
+                                  "resolution": how, "turns": turns, "turn": turn_no,
+                                  "signal": "turn/end", **self._queue_meta()},
+                        )
+                    if facts["ended"]:
+                        return AdapterResult(
+                            text=("[dsh] our turn %s ended without assistant text"
+                                  % turn_no),
+                            exit_code=4,
+                            meta={"mode": "turn", "session_id": session_id,
+                                  "resolution": how, "turns": turns, "turn": turn_no,
+                                  "reason": "empty turn"},
+                        )
+                    if stable and not facts["busy"]:
+                        # No `turn/end` in this gateway's page but the text has
+                        # held still for a full poll and no step is running.
+                        return AdapterResult(
+                            text=facts["text"],
+                            exit_code=0,
+                            meta={"mode": "turn", "session_id": session_id,
+                                  "resolution": how, "turns": turns, "turn": turn_no,
+                                  "signal": "settled", **self._queue_meta()},
+                        )
+            time.sleep(self.poll_s)
+        state = self.session_state(session_id)
+        why = ("started but did not finish" if started
+               else "queued behind another turn — the session was busy")
+        return AdapterResult(
+            text=("[dsh] discussion turn: %s within %gs (turns=%s, model=%s)"
+                  % (why, wait, state.get("turns"), state.get("model") or "no model")),
+            exit_code=4,
+            meta={"mode": "turn", "session_id": session_id, "resolution": how,
+                  "turns": state.get("turns"), "started": started,
+                  "reason": "timeout"},
         )

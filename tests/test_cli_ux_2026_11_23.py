@@ -90,3 +90,14 @@ def test_worker_status_lists_the_pool_and_every_job(tmp_path, monkeypatch, capsy
     assert "pool:  2   (recorded pid holds the worker lock: False)" in out
     assert "worker: job Q-00001 (dispatch) task T-0001 role seed started 5m ago" in out
     assert "worker: job Q-00002 (review) task T-0002 role seed started 1m ago" in out
+
+def test_doctor_reports_first_binding_as_info_not_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOWER_HOME", str(tmp_path / "home"))
+    _write_tower(tmp_path)
+
+    assert cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "info: aim: no bound tower recorded yet" in out
+    assert "not a configuration error" in out
+    assert "warning: aim: no bound tower" not in out

@@ -312,6 +312,15 @@ def render_page(cfg, lang: str = "en") -> str:
     return render_hq(cfg, lang)
 
 
+def _junk_project(entry: dict) -> bool:
+    """Office owner-locks (`~$…`) and other non-project junk that reached the registry."""
+    name = str(entry.get("name") or "")
+    if name.startswith("~$") or name.lower().endswith((".tmp", ".lock")):
+        return True
+    path = Path(str(entry.get("path") or ""))
+    return not str(entry.get("path") or "") or (path.exists() and not path.is_dir())
+
+
 def _project_configs(cfg: TowerConfig):
     """Every project the panel knows: the registry, plus the one it was started in.
 
@@ -321,7 +330,7 @@ def _project_configs(cfg: TowerConfig):
     from . import registry
     from .config import load_config
 
-    entries = registry.load_projects()
+    entries = [entry for entry in registry.load_projects() if not _junk_project(entry)]
     started = str(Path(cfg.workspace).resolve())
     if not any(str(Path(e["path"]).resolve()) == started for e in entries):
         entries = [{"name": cfg.name, "path": started, "color": registry.PALETTE[0]}] + entries
@@ -383,6 +392,15 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
             query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            if path == "/assets/pico.css":
+                asset = Path(__file__).resolve().parent / "panel_assets" / "pico.classless.min.css"
+                try:
+                    body = asset.read_bytes()
+                except FileNotFoundError:
+                    self._send(404, b"not found", "text/plain; charset=utf-8")
+                    return
+                self._send(200, body, "text/css; charset=utf-8")
+                return
             if path == "/scene":
                 from .panel_scene import render as render_scene
 
@@ -482,6 +500,7 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                 return
             refusal = self._post_refusal()
             if refusal:
+                self._discard_body()
                 self.close_connection = True
                 self._send(403, json.dumps({"ok": False, "error": refusal}).encode("utf-8"),
                            "application/json; charset=utf-8")
@@ -521,6 +540,16 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                 return
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
+
+        def _discard_body(self) -> None:
+            # Refuse without parsing, but consume the request body: closing the
+            # socket with unread input makes Windows reset the 403 itself.
+            try:
+                length = min(int(self.headers.get("Content-Length", "0")), 64 * 1024)
+            except ValueError:
+                return
+            if length > 0:
+                self.rfile.read(length)
 
         def _post_refusal(self) -> str:
             """Why this POST is not from the panel's own page, or "".

@@ -8,7 +8,9 @@
 4. drop verify commands that cannot run on this machine,
 5. resolve a session for every role (cache -> title match on the RPC row or the
    disk projection cache -> create), optionally pinning the ids in the config,
-6. optionally send one real brief and wait for its report.
+6. with `adapters.dsh.pool_size` set, reconcile that many spare sessions and
+   register them, so a role added later is visible without a restart,
+7. optionally send one real brief and wait for its report.
 
 Every step is idempotent: running it twice changes nothing and costs one
 `session/list`.
@@ -16,15 +18,27 @@ Every step is idempotent: running it twice changes nothing and costs one
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
+from . import sidebar
 from .adapters.base import AdapterRequest
 from .adapters.dsh import DshAdapter, DshRpcError
 from .config import load_config
+
+# Pre-registered sessions: DSH reads its sidebar registry once per boot, so a
+# role that gets a session later is invisible until a restart. A pool of spare
+# sessions, created AND registered by bootstrap, lets `role add` claim one and
+# show up immediately. `size` counts the FREE spares; claimed ids are kept in
+# the same record as an audit trail and never count toward capacity.
+POOL_PREFIX = "tower pool"
+POOL_EMPTY_WARNING = "pool empty — new roles need a restart until refilled"
 
 SECRET_RE = re.compile(r'SECRET_B64\s*=\s*"([^"]+)"')
 # A legal YAML value is quoted OR a bare scalar; the old `"[^"]*"`-only pattern
@@ -273,6 +287,225 @@ def delete_session(base_url: str, secret: str, session_id: str) -> dict:
         return {"error": str(exc), "code": exc.code}
 
 
+def pool_size(cfg) -> int:
+    """`adapters.dsh.pool_size`; 0 (off) for every tower that never set it."""
+    options = (cfg.adapter_options or {}).get("dsh") or {}
+    try:
+        return max(0, int(options.get("pool_size", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def pool_path(cfg) -> Path:
+    return cfg.state_dir / "dsh_pool.json"
+
+
+def _entry_id(entry) -> str:
+    """A free/claimed entry is a session id or `{"session": id, …}` (both writers)."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return str(entry.get("session") or entry.get("id") or "")
+    return ""
+
+
+def _claimed_ids(claimed: dict) -> set[str]:
+    return {sid for sid in (_entry_id(entry) for entry in claimed.values()) if sid}
+
+
+def load_pool(cfg) -> dict | None:
+    """The record, or None when it is missing or unreadable (bootstrap rebuilds it).
+
+    Entries are kept verbatim so a rewrite by bootstrap cannot flatten the
+    `{"session": …, "title": …}` shape `dsh pool list` writes.
+    """
+    try:
+        raw = json.loads(pool_path(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        size = max(0, int(raw.get("size") or 0))
+    except (TypeError, ValueError):
+        size = 0
+    claimed = (raw.get("claimed") or {}) if isinstance(raw.get("claimed"), dict) else {}
+    return {
+        "size": size,
+        "free": [sid for sid in (_entry_id(e) for e in (raw.get("free") or [])) if sid],
+        "claimed": {str(role): entry for role, entry in claimed.items() if _entry_id(entry)},
+    }
+
+
+def save_pool(cfg, record: dict) -> None:
+    path = pool_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def pool_state(cfg) -> dict:
+    """What `tower dsh pool list` prints. Never raises; `error` says the record is unusable."""
+    record = load_pool(cfg)
+    if record is not None:
+        return record
+    state = {"size": pool_size(cfg), "free": [], "claimed": {}}
+    if pool_path(cfg).exists():
+        state["error"] = f"{pool_path(cfg)} is unreadable — the next bootstrap rebuilds it"
+    return state
+
+
+def pool_warning(cfg) -> str:
+    """The doctor line, or "" when the pool can still serve a new role."""
+    if not pool_size(cfg):
+        return ""
+    record = load_pool(cfg) or {}
+    return "" if record.get("free") else POOL_EMPTY_WARNING
+
+
+def _registry_snapshot(cfg) -> tuple[set[str] | None, str]:
+    """Registered session ids for this workspace, or (None, why not)."""
+    data = sidebar.load_registry()
+    if data is None:
+        return None, (
+            f"no DSH workspace registry at {sidebar.registry_path()} — "
+            "leave pool_size at 0 on this machine"
+        )
+    found = sidebar.workspace_row(data, cfg.workspace)
+    if not found:
+        return None, (
+            f"this tower's workspace is not in the DSH registry ({cfg.workspace}) — "
+            "open it once in the desktop app, then bootstrap again"
+        )
+    return {str(s) for s in (found[1].get("sessionIds") or [])}, ""
+
+
+def register_pool_ids(cfg, ids: list[str]) -> dict:
+    """Append ids to the workspace row — the same file `dsh register --apply` writes."""
+    data = sidebar.load_registry()
+    found = sidebar.workspace_row(data, cfg.workspace) if data else None
+    if found is None:
+        return {"added": [], "error": "no registry row for this workspace"}
+    path = sidebar.registry_path()
+    sessions = [str(s) for s in (found[1].get("sessionIds") or [])]
+    missing = [sid for sid in ids if sid not in set(sessions)]
+    if not missing:
+        return {"added": [], "registry": str(path)}
+    backup = path.with_suffix(f".json.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(path, backup)
+    found[1]["sessionIds"] = sessions + missing
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+    return {"added": missing, "backup": str(backup), "registry": str(path)}
+
+
+def _session_rows(adapter) -> tuple[list[dict], str]:
+    try:
+        reply = adapter.rpc("session/list", {"_request": {}})
+        value = DshAdapter._result_value(reply)
+    except DshRpcError as exc:
+        return [], f"session/list failed ({exc}) — nothing was created"
+    items = (value or {}).get("items") if isinstance(value, dict) else None
+    if not isinstance(items, list):
+        return [], "session/list answered without items — nothing was created"
+    return [item for item in items if isinstance(item, dict)], ""
+
+
+def _pool_title(item: dict) -> str:
+    projections = item.get("projections") or {}
+    values = projections.get("values") if isinstance(projections, dict) else None
+    return str((values or {}).get("title") or "") if isinstance(values, dict) else ""
+
+
+def _pool_titles(rows: list[dict]) -> dict[str, str]:
+    return {
+        str(item.get("sessionId") or ""): _pool_title(item)
+        for item in rows
+        if item.get("sessionId")
+    }
+
+
+def _adopt_pooled(rows: list[dict], known: set[str], registered: set[str] | None, size: int) -> list[str]:
+    """Recover pooled ids from the harness when the record is gone or corrupt.
+
+    A pooled session is identified by its title prefix and confirmed by the
+    registry, so a lost `.tower/dsh_pool.json` costs a diff, not N new sessions.
+    """
+    adopted: list[str] = []
+    for item in rows:
+        sid = str(item.get("sessionId") or "")
+        if not sid or sid in known or len(adopted) >= size:
+            continue
+        if not _pool_title(item).startswith(POOL_PREFIX):
+            continue
+        if registered is not None and sid not in registered:
+            continue
+        adopted.append(sid)
+    return adopted
+
+
+def reconcile_pool(cfg, adapter) -> dict:
+    """Create the missing spares, register every free one, save the record.
+
+    Idempotent by reconciliation, never by append: ids already in the harness
+    are kept, ids the harness no longer has are replaced, and a missing record
+    is rebuilt from the registry instead of duplicating the pool.
+    """
+    size = pool_size(cfg)
+    result = {"size": size, "free": [], "claimed": {}, "created": [], "registered": [], "error": ""}
+    if size <= 0:
+        return {**result, "skipped": "adapters.dsh.pool_size is 0"}
+
+    loaded = load_pool(cfg)
+    record = loaded or {"size": size, "free": [], "claimed": {}}
+    rows, error = _session_rows(adapter)
+    if error:
+        return {**result, "free": record["free"], "claimed": record["claimed"], "error": error}
+
+    titles = _pool_titles(rows)
+    live = set(titles)
+    if loaded is None:
+        # No usable bookkeeping: rebuild `claimed` from the role sessions that
+        # carry a pool title, then recover the free ones from the registry diff.
+        record["claimed"] = {
+            str(role): str(sid)
+            for role, sid in (getattr(adapter, "sessions", None) or {}).items()
+            if sid in live and titles.get(str(sid), "").startswith(POOL_PREFIX)
+        }
+    claimed_ids = _claimed_ids(record["claimed"])
+    free = [sid for sid in record["free"] if sid in live and sid not in claimed_ids]
+
+    registered, error = _registry_snapshot(cfg)
+    if loaded is None:
+        free = _adopt_pooled(rows, set(free) | claimed_ids, registered, size)
+
+    created: list[str] = []
+    added: dict = {"added": []}
+    if not error:
+        for _ in range(max(0, size - len(free))):
+            session_id = adapter.create_session(f"{POOL_PREFIX} {secrets.token_hex(3)}", str(cfg.workspace))
+            if not session_id:
+                error = "the harness refused to create a session — the pool is short"
+                break
+            created.append(session_id)
+            free.append(session_id)
+        if free:
+            added = register_pool_ids(cfg, free)
+            error = added.get("error", "")
+
+    save_pool(cfg, {"size": size, "free": free, "claimed": record["claimed"]})
+    return {
+        "size": size,
+        "free": free,
+        "claimed": record["claimed"],
+        "created": created,
+        "registered": added.get("added", []),
+        "error": error,
+    }
+
+
 def run_bootstrap(
     config_path: Path,
     *,
@@ -327,6 +560,19 @@ def run_bootstrap(
     summary["roles"] = rows
     summary["pinned"] = pin
     summary["steps"].append({"step": "sessions", "resolved": sum(1 for r in rows if r["session_id"])})
+
+    if pool_size(cfg):
+        # A role added later can only be seen without a restart if its session is
+        # registered before boot — hence spare sessions created and registered here.
+        pool = reconcile_pool(cfg, adapter)
+        summary["pool"] = pool
+        summary["steps"].append({
+            "step": "pool",
+            "size": pool["size"],
+            "free": len(pool["free"]),
+            "created": len(pool["created"]),
+            "error": pool.get("error", ""),
+        })
 
     if delete:
         reply = delete_session(detected, secret, delete)

@@ -21,6 +21,7 @@
  */
 
 import { execFile, spawn, spawnSync } from 'node:child_process'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
@@ -33,7 +34,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.18.5'
+export const VERSION = '0.18.6'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
@@ -935,20 +936,206 @@ function roleSession(cfg, role) {
 }
 
 function missingSessionText(cfg, role) {
-  const checked = ['sessions', 'adapters.dsh.sessions']
-  if (cfg.adapterOptions?.dsh?.sessions) checked.push('adapterOptions.dsh.sessions')
-  return `no session configured for role '${role}' (checked ${checked.join(', ')})`
+  const maps = [
+    ['sessions', cfg.sessions],
+    ['adapters.dsh.sessions', cfg.adapters?.dsh?.sessions],
+    ['adapterOptions.dsh.sessions', cfg.adapterOptions?.dsh?.sessions],
+  ]
+  const found = maps.map(([name, map]) => {
+    if (!map || typeof map !== 'object') return `${name}: absent`
+    const keys = Object.keys(map).filter((key) => String(map[key] ?? '').trim())
+    return `${name}: ${keys.length ? keys.join(', ') : '(empty)'}`
+  })
+  return `no session configured for role '${role}' (checked ${maps.map(([name]) => name).join(', ')}; `
+    + `found ${found.join('; ')}; dsh-tower ${VERSION})`
 }
 
 const NO_COMPACTION = 'compaction service not available in this profile — '
   + 'enable dsh-compaction-basic, or run /compact in that session'
 
-/** `tower_compact`: force one manual compaction of a live session, in-process. */
+/** Gateway coordinates from the tower file (the plugin config does not carry them). */
+function towerGateway(settings) {
+  for (const name of ['tower.toml', 'tower.yaml', 'tower.yml', 'tower.json']) {
+    let text = ''
+    try {
+      text = readFileSync(join(settings.workspace, name), 'utf8')
+    } catch {
+      continue
+    }
+    if (name.endsWith('.json')) {
+      try {
+        const dsh = JSON.parse(text)?.adapters?.dsh ?? {}
+        const base = String(dsh.base_url ?? '').replace(/\/$/, '')
+        if (base) {
+          return {
+            base,
+            secret: String(dsh.secret ?? ''),
+            authority: String(dsh.authority ?? '') || base.split('://')[1]?.split('/')[0] || '',
+          }
+        }
+      } catch { /* fall through to the text match */ }
+    }
+    const base = (text.match(/base_url:\s*"?([^"\s\n]+)"?/) || [])[1] || ''
+    const secret = (text.match(/secret:\s*"?([^"\s\n]+)"?/) || [])[1] || ''
+    const authority = (text.match(/authority:\s*"?([^"\s\n]+)"?/) || [])[1] || ''
+    if (base) {
+      return {
+        base: base.replace(/\/$/, ''),
+        secret,
+        authority: authority || base.split('://')[1]?.split('/')[0] || '',
+      }
+    }
+  }
+  return { base: '', secret: '', authority: '' }
+}
+
+function b64u(value) {
+  return Buffer.from(value).toString('base64url')
+}
+
+/** The HMAC cookie the desktop gateway accepts for one authority. */
+function authCookie(authority, secret) {
+  const issuedAt = Date.now()
+  const payload = {
+    version: 1,
+    authority,
+    issuedAt,
+    expiresAt: issuedAt + 30 * 24 * 3600 * 1000,
+  }
+  const body = b64u(JSON.stringify(payload))
+  const signature = createHmac('sha256', Buffer.from(secret, 'base64url'))
+    .update(body, 'ascii')
+    .digest('base64url')
+  const name = 'dsh-auth-' + createHash('sha256').update(authority, 'utf8').digest('base64url')
+  return `${name}=v1.${body}.${signature}`
+}
+
+/**
+ * Deliver `/compact` to the session's owning process. The gateway's
+ * `commands/execute` is admission-only: it answers `ok` when the host accepted
+ * the line, and the lifecycle lands in that session's flow. No shadowed-token
+ * count crosses the process boundary, so none is invented here.
+ */
+async function deliverCompact(settings, sessionId) {
+  const gateway = towerGateway(settings)
+  if (!gateway.base) {
+    const error = new Error('adapters.dsh.base_url is not set in the tower file')
+    error.code = 'gateway/no-base-url'
+    throw error
+  }
+  const headers = { 'content-type': 'application/json', accept: 'application/json', origin: gateway.base }
+  if (gateway.secret) headers.cookie = authCookie(gateway.authority, gateway.secret)
+  let response
+  try {
+    response = await fetch(`${gateway.base}/api/commands/execute`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: randomUUID(),
+        method: 'commands/execute',
+        payload: { args: { agentId: sessionId, line: '/compact', submittedAttachments: [] } },
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+  }
+  catch (err) {
+    const error = new Error(`gateway unreachable: ${String(err?.message ?? err).slice(0, 200)}`)
+    error.code = 'gateway/unreachable'
+    throw error
+  }
+  const raw = await response.text()
+  let reply
+  try {
+    reply = JSON.parse(raw)
+  }
+  catch {
+    const error = new Error(`gateway answered HTTP ${response.status} with non-JSON`)
+    error.code = 'gateway/bad-reply'
+    throw error
+  }
+  const result = reply?.result
+  if (!response.ok || !result) {
+    const error = new Error(result?.error?.message || `gateway answered HTTP ${response.status}`)
+    error.code = result?.error?.code || `http/${response.status}`
+    throw error
+  }
+  if (result.ok === false) {
+    const error = new Error(result.error?.message || 'command refused')
+    error.code = result.error?.code || 'command/refused'
+    throw error
+  }
+  return result.value
+}
+
+/** Receipt wording: the id/seq when the gateway gives one, never a fake number. */
+function receiptText(value) {
+  if (value && typeof value === 'object') {
+    const parts = []
+    for (const key of ['id', 'commandId', 'seq', 'acceptedAt']) {
+      if (value[key] !== undefined && value[key] !== null) parts.push(`${key} ${value[key]}`)
+    }
+    if (parts.length) return parts.join(', ')
+  }
+  return '受理回执 ok，网关未返回 id/seq'
+}
+
+/** The existing in-process fast path; `crossProcess` marks misses worth a RPC. */
+async function compactInProcess(host, sessionId) {
+  if (!host?.agents) {
+    return { ok: false, crossProcess: true, text: 'this mount does not expose the agents service' }
+  }
+  const agent = host.agents.get(sessionId)
+  if (!agent) {
+    return {
+      ok: false,
+      crossProcess: true,
+      text: `no live agent for session '${sessionId}' (is the session open?)`,
+    }
+  }
+  // compaction is an OPTIONAL service: reading it throws the cordis
+  // "cannot get property … without inject" error when dsh-compaction-basic
+  // is not loaded/available in this profile — surface that as guidance.
+  let compaction = null
+  try {
+    compaction = host.compaction
+  }
+  catch {
+    return { ok: false, crossProcess: false, text: NO_COMPACTION }
+  }
+  if (!compaction || typeof compaction.compactNow !== 'function') {
+    return { ok: false, crossProcess: false, text: NO_COMPACTION }
+  }
+  try {
+    const result = await compaction.compactNow(agent, AbortSignal.timeout(120000), 'tower-compact')
+    const text = result === null
+      ? 'No compactable history yet.'
+      : `Compacted ${result.shadowedSeqs.length} history items (~${result.shadowedTokenCount} tokens).`
+    return { ok: true, text }
+  }
+  catch (err) {
+    if (err?.name === 'TimeoutError' || /timed? ?out/i.test(String(err?.message))) {
+      return { ok: false, crossProcess: false, text: 'compaction timed out after 120s — try again when the session is idle' }
+    }
+    const code = err?.code ?? err?.cause?.code
+    if (code) return { ok: false, crossProcess: false, text: compactErrorText(code) }
+    return {
+      ok: false,
+      crossProcess: false,
+      text: `compaction failed: ${String(err?.message ?? err).slice(0, 200)}`,
+    }
+  }
+}
+
+/**
+ * `tower_compact`: compact a session, in-process when it lives here, or by
+ * delivering the native `/compact` line through the gateway when it does not.
+ */
 export function compactTool(cfg, host) {
   return tool({
     name: 'tower_compact',
     description:
-      'Force one manual context compaction (the /compact machinery) on a live session, in-process: no extra turn, no GUI needed. Pass the DSH session id, or \'role:<name>\' to resolve the session from the tower\'s sessions mapping. Returns how much history was shadowed.',
+      'Force one manual context compaction (the /compact machinery). Pass the DSH session id, or \'role:<name>\' to resolve the session from the tower\'s sessions mapping. When the session lives in another process (desktop bots do), the line is delivered through the gateway and only the acceptance is reported — the shadowed-token count stays in that session.',
     parameters: {
       session: { type: 'string', required: true, description: 'DSH session id, or \'role:<name>\' resolved via the tower\'s session mapping.' },
     },
@@ -967,41 +1154,25 @@ export function compactTool(cfg, host) {
           return { ok: false, text: missingSessionText(cfg, role) }
         }
       }
-      if (!host?.agents) {
-        return { ok: false, text: 'this mount does not expose the agents service' }
-      }
-      const agent = host.agents.get(sessionId)
-      if (!agent) {
-        return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }
-      }
-      // compaction is an OPTIONAL service: reading it throws the cordis
-      // "cannot get property … without inject" error when dsh-compaction-basic
-      // is not loaded/available in this profile — surface that as guidance.
-      let compaction = null
-      try {
-        compaction = host.compaction
-      } catch {
-        return { ok: false, text: NO_COMPACTION }
-      }
-      if (!compaction || typeof compaction.compactNow !== 'function') {
-        return { ok: false, text: NO_COMPACTION }
-      }
-      if (!agent) {
-        return { ok: false, text: `no live agent for session '${sessionId}' (is the session open?)` }
-      }
-      try {
-        const result = await compaction.compactNow(agent, AbortSignal.timeout(120000), 'tower-compact')
-        const text = result === null
-          ? 'No compactable history yet.'
-          : `Compacted ${result.shadowedSeqs.length} history items (~${result.shadowedTokenCount} tokens).`
-        return { ok: true, text }
-      } catch (err) {
-        if (err?.name === 'TimeoutError' || /timed? ?out/i.test(String(err?.message))) {
-          return { ok: false, text: 'compaction timed out after 120s — try again when the session is idle' }
+      const attempt = await compactInProcess(host, sessionId)
+      if (attempt.ok) return { ok: true, text: attempt.text }
+      if (!attempt.crossProcess) {
+        return {
+          ok: false,
+          text: `${attempt.text}; rpc: not attempted — this process holds the session, so /compact was not delivered twice`,
         }
-        const code = err?.code ?? err?.cause?.code
-        if (code) return { ok: false, text: compactErrorText(code) }
-        return { ok: false, text: `compaction failed: ${String(err?.message ?? err).slice(0, 200)}` }
+      }
+      try {
+        const value = await deliverCompact(cfg, sessionId)
+        return {
+          ok: true,
+          text: '已在归属进程受理 /compact（' + receiptText(value)
+            + '）；结果见该会话 flow 节点——跨进程拿不到 shadowed token 数。',
+        }
+      }
+      catch (err) {
+        const why = `${err?.code || 'error'} ${String(err?.message ?? err).slice(0, 200)}`
+        return { ok: false, text: `${attempt.text}; rpc commands/execute: ${why}` }
       }
     },
     presentCall(args) {

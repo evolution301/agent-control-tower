@@ -102,6 +102,23 @@ verify_commands:
 
 `tower doctor` checks that every DSH role has a session id before you start.
 
+### Pre-registered session pool (optional)
+
+Adding a role normally creates a session that is invisible in the sidebar until
+the desktop app restarts, because DSH reads `workspace.json` once per boot. A
+pool keeps spare sessions registered in advance so a new role can claim one:
+
+```yaml
+adapters:
+  dsh:
+    pool_size: 2
+```
+
+`0` (the default) disables the pool. `tower bootstrap` creates and registers the
+spares; when a role is added it claims a free one, writes that session id into
+`tower.toml`, and is visible without another restart. Refills happen on the next
+bootstrap — the running app never notices sessions registered afterwards.
+
 ---
 
 ## 4. Run the loop

@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.6] - 2026-11-26
+
+### Added
+
+- Session pool: `adapters.dsh.pool_size` pre-registers spare DSH sessions at bootstrap and registers them in the DSH workspace registry; `tower dsh pool list` shows free/claimed slots, `tower role add` and `tower dsh register --apply` claim a free slot so a new bot appears in the sidebar without restarting DSH; doctor warns when the pool is configured but empty (`tests/test_pool_config_2026_11_25.py`).
+- `tower janitor`: zombie-task GC engine (`src/control_tower/janitor.py`, six detection rules: orphan role, no executor, overdue late, superseded, duplicate brief, report-on-disk-unaccepted). Dry-run by default with an evidence table; `--apply` resolves hits through attention with ledger notes; rule 6 is advisory-only and `--accept-reports` routes through the standard accept so verify and review gates still apply; doctor gains a zombie count and `tower projects` gains an open/zombie suffix.
+- Cross-process `tower_compact` fallback in the DSH plugin: when the in-process fast path has no live agent, `/compact` is delivered to the owning session through the gateway `commands/execute` wire method (confirmed empirically against a live gateway). The receipt reports acceptance only — token counts are never invented; role misses now list the keys found in each config map plus plugin/CLI versions.
+- Panel UI rebuild: Pico CSS vendored offline (`src/control_tower/panel_assets/`, no CDN), matte material for both themes (zero shadow/gradient, hairline borders #D2CDC2/#3B3B48, radius 14px, solid matte status chips, dark-only grain), small project monogram chips instead of oversized logo blocks, "next due" line emitted only when a due value exists and rendered from human-readable due strings, Office `~$` owner-lock and `.tmp`/`.lock` files filtered from the project registry; panel page rendering split into `src/control_tower/panel_hq.py`.
+
+### Fixed
+
+- Huddle/discussion turns now wait as *turns*, not as report files: the adapter marks discussion prompts, watches for true end-of-turn (pairing `step/start`/`step/end`, tolerating gateways without `turn/end`, scanning back across tool-only steps for the newest assistant text), and no longer mistakes a stale rolling report or a first-step preamble for the answer. A wholly failed huddle is recorded `partial` with the absent roles listed instead of being packaged as a clean plan (`tests/test_huddle_discuss_2026_11_25.py`).
+- README rebuilt Chinese-first (`README.md` is now the Chinese landing page, English moved to `README.en.md`), with a plain-language explanation of what the tower is, the before/after problems it solves, an ASCII pipeline of how work flows, and the team-meeting / self-evolution / skill-library features.
+- `tower kickoff --json` writes one JSON document to stdout; progress lines moved to stderr.
+- Panel guard closes sockets only after draining the request body, ending intermittent WinError 10053 403s on real POSTs.
+
 ## [0.18.5] - 2026-11-25
 
 ### Fixed

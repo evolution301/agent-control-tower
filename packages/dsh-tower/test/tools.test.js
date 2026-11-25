@@ -246,20 +246,29 @@ test('tower_compact resolves role:<name> from adapters.dsh.sessions', async () =
   }
 })
 
-test('tower_compact names every place it looked for the role session', async () => {
+test('tower_compact names every place it looked, with contents and versions', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
   const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
   const previous = process.env.TOWER_HOME
   try {
     writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: dsh\n')
+    writeFileSync(join(dir, 'pyproject.toml'), '[project]\nname = "agent-control-tower"\nversion = "9.9.9"\n')
     process.env.TOWER_HOME = home
-    const tool = compactTool({ workspace: dir }, {})
+    const tool = compactTool({
+      workspace: dir,
+      sessions: { core: 'S-CORE' },
+      adapters: { dsh: { sessions: { qa: '' } } },
+    }, {})
     const out = await tool.execute({ session: 'role:qa' })
     assert.equal(out.ok, false)
     assert.equal(
       out.text,
-      "no session configured for role 'qa' (checked sessions, adapters.dsh.sessions)",
+      "no session configured for role 'qa' (checked sessions, adapters.dsh.sessions, adapterOptions.dsh.sessions; "
+      + 'found sessions: core; adapters.dsh.sessions: (empty); adapterOptions.dsh.sessions: absent; '
+      + 'dsh-tower 0.18.5)',
     )
+    assert.doesNotMatch(out.text, /tower CLI/)
+    assert.doesNotMatch(out.text, /9\.9\.9/)
   } finally {
     if (previous === undefined) delete process.env.TOWER_HOME
     else process.env.TOWER_HOME = previous
@@ -281,11 +290,103 @@ test('tower_compact names the command that enables compaction', async () => {
     )
     const out = await tool.execute({ session: 'role:qa' })
     assert.equal(out.ok, false)
-    assert.equal(
-      out.text,
+    assert.ok(out.text.startsWith(
       'compaction service not available in this profile — enable dsh-compaction-basic, or run /compact in that session',
-    )
+    ))
+    assert.match(out.text, /rpc: not attempted/)
   } finally {
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('tower_compact delivers /compact through the gateway when the session is not live here', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
+  const previous = process.env.TOWER_HOME
+  const oldFetch = globalThis.fetch
+  const calls = []
+  try {
+    writeFileSync(join(dir, 'tower.toml'), [
+      'adapters:',
+      '  dsh:',
+      '    base_url: "http://127.0.0.1:9/"',
+      '    secret: "UqcGoS--myPQEu7xPgMuAqASLv7tIUDWotZBN-IpOBU"',
+      'roles:',
+      '  qa:',
+      '    adapter: dsh',
+      '',
+    ].join('\n'))
+    process.env.TOWER_HOME = home
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: 'r1',
+        result: { ok: true },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const tool = compactTool(
+      { workspace: dir, adapters: { dsh: { sessions: { qa: 'S-QA' } } } },
+      { agents: { get: () => null } },
+    )
+    const out = await tool.execute({ session: 'role:qa' })
+    assert.equal(out.ok, true)
+    assert.match(out.text, /^已在归属进程受理 \/compact（/)
+    assert.match(out.text, /跨进程拿不到 shadowed token 数/)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'http://127.0.0.1:9/api/commands/execute')
+    const body = JSON.parse(calls[0].init.body)
+    assert.equal(body.type, 'client-request')
+    assert.equal(body.method, 'commands/execute')
+    assert.deepEqual(body.payload.args, {
+      agentId: 'S-QA',
+      line: '/compact',
+      submittedAttachments: [],
+    })
+    assert.match(calls[0].init.headers.cookie, /^dsh-auth-.+=v1\.[^.]+\.[^.]+$/)
+  } finally {
+    globalThis.fetch = oldFetch
+    if (previous === undefined) delete process.env.TOWER_HOME
+    else process.env.TOWER_HOME = previous
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('tower_compact reports both paths when the gateway refuses the delivery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tower-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-tower-home-'))
+  const previous = process.env.TOWER_HOME
+  const oldFetch = globalThis.fetch
+  try {
+    writeFileSync(join(dir, 'tower.toml'), [
+      'adapters:',
+      '  dsh:',
+      '    base_url: "http://127.0.0.1:9"',
+      'roles:',
+      '  qa:',
+      '    adapter: dsh',
+      '',
+    ].join('\n'))
+    process.env.TOWER_HOME = home
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      type: 'server-response',
+      rpcId: 'r2',
+      result: { ok: false, error: { code: 'session/not-found', message: 'session "S-QA" not found' } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const tool = compactTool(
+      { workspace: dir, adapters: { dsh: { sessions: { qa: 'S-QA' } } } },
+      { agents: { get: () => null } },
+    )
+    const out = await tool.execute({ session: 'role:qa' })
+    assert.equal(out.ok, false)
+    assert.match(out.text, /^no live agent for session 'S-QA'/)
+    assert.match(out.text, /rpc commands\/execute: session\/not-found session "S-QA" not found/)
+  } finally {
+    globalThis.fetch = oldFetch
     if (previous === undefined) delete process.env.TOWER_HOME
     else process.env.TOWER_HOME = previous
     rmSync(dir, { recursive: true, force: true })

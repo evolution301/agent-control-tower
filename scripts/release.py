@@ -38,13 +38,13 @@ INIT_PY = ROOT / "src" / "control_tower" / "__init__.py"
 BUNDLE_PKG = ROOT / "packages" / "dsh-tower" / "package.json"
 BUNDLE_INDEX = ROOT / "packages" / "dsh-tower" / "index.js"
 CHANGELOG = ROOT / "CHANGELOG.md"
-READMES = [ROOT / "README.md", ROOT / "README.zh.md"]
+READMES = [ROOT / "README.md", ROOT / "README.en.md"]
 README_BADGE = re.compile(r"tests-\d+%20python%20%2B%20\d+%20node")
 TRACKED = [
     "pyproject.toml",
     "CHANGELOG.md",
     "README.md",
-    "README.zh.md",
+    "README.en.md",
     "src/control_tower/__init__.py",
     "packages/dsh-tower/package.json",
     "packages/dsh-tower/index.js",

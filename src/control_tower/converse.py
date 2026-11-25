@@ -92,8 +92,22 @@ def load_conversation(cfg: TowerConfig, conversation_id: str) -> dict:
 # ------------------------------------------------------------------ the turn
 
 
-def run_turn(cfg: TowerConfig, role_name: str, prompt: str, task_id: str = "") -> tuple[object, object]:
-    """Run one non-work turn for a role. Returns (adapter, result)."""
+def run_turn(
+    cfg: TowerConfig,
+    role_name: str,
+    prompt: str,
+    task_id: str = "",
+    *,
+    expect_report: bool = True,
+    timeout_s: float | None = None,
+) -> tuple[object, object]:
+    """Run one non-work turn for a role. Returns (adapter, result).
+
+    `expect_report=False` is a discussion turn: the role answers in its reply
+    and writes no report file, so the adapter must return when the turn
+    completes. The flag rides in the request options because adapters, not
+    this module, decide what "done" means.
+    """
     role = cfg.roles[role_name]
     options = dict(cfg.adapter_options.get(role.adapter) or {})
     adapter = get_adapter(role.adapter, options)
@@ -101,10 +115,10 @@ def run_turn(cfg: TowerConfig, role_name: str, prompt: str, task_id: str = "") -
         role=role_name,
         prompt=prompt,
         cwd=cfg.role_dir(role_name),
-        timeout_s=role.timeout_s,
+        timeout_s=role.timeout_s if timeout_s is None else timeout_s,
         env=role.env,
         task_id=task_id,
-        options=options,
+        options={**options, "expect_report": expect_report},
     )
     return adapter, adapter.run(req)
 

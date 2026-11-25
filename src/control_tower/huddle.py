@@ -121,7 +121,8 @@ def _collect(cfg: TowerConfig, roles: list[str], prompt_for, timeout: int):
     for role in roles:
         def call(role=role):
             try:
-                _, result = run_turn(cfg, role, prompt_for(role))
+                _, result = run_turn(cfg, role, prompt_for(role),
+                                     expect_report=False, timeout_s=timeout)
                 boxes[role]["result"] = result
             except Exception as exc:  # noqa: BLE001 - a dead turn is an absent role
                 boxes[role]["error"] = exc
@@ -133,6 +134,31 @@ def _collect(cfg: TowerConfig, roles: list[str], prompt_for, timeout: int):
         thread.join(max(0.0, deadline - time.monotonic()))
     absent = [role for role in roles if "result" not in boxes[role]]
     return boxes, absent
+
+
+def _why_absent(box: dict) -> str:
+    """One line a reader can act on: why this role did not answer."""
+    exc = box.get("error")
+    if exc is not None:
+        return f"exception: {exc}"
+    result = box.get("result")
+    if result is None:
+        return "did not answer within the huddle deadline"
+    text = (result.text or "").strip().removeprefix("[dsh] ")
+    return text or f"exit {result.exit_code}"
+
+
+def _absent_turn(round_no: int, role: str, box: dict) -> dict:
+    reason = _why_absent(box)
+    result = box.get("result")
+    return {
+        "round": round_no,
+        "role": role,
+        "exit_code": -1 if result is None else result.exit_code,
+        "absent": True,
+        "reason": reason,
+        "meta": dict(result.meta or {}) if result is not None else {},
+    }
 
 
 def huddle(
@@ -182,21 +208,21 @@ def huddle(
     answered: list[str] = []
     for role in unique:
         result = boxes[role].get("result")
-        if result is None:
-            record["turns"].append({
-                "round": 1, "role": role, "exit_code": -1, "absent": True,
-                "position": "", "questions": [],
-            })
+        if result is None or result.exit_code != 0:
+            if role not in absent:
+                absent.append(role)
+            record["turns"].append(_absent_turn(1, role, boxes[role]))
             board.log("huddle_turn", huddle=hid, round=1, role=role, exit_code=-1,
                       absent=True, chars=0)
             continue
         answered.append(role)
-        parsed = parse_position(result.text) if result.exit_code == 0 else {"position": "", "questions": []}
+        parsed = parse_position(result.text)
         positions[role] = parsed["position"]
         record["turns"].append({
             "round": 1, "role": role, "exit_code": result.exit_code, "absent": False,
             "position": parsed["position"], "questions": parsed["questions"],
             "answer": (result.text or "")[:20000],
+            "meta": dict(result.meta or {}),
         })
         board.log("huddle_turn", huddle=hid, round=1, role=role, exit_code=result.exit_code,
                   absent=False, chars=len(parsed["position"]))
@@ -208,20 +234,18 @@ def huddle(
         )
         for role in answered:
             result = boxes[role].get("result")
-            if result is None:
+            if result is None or result.exit_code != 0:
                 absent.append(role)
-                record["turns"].append({
-                    "round": 2, "role": role, "exit_code": -1, "absent": True,
-                    "decision": "", "commitments": [],
-                })
+                record["turns"].append(_absent_turn(2, role, boxes[role]))
                 board.log("huddle_turn", huddle=hid, round=2, role=role, exit_code=-1,
                           absent=True, chars=0)
                 continue
-            parsed = parse_decision(result.text) if result.exit_code == 0 else {"decision": "", "commitments": []}
+            parsed = parse_decision(result.text)
             record["turns"].append({
                 "round": 2, "role": role, "exit_code": result.exit_code, "absent": False,
                 "decision": parsed["decision"], "commitments": parsed["commitments"],
                 "answer": (result.text or "")[:20000],
+                "meta": dict(result.meta or {}),
             })
             board.log("huddle_turn", huddle=hid, round=2, role=role, exit_code=result.exit_code,
                       absent=False, chars=len(parsed["decision"]))
@@ -233,7 +257,7 @@ def huddle(
     elif absent:
         state = "partial"
     else:
-        state = "ok"
+        state = "done"
     record["discuss"] = {
         "state": state,
         "absent": absent,
@@ -262,8 +286,9 @@ def render_markdown(record: dict) -> str:
         out += ["", f"## Round {round_no}", ""]
         for turn in turns:
             if turn.get("absent"):
+                reason = turn.get("reason") or f"exceeded {record.get('timeout_s', 90)}s"
                 out += [f"### {turn['role']}  (absent)", "",
-                        f"**No reply** — exceeded {record.get('timeout_s', 90)}s", ""]
+                        f"**No reply** — {reason}", ""]
                 continue
             out.append(f"### {turn['role']}  (exit {turn['exit_code']})")
             answer = str(turn.get("answer") or "")

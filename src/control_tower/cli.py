@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -571,6 +572,13 @@ def cmd_attention(args) -> int:
     action = getattr(args, "action", "") or ""
     task_id = getattr(args, "task", "") or ""
     note = getattr(args, "note", "") or ""
+    note_file = getattr(args, "note_file", "") or ""
+    if note_file:
+        try:
+            note = Path(note_file).read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError:
+            _say(args, f"cannot read note file {note_file!r}")
+            return 2
     by = getattr(args, "by", "") or (cfg.escalation_role or "issues")
 
     if action in ("claim", "resolve"):
@@ -580,6 +588,9 @@ def cmd_attention(args) -> int:
         task = board.load(task_id)
         if action == "claim":
             board.claim_attention(task, by=by, note=note)
+            if len(note) > 300:
+                board.log("attention_note", task=task.id, role=task.role,
+                          resolution="claimed", by=by, note=note)
             print(f"{task.id} attention CLAIMED by {by}")
             return 0
         target = getattr(args, "as_", "dropped") or "dropped"
@@ -596,6 +607,11 @@ def cmd_attention(args) -> int:
             board.resolve_attention(task, "dropped", note=note, by=by)
             board.transition(task, STATUS_FAILED, note=f"attention resolved (dropped): {note}")
             print(f"{task.id} attention RESOLVED -> dropped")
+        if len(note) > 300:
+            # the task history keeps the whole note; the ledger line board.py
+            # writes is capped at 300 chars, so long notes lose their tail.
+            board.log("attention_note", task=task.id, role=task.role,
+                      resolution=target, by=by, note=note)
         return 0
 
     tasks = board.needs_person()
@@ -618,6 +634,129 @@ def cmd_attention(args) -> int:
             attention = t.attention or {}
             print(f"{t.id}  {t.role:<10} claimed_by={attention.get('claimed_by', '?')} "
                   f"{t.brief[:40]}")
+    return 0
+
+
+_AGE_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _parse_age(value: str) -> float:
+    """`24h`, `90m`, `30s` (bare numbers are seconds) -> seconds."""
+    text = (value or "").strip().lower()
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text)
+    if not match:
+        raise ValueError(f"bad duration {value!r} — use e.g. 24h, 90m, 30s")
+    return float(match.group(1)) * _AGE_UNITS[match.group(2) or "s"]
+
+
+def _parse_statuses(value: str) -> list[str]:
+    statuses = [item.strip() for item in (value or "").split(",") if item.strip()]
+    if not statuses:
+        raise ValueError("--status needs at least one status (e.g. rework,reported,late)")
+    return statuses
+
+
+def _janitor_accept(cfg, hit, as_json=False) -> int:
+    """Rule 6 goes through `tower accept`, so verify and the qa gate still apply."""
+    args = argparse.Namespace(
+        task=hit.task_id,
+        note=f"janitor: rule #{hit.rule} | {hit.evidence}",
+        no_review=False,
+        legacy=False,
+        json=as_json,
+        workspace=str(cfg.workspace),
+    )
+    if not as_json:
+        return cmd_accept(args)
+    # cmd_accept prints its own success line; keep stdout a single JSON document.
+    real = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        return cmd_accept(args)
+    finally:
+        sys.stdout = real
+
+
+def cmd_janitor(args) -> int:
+    """Find zombie tasks. Dry-run by default; --apply drops with a ledger trail."""
+    from .janitor import find_zombies
+
+    cfg = _cfg(args)
+    _announce_workspace(cfg)
+    try:
+        older_than_s = _parse_age(getattr(args, "older_than", "") or "24h")
+        statuses = _parse_statuses(getattr(args, "status", "") or "rework,reported,late")
+    except ValueError as exc:
+        _say(args, str(exc))
+        return 2
+    limit = int(getattr(args, "limit", 50) or 50)
+    if limit < 1:
+        _say(args, "--limit must be at least 1")
+        return 2
+    # The engine truncates at `limit`; ask for everything so an --apply can
+    # refuse instead of quietly acting on part of the board.
+    everything = find_zombies(
+        cfg, older_than_s=older_than_s, statuses=tuple(statuses), limit=10 ** 6
+    )
+    hits = everything[:limit]
+    counts: dict[int, int] = {}
+    for hit in everything:
+        counts[hit.rule] = counts.get(hit.rule, 0) + 1
+    broken = ", ".join(f"rule {rule}: {n}" for rule, n in sorted(counts.items()))
+
+    if getattr(args, "json", False):
+        _print({
+            "count": len(hits),
+            "total": len(everything),
+            "limit": limit,
+            "older_than_s": older_than_s,
+            "statuses": statuses,
+            "counts": {str(rule): n for rule, n in sorted(counts.items())},
+            "hits": [
+                {"task": hit.task_id, "role": hit.role, "status": hit.status,
+                 "rule": hit.rule, "action": hit.action, "evidence": hit.evidence}
+                for hit in hits
+            ],
+        }, as_json=True)
+    else:
+        print(f"{'id':<8} | {'role':<10} | {'status':<9} | rule | "
+              f"suggested action | evidence")
+        print("-" * 100)
+        for hit in hits:
+            print(f"{hit.task_id:<8} | {hit.role:<10} | {hit.status:<9} | "
+                  f"{hit.rule:<4} | {hit.action:<16} | {hit.evidence}")
+        print()
+        print(f"{len(everything)} zombies" + (f" ({broken})" if broken else ""))
+        if len(everything) > limit:
+            print(f"... {len(everything) - limit} more - raise --limit", file=sys.stderr)
+    if not getattr(args, "apply", False):
+        return 0
+    if len(everything) > limit:
+        _say(args, f"found {len(everything)} > limit — re-run with --limit")
+        return 2
+
+    board = Board(cfg)
+    accept_reports = bool(getattr(args, "accept_reports", False))
+    for hit in hits:
+        if hit.action == "accept":
+            if not accept_reports:
+                _say(args, f"{hit.task_id} kept (rule {hit.rule} advisory — "
+                           f"pass --accept-reports to accept)")
+                continue
+            code = _janitor_accept(cfg, hit, as_json=bool(getattr(args, "json", False)))
+            if code != 0:
+                return code
+            continue
+        note = f"janitor: rule #{hit.rule} | {hit.evidence}"
+        try:
+            task = board.load(hit.task_id)
+            board.resolve_attention(task, "dropped", note=note, by="janitor")
+            board.transition(task, STATUS_FAILED,
+                             note=f"attention resolved (dropped): {note}")
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            _say(args, f"janitor stopped at {hit.task_id}: {exc}")
+            return 2
+        _say(args, f"{hit.task_id} dropped — janitor: rule #{hit.rule}")
     return 0
 
 
@@ -834,7 +973,18 @@ def cmd_projects(args) -> int:
             row = registry.summarise(item)
             print(f"{mark} {item['name']:<{width}}  {item['path']}")
             if row["ok"]:
-                print(f"    bots {row['bots']} · tasks {row['tasks']} · open {row['open']}"
+                zombie_count = 0
+                try:
+                    from .janitor import find_zombies
+
+                    zombie_count = len(find_zombies(load_config(Path(item["path"])),
+                                                    limit=10 ** 6))
+                except Exception:
+                    zombie_count = 0
+                open_text = f"{row['open']}"
+                if zombie_count:
+                    open_text += f" (zombie {zombie_count})"
+                print(f"    bots {row['bots']} · tasks {row['tasks']} · open {open_text}"
                       f" · needs you {row['needs_you']} · overdue {row['overdue']}")
             else:
                 print(f"    broken: {row['error']}")
@@ -1153,6 +1303,11 @@ def cmd_kickoff(args) -> int:
     roles = list(args.role or [])
     if not roles:
         roles = [name for name, role in cfg.roles.items() if not getattr(role, "secretary", False)]
+    # --json promises one document on stdout. A huddle or adapter that prints
+    # progress must not corrupt the pipe, so stdout is stderr while it runs.
+    real_stdout = sys.stdout
+    if getattr(args, "json", False):
+        sys.stdout = sys.stderr
     try:
         result = kickoff_mod.kickoff(
             cfg, board, brief.strip(), roles, title=args.title or "", discuss=args.discuss
@@ -1163,6 +1318,8 @@ def cmd_kickoff(args) -> int:
     except ValueError as exc:
         _say(args, str(exc))
         return 2
+    finally:
+        sys.stdout = real_stdout
     group = result["group"]
     if getattr(args, "json", False):
         _print({"group": group, "package": result["package"], "path": result["path"],
@@ -1227,11 +1384,105 @@ def cmd_group(args) -> int:
     return 0
 
 
+def _pool_file(cfg) -> Path:
+    return cfg.state_dir / "dsh_pool.json"
+
+
+def _read_pool(cfg) -> dict | None:
+    """The pool record written by `tower bootstrap`; None when there is no usable file."""
+    try:
+        data = json.loads(_pool_file(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _pool_entry_id(entry) -> str:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return str(entry.get("session") or entry.get("id") or "")
+    return ""
+
+
+def _pool_entry_title(entry) -> str:
+    return str(entry.get("title") or "") if isinstance(entry, dict) else ""
+
+
+def _claim_pooled_session(cfg, config_path: Path, role: str) -> str:
+    """Move the first free pooled session to `role`; return its id or "".
+
+    The record is the bootstrap-written `{"free": [...], "claimed": {role: ...}}`.
+    Read-modify-write happens under the tower lock so two role adds cannot take
+    the same id.
+    """
+    from .locks import tower_lock
+    from .roles import set_session
+
+    with tower_lock(cfg):
+        record = _read_pool(cfg)
+        free = (record or {}).get("free")
+        claimed = (record or {}).get("claimed")
+        if isinstance(claimed, dict) and role in claimed:
+            session = _pool_entry_id(claimed[role])
+            if session:
+                set_session(config_path, role, session)
+                return session
+        if not isinstance(free, list):
+            return ""
+        while free:
+            entry = free.pop(0)
+            session = _pool_entry_id(entry)
+            if not session:
+                continue
+            if not isinstance(claimed, dict):
+                claimed = {}
+            set_session(config_path, role, session)
+            claimed[role] = entry if isinstance(entry, dict) else {"session": session}
+            record["claimed"] = claimed
+            _pool_file(cfg).write_text(
+                json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            return session
+    return ""
+
+
+def _cmd_dsh_pool(cfg) -> int:
+    record = _read_pool(cfg)
+    if record is None:
+        print("pool not initialised — run tower bootstrap with adapters.dsh.pool_size > 0")
+        return 0
+    print(f"pool: {_pool_file(cfg)}")
+    free = record.get("free") if isinstance(record.get("free"), list) else []
+    claimed = record.get("claimed") or {}
+    rows = []
+    for entry in free:
+        rows.append(("free", _pool_entry_id(entry), _pool_entry_title(entry)))
+    if isinstance(claimed, dict):
+        for role, entry in claimed.items():
+            rows.append(("claimed", _pool_entry_id(entry), str(role)))
+    elif isinstance(claimed, list):
+        for entry in claimed:
+            role = entry.get("role") if isinstance(entry, dict) else ""
+            rows.append(("claimed", _pool_entry_id(entry), str(role or "")))
+    for state, session, detail in rows:
+        print(f"  {state:<8} {session or '?':<42} {detail}".rstrip())
+    if not rows:
+        print("  (empty)")
+    return 0
+
+
 def cmd_dsh(args) -> int:
     """v3 §2: the sidebar is data, not a hand edit followed by a restart."""
     from . import sidebar
 
     cfg = _cfg(args)
+    if args.dsh_command == "pool":
+        record = _read_pool(cfg)
+        if getattr(args, "json", False):
+            _print(record if record is not None else {"initialised": False}, as_json=True)
+            return 0
+        return _cmd_dsh_pool(cfg)
     if args.dsh_command == "status":
         info = sidebar.status(cfg)
         if getattr(args, "json", False):
@@ -1250,6 +1501,18 @@ def cmd_dsh(args) -> int:
         print(sidebar.restart_hint())
         return 0
     if args.dsh_command == "register":
+        if args.apply and sidebar.register(cfg, apply=False).get("workspace_found"):
+            path = config_file(cfg.workspace)
+            sessions = (cfg.adapter_options.get("dsh") or {}).get("sessions") or {}
+            claimed = [name for name, role in cfg.roles.items()
+                       if role.adapter == "dsh" and not sessions.get(name)
+                       and _claim_pooled_session(cfg, path, name)]
+            if claimed:
+                if not getattr(args, "json", False):
+                    print("claimed pooled session — visible now, no restart needed")
+                from .config import reload_config
+
+                cfg = reload_config(cfg)
         info = sidebar.register(cfg, apply=bool(args.apply))
         if getattr(args, "json", False):
             _print(info, as_json=True)
@@ -1837,6 +2100,7 @@ def cmd_doctor(args) -> int:
     cfg = _cfg(args)
     problems = []
     warnings = []
+    notes = []
     for command in cfg.verify_commands:
         if not _command_available(command):
             problems.append(
@@ -1878,6 +2142,11 @@ def cmd_doctor(args) -> int:
                     f"{age / 60:.0f} min with NO worker alive — it will be adopted "
                     "to rework on the next `tower worker` start")
     # playbook point 2: few, well-trained bots — size and overlap are smell.
+    from .janitor import find_zombies
+
+    zombies = find_zombies(cfg)
+    if zombies:
+        problems.append(f"{len(zombies)} zombie tasks (run tower janitor)")
     if len(cfg.roles) > 5:
         warnings.append(
             f"{len(cfg.roles)} roles — a few well-trained bots beat a crowd; consider merging"
@@ -1912,8 +2181,9 @@ def cmd_doctor(args) -> int:
                 "check which tower you mean before dispatching, or `tower projects use`"
             )
         elif bound is None:
-            warnings.append(
-                "aim: no bound tower recorded yet — the first dispatch will bind this one"
+            notes.append(
+                "aim: no bound tower recorded yet — the first dispatch will bind this one "
+                "(expected after `projects use`; not a configuration error)"
             )
     except Exception:
         pass
@@ -1947,6 +2217,8 @@ def cmd_doctor(args) -> int:
             )
     print("workspace:", cfg.workspace)
     print("roles:", ", ".join(sorted(cfg.roles)))
+    for note in notes:
+        print("info:", note)
     for warning in warnings:
         print("warning:", warning)
     print("problems:", problems or "none")
@@ -2019,6 +2291,11 @@ def cmd_role_add(args) -> int:
     except (ValueError, FileNotFoundError) as exc:
         _say(args, f"error: {exc}")
         return 2
+    claimed = ""
+    if not info["session_id"] and info["adapter"] == "dsh":
+        claimed = _claim_pooled_session(cfg, path, info["name"])
+        if claimed:
+            info["session_id"] = claimed
     if getattr(args, "json", False):
         _print(info, as_json=True)
         return 0
@@ -2028,6 +2305,8 @@ def cmd_role_add(args) -> int:
     print(f"charter: {info['charter']}")
     if info["session_id"]:
         print(f"session wired: {info['session_id']}")
+    if claimed:
+        print("claimed pooled session — visible now, no restart needed")
     # B8 (2026-11-23): a bot is four pieces. Missing sessions/role_titles used to
     # fail silently — dispatch ran, the turn never started, the task sat "running"
     # for hours. Print the checklist instead of a single "next:" hint.
@@ -2062,6 +2341,7 @@ def _guided_role_add(cfg, path, args) -> int:
         print(f"building the {pack_name!r} team: " + ", ".join(s["name"] for s in specs))
         print("(non-interactive: pass --template <pack> to choose another shape)")
     made = []
+    claimed_any = False
     for spec in specs:
         charter = templates.charter(spec, cfg.workspace)
         try:
@@ -2080,27 +2360,35 @@ def _guided_role_add(cfg, path, args) -> int:
         except (ValueError, FileNotFoundError) as exc:
             _say(args, f"{spec['name']}: {exc} (pass --force to replace)")
             continue
+        if not info["session_id"] and info["adapter"] == "dsh":
+            claimed = _claim_pooled_session(cfg, path, str(spec["name"]))
+            if claimed:
+                info["session_id"] = claimed
+                claimed_any = True
         made.append(info)
 
     cfg = reload_config(cfg)
     side = sidebar.register(cfg, apply=False)
+    rows = sidebar.status(cfg).get("roles", [])
+    registered = sum(1 for row in rows if row.get("registered"))
     if getattr(args, "json", False):
         _print({"template": pack_name, "roles": made, "sidebar": side}, as_json=True)
         return 0
     for info in made:
         print(f"added {info['name']:<12} scope={', '.join(info['write_scopes']) or '-'}")
+    if claimed_any:
+        print("claimed pooled session — visible now, no restart needed")
     if not sidebar.role_sessions(cfg):
         print("sidebar: 0 wired — run `tower bootstrap` to create sessions; "
               "the sidebar only shows roles that have one")
     else:
-        registered = sum(1 for row in sidebar.status(cfg).get("roles", [])
-                         if row.get("registered"))
         missing = side.get("missing") or []
         print(f"sidebar: {registered} registered, {len(missing)} missing")
         if missing:
             print("  missing: " + ", ".join(str(m) for m in missing))
             print("  fix: tower dsh register --apply")
-    print(sidebar.restart_hint())
+    if not (claimed_any and registered and not (side.get("missing") or [])):
+        print(sidebar.restart_hint())
     print("next: tower bootstrap   # session ids + titles for every role in one run")
     print("      tower dsh status  # confirm each role is visible in the sidebar")
     return 0
@@ -2338,6 +2626,10 @@ def build_parser() -> argparse.ArgumentParser:
     dp = ds.add_parser("status", help="per role: registered in the sidebar or missing")
     dp.add_argument("--json", action="store_true")
     dp.set_defaults(func=cmd_dsh)
+    dp = ds.add_parser("pool", help="sessions bootstrap pre-registered, free or claimed by a role")
+    dp.add_argument("pool_command", nargs="?", default="list", choices=["list"])
+    dp.add_argument("--json", action="store_true")
+    dp.set_defaults(func=cmd_dsh)
     dp = ds.add_parser("register", help="write the missing sessions into the DSH workspace registry")
     dp.add_argument("--apply", action="store_true", help="write it (a backup is kept)")
     dp.add_argument("--json", action="store_true")
@@ -2482,10 +2774,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("task", nargs="?", default="")
     s.add_argument("--by", default="", help="who claims/resolves (default: escalation.role)")
     s.add_argument("--note", default="", help="short reason, recorded in the task history")
+    s.add_argument("--note-file", default="", metavar="PATH",
+                   help="read the note from a file (keeps every line; overrides --note)")
     s.add_argument("--as", dest="as_", default="dropped",
                    choices=["dropped", "rework", "accepted"], help="resolution kind")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_attention)
+    s = sub.add_parser("janitor", help="find zombie tasks (dry-run by default)")
+    s.add_argument("--older-than", default="24h", metavar="AGE",
+                   help="only tasks untouched this long (h/m/s suffix, default 24h)")
+    s.add_argument("--status", default="rework,reported,late",
+                   help="comma-separated statuses to scan (default: rework,reported,late)")
+    s.add_argument("--limit", type=int, default=50,
+                   help="max hits (default 50); --apply refuses if the scan found more")
+    s.add_argument("--apply", action="store_true",
+                   help="drop rule 1-5 hits and record why; rule 6 stays advisory")
+    s.add_argument("--accept-reports", action="store_true",
+                   help="also send rule 6 stale reports through `tower accept`")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_janitor)
     s = sub.add_parser("escalate", help="hand a task to another role with an audit trail")
     s.add_argument("task", help="task id, e.g. T-0051")
     s.add_argument("--to", default="", help="target role (default: escalation.role or issues)")
