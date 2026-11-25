@@ -30,6 +30,12 @@ ready
 
 ## Summary
 both jobs ran
+
+## Files
+- src/app.ts — untouched probe
+
+## Checks
+- python -m pytest -q → passed
 """
 
 

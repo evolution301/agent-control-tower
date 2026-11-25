@@ -31,18 +31,45 @@ else:
     _fcntl = None
 
 
-def _acquire(fd: int) -> None:
+def _acquire(fh) -> None:
+    # msvcrt locks one byte at the current position, and an unlock must name the
+    # same byte — always the first one, so a file that grew keeps its lock valid.
+    fh.seek(0)
     if _msvcrt is not None:
-        _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+        _msvcrt.locking(fh.fileno(), _msvcrt.LK_NBLCK, 1)
     else:
-        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
 
 
-def _release(fd: int) -> None:
+def _release(fh) -> None:
+    fh.seek(0)
     if _msvcrt is not None:
-        _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+        _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
     else:
-        _fcntl.flock(fd, _fcntl.LOCK_UN)
+        _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+
+
+def try_lock(path):
+    """Take `path`'s lock without waiting: the open handle, or None when held.
+
+    The handle holds the lock until `release_lock`, so the caller must keep it
+    alive for as long as it owns the file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+b")
+    try:
+        _acquire(fh)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def release_lock(fh) -> None:
+    try:
+        _release(fh)
+    finally:
+        fh.close()
 
 
 def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
@@ -61,7 +88,7 @@ def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
         try:
             while True:
                 try:
-                    _acquire(fh.fileno())
+                    _acquire(fh)
                     break
                 except OSError:
                     if time.time() >= deadline:
@@ -71,8 +98,7 @@ def tower_lock(cfg, timeout_s: float = 60.0, poll_s: float = 0.05):
             try:
                 yield
             finally:
-                fh.seek(0)
-                _release(fh.fileno())
+                _release(fh)
         finally:
             fh.close()
 

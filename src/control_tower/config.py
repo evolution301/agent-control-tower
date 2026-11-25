@@ -105,6 +105,9 @@ class TowerConfig:
     # order) is produced by `tower kickoff`. Required only when asked, so live
     # towers keep working while their people learn the new loop.
     kickoff_require: bool = False
+    # P0-B (2026-11-24): a huddle turn is bounded. One busy role used to stall
+    # the whole meeting for 10+ minutes; 90s per role, never more than 120s.
+    huddle_timeout_s: int = 90
     # v3 §4: one task = one group. When no --group is given, dispatch opens one.
     group_auto: bool = True
     # v3 §2: the DSH sidebar registry lives in $DSH_HOME/storages/workspace.json.
@@ -303,6 +306,7 @@ def parse_config(path: Path) -> TowerConfig:
         contract_repeat_every=max(0, int((raw.get("contract") or {}).get("repeat_every", 5))),
         default_due=str((raw.get("deadline") or {}).get("default", "4h")).strip() or "4h",
         kickoff_require=bool((raw.get("kickoff") or {}).get("require", False)),
+        huddle_timeout_s=max(1, min(120, int((raw.get("huddle") or {}).get("timeout_s", 90)))),
         group_auto=bool((raw.get("groups") or {}).get("auto", True)),
         sidebar_register=bool((raw.get("sidebar") or {}).get("register", True)),
         deploy_fetch=(raw.get("deploy") or {}).get("fetch") or None,

@@ -36,7 +36,7 @@ from .skills import rebuild_index, save_skill, skill_index_lines
 from .supervise import due_human, overdue_tasks, parse_due, supervise
 from .triage import redispatch_with_reasons, triage as run_triage, triage_task
 from .snapshot import build_snapshot
-from .verify import verify_report
+from .verify import review_gate, verify_report
 
 ROLE_SCAFFOLD = """# {role}
 
@@ -675,6 +675,18 @@ def cmd_accept(args) -> int:
         for p in v.problems:
             print("  -", p)
         return 1
+    # A verdict from a configured reviewer is what "qa says yes" means; without
+    # it this is one person accepting their own claim.
+    problem = review_gate(cfg, task)
+    if problem:
+        if getattr(args, "no_review", False):
+            task.review = {**(task.review or {}), "waived_by": "human"}
+            board.save(task)
+            board.log("review_waived", task=task.id, role=task.role)
+            print(f"{task.id} review waived (--no-review)")
+        else:
+            _say(args, problem)
+            return 2
     board.transition(task, STATUS_ACCEPTED, note=args.note or "verified and accepted", verification=v.as_dict())
     print(f"{task.id} ACCEPTED")
     if task.group:
@@ -953,9 +965,15 @@ def cmd_worker(args) -> int:
         print(f"worker alive:     {status['alive']}   (pid {status['pid']}, "
               f"version {status['version'] or '?'})")
         print(f"heartbeat age:    {status['heartbeat_age_s']}s")
-        if status.get("current_job"):
-            print(f"worker: job {status['current_job']} ({status['current_kind']}) "
-                  f"started {round(status['current_age_minutes'] or 0)}m ago")
+        print(f"pool:  {status['pool']}   (recorded pid holds the worker lock: "
+              f"{status['pid_holds_lock']})")
+        for job in status["jobs"]:
+            line = f"worker: job {job['id']} ({job['kind']})"
+            if job["task"]:
+                line += f" task {job['task']}"
+            if job["role"]:
+                line += f" role {job['role']}"
+            print(f"{line} started {round(job['age_minutes'] or 0)}m ago")
         print(f"queue:            pending {status['pending']} · claimed "
               f"{status['claimed']} · done {status['done']}")
         if status["oldest_pending_minutes"]:
@@ -979,7 +997,8 @@ def cmd_worker(args) -> int:
     cfg = _cfg(args)
     ensure_layout(cfg)
     return run_worker(cfg, once=getattr(args, "once", False),
-                      force=bool(getattr(args, "force", False)))
+                      force=bool(getattr(args, "force", False)),
+                      concurrency=int(getattr(args, "concurrency", 0) or 0))
 
 
 def cmd_ctx(args) -> int:
@@ -1147,7 +1166,8 @@ def cmd_kickoff(args) -> int:
     group = result["group"]
     if getattr(args, "json", False):
         _print({"group": group, "package": result["package"], "path": result["path"],
-                "minutes": result["minutes"], "problems": result["problems"]}, as_json=True)
+                "minutes": result["minutes"], "problems": result["problems"],
+                "discuss": result.get("discuss")}, as_json=True)
         return 0
     print(f"group {group['id']} (discussing) — {len(group['roles'])} role(s): "
           + ", ".join(group["roles"]))
@@ -2248,6 +2268,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the queue consumer state for this workspace and exit")
     s.add_argument("--force", action="store_true",
                    help="B3: exit immediately even with jobs in flight (they are adopted on next start)")
+    s.add_argument("--concurrency", type=int, default=0,
+                   help="pool size for this run (overrides `workers`; default: workers, else 4)")
     s.set_defaults(func=cmd_worker)
     s = sub.add_parser("deploy", help="deploy guard: check/pull/init/done a server file")
     s.add_argument("action", choices=["check", "pull", "init", "done", "status"])
@@ -2476,6 +2498,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--note", default="")
     s.add_argument("--legacy", action="store_true",
                    help="B16: skip the self-review gate for reports written before it")
+    s.add_argument("--no-review", action="store_true",
+                   help="waive the qa verdict gate; the waiver is recorded on the task")
     s.set_defaults(func=cmd_accept)
 
     s = sub.add_parser("rework", help="send a task back with feedback")

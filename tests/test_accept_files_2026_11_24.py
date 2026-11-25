@@ -84,3 +84,63 @@ def test_missing_path_still_fails_with_the_same_message(tmp_path):
     [problem] = [p for p in v.problems if "do not exist" in p]
     assert problem.startswith("reported files do not exist (checked: ")
     assert problem.endswith(": docs/missing.md")
+
+
+def _expect_task(cfg, brief="", expect=None):
+    task = Board(cfg).create("seo", "artifact fingerprint")
+    task.brief = brief
+    task.mandate = {"expect": expect} if expect else {}
+    return task
+
+
+def test_expect_front_matter_counts_artifacts_without_a_report(tmp_path):
+    cfg = _tower(tmp_path)
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "a.md").write_text("eight pages of notes", encoding="utf-8")
+    (tmp_path / "shots").mkdir()
+    (tmp_path / "shots" / "b.png").write_bytes(b"png")
+    task = _expect_task(
+        cfg,
+        "---\nexpect: [notes/a.md, shots/b.png]\n---\nBuild the page.\n",
+    )
+
+    v = verify_report(cfg, task)
+
+    assert v.ok, v.problems
+    assert v.incomplete_report
+    assert v.problems == []
+    assert any(w.startswith("incomplete-report:") for w in v.warnings)
+
+
+def test_expect_from_dispatch_mandate_is_checked_too(tmp_path):
+    cfg = _tower(tmp_path)
+    (tmp_path / "out.css").write_text("body { color: red }", encoding="utf-8")
+    task = _expect_task(cfg, "Build the page.", expect="out.css, missing.txt")
+
+    v = verify_report(cfg, task)
+
+    assert not v.ok
+    assert "expected path missing or empty: missing.txt" in v.problems
+
+
+def test_expect_empty_artifact_is_not_a_deliverable(tmp_path):
+    cfg = _tower(tmp_path)
+    (tmp_path / "empty.css").write_text("", encoding="utf-8")
+    task = _expect_task(cfg, "---\nexpect: empty.css\n---\nBuild the page.\n")
+
+    v = verify_report(cfg, task)
+
+    assert not v.ok
+    assert "expected path missing or empty: empty.css" in v.problems
+
+
+def test_a_task_without_expect_keeps_the_old_report_gate(tmp_path):
+    cfg = _tower(tmp_path)
+    task = _expect_task(cfg, "Build the page.")
+
+    v = verify_report(cfg, task)
+
+    assert not v.ok
+    assert any("report is missing '## Status'" in p for p in v.problems)
+    assert v.incomplete_report is False
+

@@ -481,6 +481,7 @@ def kickoff(
         discussed = record.get("path", "")
         package["minutes"] = discussed
         package["huddle"] = record.get("id", "")
+        package["discuss"] = record.get("discuss")
         minutes_file = Path(discussed) if discussed else cfg.huddles_dir / f"{record.get('id', '')}.md"
         text = minutes_file.read_text(encoding="utf-8") if minutes_file.exists() else ""
         filled = fill_from_minutes(package, text)
@@ -498,6 +499,7 @@ def kickoff(
         "path": str(path),
         "minutes": discussed or str(minutes),
         "problems": problems,
+        "discuss": package.get("discuss"),
     }
 
 

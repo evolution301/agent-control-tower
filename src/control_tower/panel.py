@@ -10,6 +10,7 @@ what, then the ledger. A healthy tower shows almost nothing above the fold.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sys
@@ -336,9 +337,23 @@ def _project_configs(cfg: TowerConfig):
 
 
 def _loopback(host: str | None) -> bool:
-    """Does this hostname mean "this machine, over loopback"?"""
-    name = (host or "").strip().lower()
-    return name in ("localhost", "::1") or name.startswith("127.")
+    """Does this hostname mean "this machine, over loopback"?
+
+    Parse it as an IP; a name like `127.0.0.1.evil.com` starts with "127." but is
+    a public name, and must not pass.
+    """
+    name = (host or "").strip().lower().rstrip(".")
+    if name == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
+def _port_or_default(port: int | None, scheme: str) -> int:
+    """The port a browser meant: an explicit one, else the scheme's default."""
+    return port if port is not None else (443 if scheme == "https" else 80)
 
 
 def _split_host(value: str) -> tuple[str | None, int | None]:
@@ -518,7 +533,8 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
             port = self.server.server_address[1]
             raw_host = self.headers.get("Host", "")
             host_name, host_port = _split_host(raw_host)
-            if not _loopback(host_name) or host_port != port:
+            if (not _loopback(host_name)
+                    or _port_or_default(host_port, "http") != port):
                 shown = raw_host or "(missing)"
                 return f"write refused: Host {shown} is not this panel's loopback address"
             origin = self.headers.get("Origin", "")
@@ -526,7 +542,7 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                 origin_name, origin_port = _split_host(origin)
                 scheme = origin.split(":", 1)[0].lower()
                 if (scheme not in ("http", "https") or not _loopback(origin_name)
-                        or origin_port != port):
+                        or _port_or_default(origin_port, scheme) != port):
                     return f"write refused: Origin {origin} is not this panel"
             site = self.headers.get("Sec-Fetch-Site", "")
             if site and site != "same-origin":

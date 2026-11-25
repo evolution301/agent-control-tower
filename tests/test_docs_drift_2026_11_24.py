@@ -34,6 +34,9 @@ def test_docs_do_not_understate_the_tool_count():
 def test_architecture_doc_describes_the_thread_pool():
     text = _text("docs", "architecture.md")
     assert "thread pool" in text
+    assert "including the same role" in text
+    assert "`serial_requests: true` opts into a per-role lock" in text
+    assert "one role never runs two adapter turns" not in text
     assert "Default is sequential" not in text
     assert "lock manager" not in text
 

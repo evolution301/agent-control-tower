@@ -66,11 +66,12 @@ reports the same verifier can read.
 
 ## Concurrency
 
-Dispatches run on a thread pool (`workers`, default 4). Tasks for the same role serialize on a
-per-role semaphore, so one role never runs two adapter turns at once; different roles run in
-parallel. Board writes take the workspace lock (`tower_lock`), and the adapter turn happens outside
-that lock so a slow model call cannot starve the rest of the tower. `tower batch` still loops over
-targets with `serial_requests` / `request_gap_s` for fragile remote systems.
+Dispatches run on a thread pool (`workers`, default 4). By default the pool runs roles in
+parallel, including the same role: two adapter turns for one role can be in flight at once.
+`serial_requests: true` opts into a per-role lock when a role must not overlap itself. Board
+writes take the workspace lock (`tower_lock`), and the adapter turn happens outside that lock so a
+slow model call cannot starve the rest of the tower. `tower batch` still loops over targets with
+`serial_requests` / `request_gap_s` for fragile remote systems.
 
 For separate repos, one tower workspace per repo is still the simpler boundary: merge the inboxes
 with a thin supervisor instead of sharing one board across unrelated codebases.

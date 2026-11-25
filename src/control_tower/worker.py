@@ -34,13 +34,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .board import Board, STATUS_ACCEPTED, STATUS_FAILED, now_ts
+from .board import Board, STATUS_ACCEPTED, STATUS_FAILED, STATUS_REWORK, now_ts
 from .config import TowerConfig, reload_config
-from .locks import tower_lock
+from .locks import release_lock, tower_lock, try_lock
 
 HEARTBEAT_STALE_S = 30
 CLAIM_STALE_S = 15 * 60
 POLL_S = 1.0
+# A review task is done once it has a verdict: `accepted` on pass, `closed` when
+# the verdict reworks the origin (the rework lives on the origin, not on the review).
+REVIEW_CLOSED = "closed"
 
 
 def _dirs(cfg: TowerConfig) -> tuple[Path, Path, Path, Path]:
@@ -109,6 +112,7 @@ def worker_status(cfg: TowerConfig) -> dict:
         info = {}
     jobs = _inflight_jobs(info)
     current = jobs[0] if jobs else {}
+    holder = _lock_holder(cfg)
     age = time.time() - float(info.get("unix_ts", 0) or 0)
     oldest_minutes = 0.0
     files = sorted(pending.glob("*.json"), key=lambda f: f.stat().st_mtime)
@@ -130,6 +134,12 @@ def worker_status(cfg: TowerConfig) -> dict:
         "current_task": current.get("task", ""),
         "current_age_minutes": current.get("age_minutes"),
         "jobs": jobs,
+        "pool": int(info.get("pool") or 0),
+        # a heartbeat from a process that is not the lock holder is a stale
+        # singleton: it may claim work, but something else owns the slot
+        "pid_holds_lock": bool(info) and lock_is_held(cfg)
+                          and str(info.get("pid") or "") == str(holder.get("pid") or ""),
+        "lock_holder": holder,
     }
 
 
@@ -302,6 +312,50 @@ def _config_hash(cfg: TowerConfig) -> str:
 
 
 _HEART_LOCK = threading.Lock()
+_POOL = 0
+
+
+def _lock_path(cfg: TowerConfig) -> Path:
+    return cfg.state_dir / "worker.lock"
+
+
+def _owner_path(cfg: TowerConfig) -> Path:
+    # Windows locks deny reads of the locked byte range, so the pid lives beside
+    # the lock file rather than inside it.
+    return cfg.state_dir / "worker.owner"
+
+
+def _lock_holder(cfg: TowerConfig) -> dict:
+    """Whoever took the consumer slot last."""
+    try:
+        info = json.loads(_owner_path(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def lock_is_held(cfg: TowerConfig) -> bool:
+    """Is the consumer slot actually taken? A dead holder leaves only its text."""
+    path = _lock_path(cfg)
+    if not path.exists():
+        return False
+    fh = try_lock(path)
+    if fh is None:
+        return True
+    release_lock(fh)
+    return False
+
+
+def _take_worker_lock(cfg: TowerConfig):
+    """Claim this workspace's consumer slot: the open handle, or None when taken."""
+    from . import __version__
+
+    fh = try_lock(_lock_path(cfg))
+    if fh is None:
+        return None
+    holder = {"pid": os.getpid(), "started": now_ts(), "version": __version__}
+    _owner_path(cfg).write_text(json.dumps(holder, ensure_ascii=False), encoding="utf-8")
+    return fh
 
 
 def _heartbeat_jobs(cfg: TowerConfig) -> dict[str, dict]:
@@ -324,7 +378,8 @@ def _write_heartbeat(cfg: TowerConfig, jobs: dict[str, dict]) -> None:
     from . import __version__
 
     info: dict[str, Any] = {"pid": os.getpid(), "unix_ts": time.time(),
-                            "v": __version__, "cfg_sha": _config_hash(cfg), "jobs": jobs}
+                            "v": __version__, "cfg_sha": _config_hash(cfg),
+                            "pool": _POOL, "jobs": jobs}
     if len(jobs) == 1:                  # keep the one-job view `tower doctor` prints
         job_id, entry = next(iter(jobs.items()))
         info.update({"current_job": job_id,
@@ -538,7 +593,7 @@ def _settle_ignored(cfg: TowerConfig, board: Board, job: dict, task) -> dict[str
 
 def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     from .converse import relay_report_messages
-    from .dispatch import closed_task, dispatch, is_progress_report
+    from .dispatch import LATE_STATUS, closed_task, dispatch, is_progress_report
     from .triage import redispatch_with_reasons, triage_task
 
     task = board.load(job["task"])
@@ -553,6 +608,15 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     task = board.load(task.id)
     if closed_task(board, task.id) is not None:
         return _settle_ignored(cfg, board, job, task)
+    if task.status == LATE_STATUS:
+        # P1-C: a timed-out turn is still running. Settling it here would stamp a
+        # verdict on work nobody has read yet; the late tick owns the decision.
+        board.log("async_late", task=task.id,
+                  hard_deadline=(task.escalation.get("late") or {}).get("hard_deadline", ""))
+        board.notify({"event": "async_late", "task": task.id,
+                      "summary": f"[tower] {task.id} timed out but the adapter is still "
+                                 "running — supervise will re-check"})
+        return {"outcome": "late", "task": task.id}
     if is_progress_report(task.report):
         # 2026-11-24: a progress report keeps the task where it is. Settling it
         # (or handing it to triage) would fail and rework a lane that is simply
@@ -588,6 +652,39 @@ def _settle_dispatch(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     return result
 
 
+def _review_missing(cfg: TowerConfig, board: Board, origin_id: str,
+                    review_task, reviewer: str) -> dict[str, Any]:
+    """No reviewer report means no verdict — an empty report never accepts the origin.
+
+    T-0045: the adversarial pass used to accept the origin when the reviewer's turn
+    had died, because zero findings was read as "clean". The origin stays `reported`
+    (so the lead queue still carries it) and the review task is closed as failed.
+    """
+    with tower_lock(cfg):
+        origin = board.load(origin_id)
+        origin.review = {"rounds": int((origin.review or {}).get("rounds", 0)),
+                         "verdict": "unreviewed", "reviewer": reviewer,
+                         "findings": 0, "proved": 0, "review_task": review_task.id}
+        board.transition(review_task, STATUS_FAILED,
+                         note=f"review closed: no report for {origin_id}")
+        notice = {
+            "event": "review_missing",
+            "task": origin_id,
+            "reviewer": reviewer,
+            "summary": (f"[tower] {origin_id} review produced no report "
+                        f"({review_task.id} status={review_task.status}) — "
+                        f"the task is still reported; review it again by hand"),
+        }
+        board.notify(notice)
+        origin.notified = _deliver_lead_push(cfg, board, origin, notice["summary"])
+        board.save(origin)
+    board.event("adversarial_missing", origin=origin_id, review=review_task.id)
+    board.log("adversarial_missing", origin=origin_id, review=review_task.id,
+              reviewer=reviewer)
+    return {"outcome": "unreviewed", "findings": 0, "proved": 0,
+            "unproved": 0, "dropped": 0, "out_of_scope": 0}
+
+
 def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any]:
     """One independent "break it" pass over a ready task (pstack thermos/interrogate).
 
@@ -596,8 +693,7 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     with the evidence attached; zero proved findings accept it.
     """
     from .converse import relay_report_messages
-    from .dispatch import dispatch
-    from .triage import triage_task
+    from .dispatch import COMMAND_MARKER, FINDINGS_HEADING, PROOF_MARKER, dispatch
     from .verify import verify_report
 
     origin_id = job["task"]
@@ -608,11 +704,18 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         reviewer,
         f"[adversarial review of {origin_id}] Break this change.\n\n"
         f"Scope: ONLY what the report and files below added or changed.\n"
-        f"Each finding must carry a run's proof — a command plus the actual output "
-        f"that shows wrong behavior — written as one line:\n"
-        f"- <what is wrong> | command: <cmd> → output: <output the intent requires>\n"
+        f"Write your report with exactly these sections:\n"
+        f"## Status\n"
+        f"{FINDINGS_HEADING}\n"
+        f"One line per finding, or `- none` when clean:\n"
+        f"- <what is wrong> | command: <cmd> → output: <the output that shows it>\n"
+        f"## Files\n"
+        f"## Checks\n"
+        f"## Open issues\n"
+        f"## Self-review\n"
         f"Leave out anything you did not run. Style is out of scope.\n"
-        f"No findings is a valid result. Never misreport severity.\n\n"
+        f"No findings is a valid result — write `- none` under ## Findings. "
+        f"Never misreport severity.\n\n"
         f"Origin brief:\n{origin.brief[:1500]}\n\n"
         f"Origin report summary: {(origin.report or {}).get('summary', '')[:400]}\n"
         f"Origin files: {', '.join((origin.report or {}).get('files', [])[:12])}",
@@ -625,24 +728,29 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
     dispatch(cfg, board, review_task)
     relay_report_messages(cfg, board, review_task)
     review_task = board.load(review_task.id)
-    triage_task(cfg, board, review_task)          # the reviewer's own report settles
-    review_task = board.load(review_task.id)
 
     raw = review_task.report or {}
+    if not any(raw.get(k) for k in ("summary", "findings", "files", "checks")):
+        return _review_missing(cfg, board, origin_id, review_task, reviewer)
     findings = [str(f).strip() for f in (raw.get("findings") or []) if str(f).strip()]
     rounds = int((origin.review or {}).get("rounds", 0)) + 1
 
     # ---- reviewer governance (pstack no-comments: the auditor is audited) ----
     origin_paths = set(origin.report.get("files") or []) if origin.report else set()
     path_re = re.compile(r"[A-Za-z0-9_\-.]+\.(?:py|md|js|ts|txt|json|html|css|toml|ya?ml)")
-    proved, dropped, out_of_scope = [], [], []
+    proved, dropped, out_of_scope, unproved = [], [], [], []
     for f in findings:
-        has_run = ("command:" in f or "`" in f) and ("→" in f or "->" in f or "output:" in f)
         paths = set(path_re.findall(f))
         escapes = {p2 for p2 in paths if origin_paths and not any(
             p2 == op or p2.endswith("/" + op) or op.endswith("/" + p2) for op in origin_paths)}
+        has_run = ("command:" in f or "`" in f) and (
+            "→" in f or "->" in f or "output:" in f)
         if not has_run:
-            dropped.append(f)
+            if COMMAND_MARKER in f and not PROOF_MARKER.search(f):
+                # names a command but never shows its output: visible, not blocking
+                unproved.append(f)
+            else:
+                dropped.append(f)
         elif escapes:
             out_of_scope.append(f)
         else:
@@ -663,6 +771,8 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         })
         board.event("review_voided", origin=origin_id, reviewer=reviewer,
                     rejected=rejected, rerun=True)
+        board.transition(review_task, REVIEW_CLOSED,
+                         note=f"review voided: rerun requested for {origin_id}")
         return {"outcome": "reviewer_rerun", "rejected": rejected}
     if rejected >= 2:
         board.notify({"event": "review_open_issue", "task": origin_id,
@@ -697,11 +807,19 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
             board.transition(origin, STATUS_ACCEPTED,
                              note=f"adversarial review passed ({review_task.id})",
                              verification=verify_report(cfg, origin).as_dict())
+        if staged_rework:
+            board.transition(origin, STATUS_REWORK,
+                             note=f"rework: review ({len(proved)} proved)")
         reflect_skill_draft(cfg, board, origin)
         origin.review = {"rounds": rounds, "verdict": verdict, "reviewer": reviewer,
                          "findings": len(findings), "proved": len(proved),
-                         "dropped": len(dropped), "out_of_scope": len(out_of_scope),
+                         "unproved": len(unproved), "dropped": len(dropped),
+                         "out_of_scope": len(out_of_scope),
+                         "findings_section": bool(raw.get("findings_section", True)),
+                         "findings_fallback": bool(raw.get("findings_fallback", False)),
                          "review_task": review_task.id}
+        board.transition(review_task, STATUS_ACCEPTED if verdict == "pass" else REVIEW_CLOSED,
+                         note=f"review closed: {verdict} on {origin_id}")
         notice = {
             "event": "review_verdict",
             "task": origin_id,
@@ -709,6 +827,7 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
             "verdict": verdict,
             "summary": (f"[tower] {origin_id} review verdict: {verdict} | role={origin.role} "
                         f"| findings={len(findings)} proved={len(proved)} "
+                        f"unproved={len(unproved)} "
                         f"| reviewer={reviewer} ({review_task.id})"),
         }
         board.notify(notice)
@@ -720,12 +839,13 @@ def _run_adversarial(cfg: TowerConfig, board: Board, job: dict) -> dict[str, Any
         relay_report_messages(cfg, board, staged_rework[0])
     board.event("adversarial_verdict", origin=origin_id, review=review_task.id,
                 verdict=verdict, findings=len(findings), proved=len(proved),
-                dropped=len(dropped), out_of_scope=len(out_of_scope),
-                reputation=rep.get("score"))
+                unproved=len(unproved), dropped=len(dropped),
+                out_of_scope=len(out_of_scope), reputation=rep.get("score"))
     board.log("adversarial_done", origin=origin_id, review=review_task.id,
-              verdict=verdict, proved=len(proved))
+              verdict=verdict, proved=len(proved), unproved=len(unproved))
     return {"outcome": verdict, "findings": len(findings), "proved": len(proved),
-            "dropped": len(dropped), "out_of_scope": len(out_of_scope)}
+            "unproved": len(unproved), "dropped": len(dropped),
+            "out_of_scope": len(out_of_scope)}
 
 
 def _restate_budget(cfg: TowerConfig, task) -> float:
@@ -1031,6 +1151,8 @@ def _adopt_orphans(cfg: TowerConfig) -> int:
 
 _PROGRESS_TICK_S = 60.0
 _last_progress_tick = 0.0
+_LATE_TICK_S = 60.0
+_last_late_tick = 0.0
 
 
 def _tick_progress(cfg: TowerConfig) -> None:
@@ -1045,7 +1167,20 @@ def _tick_progress(cfg: TowerConfig) -> None:
     progress_window_notice(cfg, Board(cfg))
 
 
-def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int:
+def _tick_late(cfg: TowerConfig) -> None:
+    """Settle `late` tasks whose report landed (or whose horizon is past)."""
+    global _last_late_tick
+    now = time.time()
+    if now - _last_late_tick < _LATE_TICK_S:
+        return
+    _last_late_tick = now
+    from .dispatch import recheck_late
+
+    recheck_late(cfg, Board(cfg))
+
+
+def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False,
+               concurrency: int = 0) -> int:
     """The worker loop with a thread pool (`workers: N`, design doc §1).
 
     Each thread claims jobs via the atomic `os.replace`; per-role serialisation is
@@ -1058,7 +1193,18 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
     claimed jobs half-dead. It prints the in-flight task ids and waits for them
     to finish; a second Ctrl-C (or `--force`) exits immediately with a warning.
     """
-    global _last_progress_tick
+    global _last_progress_tick, _last_late_tick, _POOL
+    from . import __version__
+
+    # One consumer per workspace: a second `tower worker` used to idle silently
+    # beside the first, and the operator read that silence as an idle pool.
+    handle = _take_worker_lock(cfg)
+    if handle is None:
+        holder = _lock_holder(cfg)
+        print(f"worker: another worker (pid {holder.get('pid', '?')}, started "
+              f"{holder.get('started', 'unknown')}) holds .tower/worker.lock — "
+              "jobs are already being consumed")
+        return 1
 
     root_existed = cfg.workspace.exists()
     _dirs(cfg)
@@ -1067,7 +1213,12 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
     # A fresh loop asks for heartbeats on its first idle poll — a global left
     # over from an earlier run in the same process would silently skip it.
     _last_progress_tick = 0.0
-    pool = max(1, int(getattr(cfg, "workers", 4) or 1))
+    _last_late_tick = 0.0
+    pool = max(1, int(concurrency or getattr(cfg, "workers", 4) or 1))
+    _POOL = pool
+    base_url = str((cfg.adapter_options.get("dsh") or {}).get("base_url") or "")
+    print(f"worker: pool={pool} pid={os.getpid()} version={__version__} "
+          f"base_url={base_url} workspace={cfg.workspace}", flush=True)
     role_locks: dict[str, threading.Semaphore] = {}
     locks_guard = threading.Lock()
 
@@ -1114,6 +1265,7 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
                 if once:
                     return
                 _tick_progress(cfg)
+                _tick_late(cfg)
                 time.sleep(POLL_S)
                 continue
             claimed_path, job = pair
@@ -1185,6 +1337,7 @@ def run_worker(cfg: TowerConfig, once: bool = False, force: bool = False) -> int
                 signal.signal(sig, handler)
             except (ValueError, OSError, TypeError):
                 pass
+        release_lock(handle)
     return 0
 
 
@@ -1206,6 +1359,17 @@ def _settle_failure(board: Board, job: dict, outcome: str, error: str) -> dict[s
                   "summary": f"job {job.get('id')} failed: {error}"[:300]})
     board.log("async_failed", job=job.get("id"), error=error[:300], failed_task=task.id)
     return result
+
+
+def _job_span(cfg: TowerConfig, job: dict, outcome: str) -> None:
+    """One line per finished job — the interval that proves two ran at once."""
+    started = float(job.get("started_ts") or 0) or time.time()
+    entry = {"job": job.get("id"), "kind": job.get("kind"), "task": job.get("task"),
+             "role": str(job.get("role") or ""), "started_ts": started,
+             "ended_ts": time.time(), "outcome": outcome}
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    with (cfg.state_dir / "jobs.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
@@ -1235,6 +1399,7 @@ def _process(cfg: TowerConfig, claimed_path: Path, job: dict) -> None:
         board.log("async_failed", job=job.get("id"), error=str(exc)[:300])
     job["settled_at"] = now_ts()
     job["result"] = result
+    _job_span(cfg, job, str(result.get("outcome") or ""))
     (cfg.queue_dir / "done" / claimed_path.name).write_text(
         json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
     claimed_path.unlink(missing_ok=True)

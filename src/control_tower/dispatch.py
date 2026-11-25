@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,76 @@ def note_late_report(board: Board, task: Task, report: dict[str, Any]) -> Task:
     board.log("settle_ignored", task=task.id, status=task.status, phase="post",
               report_chars=len(str(report.get("raw") or "")))
     return task
+
+
+LATE_STATUS = "late"
+LATE_NOTE = "adapter still running; supervise will re-check"
+# A turn that outlived its adapter timeout gets one more full budget — capped at
+# an hour, because the customer's 30-minute turn was judged failed at 11:05 and
+# kept writing artifacts until 11:42.
+LATE_HORIZON_S = 3600.0
+
+
+def _timed_out(result: Any) -> bool:
+    """The adapter stopped waiting; the work it started may still be running."""
+    return bool((result.meta or {}).get("timed_out")) or "timed out" in (result.text or "").lower()
+
+
+def _cancel_turn(adapter: Any, result: Any) -> bool:
+    """Best effort: ask the harness to stop the turn we stopped waiting for."""
+    session_id = str((result.meta or {}).get("session_id") or "")
+    cancel = getattr(adapter, "cancel", None)
+    if not (session_id and callable(cancel)):
+        return False
+    try:
+        cancel(session_id)
+    except Exception:      # the turn is already over budget; a failed cancel changes nothing
+        return False
+    return True
+
+
+def mark_late(board: Board, task: Task, result: Any, cancelled: bool) -> Task:
+    """A timeout is not a verdict: keep the task open until the horizon."""
+    hard_deadline = (datetime.now() + timedelta(seconds=LATE_HORIZON_S)).strftime(_TS_FMT)
+    task.escalation["late"] = {
+        "since": now_ts(),
+        "hard_deadline": hard_deadline,
+        "cancelled": cancelled,
+        "output": (result.text or "")[:500],
+    }
+    board.log("adapter_timeout", task=task.id, role=task.role, cancelled=cancelled,
+              hard_deadline=hard_deadline)
+    board.transition(task, LATE_STATUS, note=LATE_NOTE, output=(result.text or "")[:2000])
+    return task
+
+
+def recheck_late(cfg: TowerConfig, board: Board, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Settle every `late` task: the report landed, or the hard horizon is past."""
+    now_dt = now or datetime.now()
+    results: list[dict[str, Any]] = []
+    for task in board.all():
+        if task.status != LATE_STATUS:
+            continue
+        report = _late_report(cfg, task)
+        if report is not None:
+            task.report = report
+            task.state = report.get("state", "")
+            task.attention = report.get("attention")
+            board.transition(task, STATUS_REPORTED,
+                             note="late report recovered after the adapter timeout", report=report)
+            board.push_report(task, report)
+            board.log("late_recovered", task=task.id, role=task.role)
+            results.append({"task": task.id, "outcome": "recovered"})
+            continue
+        deadline = _ts((task.escalation.get("late") or {}).get("hard_deadline", ""))
+        if deadline is not None and now_dt >= deadline:
+            board.transition(task, STATUS_FAILED,
+                             note="adapter never finished within the hard horizon")
+            board.log("late_failed", task=task.id, role=task.role, horizon_s=LATE_HORIZON_S)
+            results.append({"task": task.id, "outcome": "failed"})
+            continue
+        results.append({"task": task.id, "outcome": "still-late"})
+    return results
 
 
 def build_task(
@@ -722,6 +793,11 @@ def dispatch(
             )
             board.push_report(task, late)
             return task
+        if _timed_out(result):
+            # P1-C (2026-11-24): the timeout only stopped us waiting. Marking the
+            # task failed while the turn kept writing made "failed" a lie, and the
+            # person reading the board had no way to know files were still coming.
+            return mark_late(board, task, result, cancelled=_cancel_turn(adapter, result))
         board.transition(task, STATUS_FAILED, note=f"adapter exit {result.exit_code}", output=result.text[:2000])
         return task
 
@@ -845,15 +921,28 @@ def dispatch_restate(
     return task
 
 
+# One source of truth for the findings section: the adversarial contract renders
+# this heading and the parser looks up this key (T-0045 — a reviewer copying the
+# contract verbatim used to score zero findings because the contract annotated it).
+FINDINGS_HEADING = "## Findings"
+FINDINGS_SECTION = "findings"
+_HEADING_ANNOTATION = re.compile(r"\s+[—–-]\s+|[:：]")
+
+
+def _section_key(heading: str) -> str:
+    """Heading -> lookup key: case and annotations (`— …`, `:`, `…`) are ignored."""
+    return _HEADING_ANNOTATION.split(heading.strip(), maxsplit=1)[0].strip().lower()
+
+
 def _sections(text: str) -> dict[str, list[str]]:
-    """Split a markdown answer into `## Heading` -> lines (heading lower-cased)."""
+    """Split a markdown answer into `## Heading` -> lines (normalised key)."""
     buckets: dict[str, list[str]] = {}
     section: str | None = None
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         stripped = line.strip()
         if stripped.startswith("## "):
-            section = stripped[3:].strip().lower()
+            section = _section_key(stripped[3:])
             buckets.setdefault(section, [])
             continue
         if section:
@@ -868,11 +957,20 @@ def _strip_bullet(line: str) -> str:
     return s
 
 
+# A finding counts as proved when its proof line carries the command's output.
+PROOF_MARKER = re.compile(r"(?:->|→)\s*output:", re.IGNORECASE)
+COMMAND_MARKER = " | command: "
+_FINDING_EMPTY = ("none", "n/a", "no", "-", "")
+
+
 def parse_report(text: str) -> dict[str, Any]:
     """Parse the role's markdown report into a dict.
 
     Missing sections are kept as empty lists — the verifier decides whether that
-    is acceptable (see config `accept_requires`).
+    is acceptable (see config `accept_requires`). Findings are read from
+    `## Findings`; when a reviewer never wrote that section, the bullets in
+    Summary / Open issues that carry the ` | command: ` marker are used instead
+    (T-0040: qa hid proved findings in Summary and the verdict read 0).
     """
     buckets = _sections(text)
 
@@ -889,7 +987,11 @@ def parse_report(text: str) -> dict[str, Any]:
             continue
         attention_lines.append(s2)
     question = attention_lines[0] if attention_lines else ""
-    findings = items("findings")
+    has_section = FINDINGS_SECTION in buckets
+    findings = [f for f in items(FINDINGS_SECTION) if f.lower() not in _FINDING_EMPTY]
+    if not has_section:
+        findings = [f for name in ("summary", "open issues") for f in items(name)
+                    if COMMAND_MARKER in f]
     self_review_lines = [l.strip() for l in buckets.get("self-review", []) if l.strip()]
     return {
         "state": state,
@@ -902,6 +1004,8 @@ def parse_report(text: str) -> dict[str, Any]:
         # adversarial findings format (each entry must carry a command + its output)
         "self_review": " ".join(self_review_lines),
         "findings": findings,
+        "findings_section": has_section,
+        "findings_fallback": not has_section and bool(findings),
         "raw": text,
     }
 

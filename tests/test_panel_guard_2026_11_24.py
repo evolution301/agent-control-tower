@@ -12,7 +12,7 @@ import pytest
 from control_tower import registry
 from control_tower.board import Board
 from control_tower.config import ensure_layout, parse_config
-from control_tower.panel import make_handler
+from control_tower.panel import _loopback, _port_or_default, make_handler
 
 QUESTION = {"question": "Overlay or push content?"}
 
@@ -85,6 +85,28 @@ def test_cross_site_post_is_refused_and_writes_nothing(tower):
     assert code == 403
     assert "Origin http://evil.example" in payload["error"]
     assert Board(tower).load(task_id).attention == QUESTION
+
+
+def test_lookalike_loopback_origin_is_refused(tower):
+    task_id = _blocked(tower)
+    with _served(tower) as port:
+        code, payload = _post(port, "/api/actions", {"action": "skip", "task": task_id},
+                              origin=f"http://127.0.0.1.evil.com:{port}")
+    assert code == 403
+    assert "127.0.0.1.evil.com" in payload["error"]
+    assert Board(tower).load(task_id).attention == QUESTION
+
+
+def test_loopback_parser_and_default_ports():
+    assert _loopback("127.0.0.1")
+    assert _loopback("127.0.0.2")
+    assert _loopback("::1")
+    assert _loopback("localhost")
+    assert not _loopback("127.0.0.1.evil.com")
+    assert not _loopback("")
+    assert _port_or_default(None, "http") == 80
+    assert _port_or_default(None, "https") == 443
+    assert _port_or_default(8787, "http") == 8787
 
 
 def test_same_origin_post_still_works(tower):

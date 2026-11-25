@@ -32,6 +32,8 @@ def repo(tmp_path):
     root.mkdir()
     (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "other.txt").write_text("base\n", encoding="utf-8")
+    (root / "board.py").write_text("BASE = 1\n", encoding="utf-8")
+    (root / "worker.py").write_text("from board import BASE\nVALUE = BASE\n", encoding="utf-8")
     _git(root, "init", "-q")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "base")
@@ -101,13 +103,13 @@ def test_tree_change_during_run_is_deferred_not_rework(tmp_path, repo, monkeypat
     assert shown["attention"]["question"].startswith("verify-deferred:")
 
 
-def test_verify_runs_against_head_plus_the_task_diff(tmp_path, repo):
-    # The live tree carries another lane's edit; HEAD does not. This command
-    # passes only if the check sees HEAD's content.
+def test_verify_runs_against_the_uncommitted_working_set(tmp_path, repo):
+    # The live tree carries another lane's edit; the isolated run must see that
+    # same working set (what qa reviewed), not just HEAD.
     (repo / "other.txt").write_text("other lane\n", encoding="utf-8")
     cfg = _cfg(tmp_path, repo, [
         "python -c \"import pathlib, sys; "
-        "sys.exit(0 if pathlib.Path('other.txt').read_text() == 'base\\n' else 1)\"",
+        "sys.exit(0 if pathlib.Path('other.txt').read_text() == 'other lane\\n' else 1)\"",
     ])
     board, task = _task(cfg)
 
@@ -127,5 +129,38 @@ def test_genuine_failure_still_reworks(tmp_path, repo):
 
     result = triage_task(cfg, board, task)
 
+    assert result["outcome"] == "reworked"
+    assert task.status == "rework"
+
+
+def test_worktree_carries_sibling_uncommitted_edit(tmp_path, repo):
+    # T-0030's worker.py depends on a constant added to board.py in the same
+    # uncommitted working set; board.py is not in the task's file list.
+    (repo / "board.py").write_text("BASE = 1\nSTATUS_LATE = 'late'\n", encoding="utf-8")
+    (repo / "worker.py").write_text(
+        "from board import BASE, STATUS_LATE\nVALUE = (BASE, STATUS_LATE)\n",
+        encoding="utf-8")
+    cfg = _cfg(tmp_path, repo, ['python -c "import worker"'])
+    board, task = _task(cfg)
+    task.report["files"] = ["worker.py"]
+    board.save(task)
+
+    verdict = verify.verify_report(cfg, task)
+
+    assert verdict.ok, verdict.problems
+    assert verdict.ran[0].get("isolated") is True
+
+
+def test_broken_own_file_still_rejected(tmp_path, repo):
+    (repo / "other.txt").write_text("other lane\n", encoding="utf-8")
+    (repo / "app.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
+    cfg = _cfg(tmp_path, repo, ['python -c "import app"'])
+    board, task = _task(cfg)
+
+    verdict = verify.verify_report(cfg, task)
+
+    assert not verdict.ok
+    assert not verdict.deferred
+    result = triage_task(cfg, board, task)
     assert result["outcome"] == "reworked"
     assert task.status == "rework"

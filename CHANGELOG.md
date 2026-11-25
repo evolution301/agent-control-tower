@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.18.5] - 2026-11-25
+
+### Fixed
+- **Panel loopback guard hardened**: `_loopback` parses IPs with `ipaddress` (only `localhost`, `::1`, real `127/8` literals pass), so look-alike origins like `http://127.0.0.1.evil.com:<port>` get 403 and write nothing; missing ports now default to 80/443 instead of being refused.
+- **组群开会 (kickoff --discuss) actually fills packages now**: roles answer in their trained report format, so `parse_position` falls back to `## Summary` (questions from `## Open issues`), the round-1 contract says so explicitly, and every turn's raw answer is persisted for replay. Replaying the original H-0001 huddle now fills `plan.best`.
+- **Review gate**: `tower accept` refuses a task with no qa verdict while the tower has an effective review role (`--no-review` records the waiver). The adversarial review contract names its `## Findings` heading and the parser shares that single source of truth, so contract-exact reports score their findings; bullets carrying `| command:` are counted as fallback; unproved findings are reported separately.
+- **Stuck reviews drain**: auto-queued review tasks record their verdict on the subject task and complete themselves instead of lingering in `rework`.
+- **Verify isolation stops false rejections**: the dirty-tree verify worktree now carries the full uncommitted working set; collection errors confined to files outside the task's own list become `verify-deferred`, never `rework`.
+- **`tower kickoff --discuss --json` gains a top-level `discuss` key** (`state` / `absent` / `seconds`), keeping `package.discuss` for compatibility.
+- **Worker status shows every in-flight job** (`pool: N` plus per-job lines) and `--concurrency N` is honoured; ghost heartbeat entries no longer outlive their process.
+- docs/architecture.md no longer overclaims serialisation; doc-drift guards keep it honest.
+
 ## [0.18.4] - 2026-11-24
 
 An outside auditor read the 0.18.3 tree, found six defects and four stale

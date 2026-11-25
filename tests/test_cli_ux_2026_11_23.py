@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 from control_tower import cli
 from control_tower.config import parse_config
 
@@ -63,3 +66,27 @@ def test_refused_dispatch_is_one_line_on_stderr(tmp_path, monkeypatch, capsys):
                    if line.startswith("dispatch refused:")]
         assert len(refused) == 1
         assert "no task package" in refused[0]
+
+
+def test_worker_status_lists_the_pool_and_every_job(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOWER_HOME", str(tmp_path / "home"))
+    _write_tower(tmp_path)
+    cfg = parse_config(tmp_path / "tower.toml")
+    cfg.queue_dir.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    (cfg.queue_dir / "worker.json").write_text(json.dumps({
+        "pid": 999999, "unix_ts": now, "v": "0.0.0", "pool": 2,
+        "jobs": {
+            "Q-00001": {"kind": "dispatch", "task": "T-0001", "role": "seed",
+                        "started_at": now - 300},
+            "Q-00002": {"kind": "review", "task": "T-0002", "role": "seed",
+                        "started_at": now - 60},
+        },
+    }), encoding="utf-8")
+
+    assert cli.main(["worker", "--status"]) == 0
+    out = capsys.readouterr().out
+    assert "pool:  2   (recorded pid holds the worker lock: False)" in out
+    assert "worker: job Q-00001 (dispatch) task T-0001 role seed started 5m ago" in out
+    assert "worker: job Q-00002 (review) task T-0002 role seed started 1m ago" in out
