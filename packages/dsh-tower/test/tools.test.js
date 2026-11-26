@@ -13,6 +13,7 @@ import {
   recordBinding,
   resolveWorkspace,
   targetWorkspace,
+  VERSION,
   workspaceLine,
   dispatchTool,
   ensurePanel,
@@ -252,7 +253,7 @@ test('tower_compact names every place it looked, with contents and versions', as
   const previous = process.env.TOWER_HOME
   try {
     writeFileSync(join(dir, 'tower.toml'), 'roles:\n  qa:\n    adapter: dsh\n')
-    writeFileSync(join(dir, 'pyproject.toml'), '[project]\nname = "agent-control-tower"\nversion = "9.9.9"\n')
+    writeFileSync(join(dir, 'pyproject.toml'), '[project]\nname = "agent-control-tower"\nversion = "9.8.7"\n')
     process.env.TOWER_HOME = home
     const tool = compactTool({
       workspace: dir,
@@ -265,10 +266,10 @@ test('tower_compact names every place it looked, with contents and versions', as
       out.text,
       "no session configured for role 'qa' (checked sessions, adapters.dsh.sessions, adapterOptions.dsh.sessions; "
       + 'found sessions: core; adapters.dsh.sessions: (empty); adapterOptions.dsh.sessions: absent; '
-      + 'dsh-tower 0.18.5)',
+      + `dsh-tower ${VERSION})`,
     )
     assert.doesNotMatch(out.text, /tower CLI/)
-    assert.doesNotMatch(out.text, /9\.9\.9/)
+    assert.doesNotMatch(out.text, /9\.8\.7/)
   } finally {
     if (previous === undefined) delete process.env.TOWER_HOME
     else process.env.TOWER_HOME = previous
