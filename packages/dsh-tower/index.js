@@ -34,7 +34,7 @@ export const name = 'dsh-tower'
 export const inject = ['tools', 'agents']
 
 /** Plugin version, mirroring package.json (a test keeps the two in step). */
-export const VERSION = '0.18.6'
+export const VERSION = '0.19.0'
 
 /**
  * Path of the active-project pointer written by `tower projects use`.
