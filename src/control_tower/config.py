@@ -136,6 +136,11 @@ class TowerConfig:
         default_factory=lambda: ["summary", "files", "checks"]
     )
     verify_commands: list[str] = field(default_factory=list)
+    # 蜂群协作模式（Swarm）可选配置：默认后端、默认模型、默认工位隔离策略与模型清单
+    swarm_default_adapter: str = ""
+    swarm_default_model: str = ""
+    swarm_workspace_mode: str = "inherit"
+    swarm_models: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def state_dir(self) -> Path:
@@ -195,6 +200,11 @@ class TowerConfig:
     def skills_dir(self) -> Path:
         """v3 §5: the company-wide skill library, shared by every role."""
         return self.state_dir / "skills"
+
+    @property
+    def swarm_dir(self) -> Path:
+        """蜂群协作数据目录：存放工蜂花名册、共享消息板和独立工位。"""
+        return self.state_dir / "swarm"
 
 
 def effective_review_roles(cfg: TowerConfig) -> list[str]:
@@ -348,6 +358,10 @@ def parse_config(path: Path) -> TowerConfig:
         config_path=str(path),
         accept_requires=list(raw.get("accept_requires") or ["summary", "files", "checks"]),
         verify_commands=list(raw.get("verify_commands") or []),
+        swarm_default_adapter=str((raw.get("swarm") or {}).get("default_adapter", "")).strip().lower(),
+        swarm_default_model=str((raw.get("swarm") or {}).get("default_model", "")).strip(),
+        swarm_workspace_mode=str((raw.get("swarm") or {}).get("workspace_mode", "inherit")).strip().lower() or "inherit",
+        swarm_models=list((raw.get("swarm") or {}).get("models") or []),
     )
 
 

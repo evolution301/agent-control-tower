@@ -409,6 +409,14 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                 self._send(200, render_scene(cfg, lang).encode("utf-8"),
                            "text/html; charset=utf-8")
                 return
+            if path == "/swarm":
+                from .panel_swarm import render as render_swarm
+
+                lang = pick_lang(self.path.split("?", 1)[1] if "?" in self.path else "",
+                                 self.headers.get("Accept-Language", ""))
+                self._send(200, render_swarm(cfg, lang).encode("utf-8"),
+                           "text/html; charset=utf-8")
+                return
             if path in ("/", "/index.html", "/hq"):
                 lang = pick_lang(self.path.split("?", 1)[1] if "?" in self.path else "",
                                  self.headers.get("Accept-Language", ""))
@@ -484,6 +492,21 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                 self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8")
                 return
+            if path == "/api/swarm":
+                from .swarm import get_status as swarm_status
+
+                target = self._cfg_for(query, cfg)
+                if target is None:
+                    self._send(404, b'{"error":"unknown project"}', "application/json")
+                    return
+                try:
+                    tail = max(1, min(200, int((query.get("tail") or ["50"])[0])))
+                except ValueError:
+                    tail = 50
+                payload = swarm_status(target, tail=tail)
+                self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             if path in ("/healthz", "/api/health"):
                 from . import __version__
 
@@ -495,7 +518,7 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
 
         def do_POST(self):  # noqa: N802
             path = self.path.split("?")[0]
-            if path not in ("/api/actions", "/api/ask"):
+            if path not in ("/api/actions", "/api/ask", "/api/swarm/post", "/api/swarm/add", "/api/swarm/action"):
                 self._send(404, b"not found", "text/plain; charset=utf-8")
                 return
             refusal = self._post_refusal()
@@ -524,19 +547,88 @@ def make_handler(cfg: TowerConfig, allow_projects: bool = False):
                     from .scene_actions import ask
 
                     result = ask(target, board, str(body.get("text", "")))
+                elif path == "/api/swarm/post":
+                    from .swarm import post_message as swarm_post
+
+                    result = swarm_post(
+                        target,
+                        str(body.get("body", "")),
+                        author=str(body.get("author") or "coordinator"),
+                        auto_wake=bool(body.get("auto_wake", True)),
+                    )
+                elif path == "/api/swarm/add":
+                    from .swarm import add_workers as swarm_add
+
+                    result = swarm_add(
+                        target,
+                        str(body.get("name", "")),
+                        str(body.get("brief", "")),
+                        model=str(body.get("model", "")),
+                        adapter=str(body.get("adapter", "")),
+                        workspace=str(body.get("workspace", "")),
+                        fork=str(body.get("fork", "")),
+                        n=int(body.get("n") or 1),
+                        tasks=body.get("tasks") or None,
+                        actor=str(body.get("actor") or "coordinator"),
+                        auto_wake=bool(body.get("auto_wake", True)),
+                    )
+                elif path == "/api/swarm/action":
+                    from . import swarm as swarm_mod
+
+                    act = str(body.get("action", "")).strip()
+                    wname = str(body.get("name", "")).strip()
+                    if act == "model":
+                        result = swarm_mod.switch_model(
+                            target, wname, str(body.get("model", "")),
+                            reason=str(body.get("reason", "")),
+                            actor=str(body.get("actor") or "coordinator"),
+                            auto_resume=bool(body.get("auto_resume", True)),
+                        )
+                    elif act == "verify":
+                        result = swarm_mod.verify_worker(
+                            target, wname,
+                            land=bool(body.get("land", False)),
+                            no_review=bool(body.get("no_review", True)),
+                        )
+                    elif act == "merge":
+                        result = swarm_mod.merge_worker(target, wname)
+                    elif act == "kill":
+                        result = swarm_mod.kill_worker(
+                            target, wname,
+                            actor=str(body.get("actor") or "coordinator"),
+                            land=bool(body.get("land", False)),
+                            force=bool(body.get("force", False)),
+                        )
+                    elif act == "title":
+                        result = swarm_mod.set_title(target, str(body.get("title", "")))
+                    elif act == "monitor":
+                        result = swarm_mod.monitor_check(
+                            target,
+                            stale_seconds=int(body.get("stale_seconds") or 300),
+                            nudge=bool(body.get("nudge", False)),
+                        )
+                    else:
+                        raise ValueError(f"unknown swarm action {act!r}")
                 else:
                     from .scene_actions import perform
 
                     result = perform(target, board, str(body.get("action", "")),
                                      str(body.get("task", "")), str(body.get("note", "")))
+            except PermissionError as exc:
+                self._send(403, json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
+                return
             except KeyError as exc:
-                self._send(400, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                self._send(400, json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
                 return
             except ValueError as exc:
-                self._send(409, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                self._send(409, json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
                 return
             except FileNotFoundError as exc:
-                self._send(404, json.dumps({"ok": False, "error": str(exc)}).encode(), "application/json")
+                self._send(404, json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8")
                 return
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
@@ -635,7 +727,7 @@ class PanelServer(ThreadingHTTPServer):
 
 INSTANCE = uuid.uuid4().hex[:8]
 STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
-SOURCE_FILES = ("__init__.py", "panel.py", "panel_hq.py", "snapshot.py", "registry.py",
+SOURCE_FILES = ("__init__.py", "panel.py", "panel_hq.py", "panel_swarm.py", "snapshot.py", "registry.py",
                 "analytics.py", "board.py", "config.py", "verify.py",
                 "scene.py", "scene_actions.py", "panel_scene.py")
 

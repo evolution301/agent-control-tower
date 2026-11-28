@@ -24,6 +24,34 @@ class MockAdapter:
         if self.sleep_s:
             time.sleep(self.sleep_s)
 
+        # 蜂群共享消息板模式：产出真实可验收的占位文件并回执当前模型与记忆轮数
+        if "## Swarm message board" in req.prompt:
+            opts = req.options or {}
+            active_model = str(opts.get("model") or "mock-default")
+            history = opts.get("history") or []
+            ws = Path(req.cwd)
+            ws.mkdir(parents=True, exist_ok=True)
+            rel_name = f"swarm-{req.role}-output.md"
+            artifact = ws / rel_name
+            artifact.write_text(
+                f"# Swarm output ({req.role})\n\n"
+                f"- model: {active_model}\n"
+                f"- prior_memory_turns: {len(history)}\n",
+                encoding="utf-8",
+            )
+            text = (
+                f"[{req.role} @ {active_model}] 已处理群消息（继承记忆 {len(history)} 条）并落盘交付物。\n\n"
+                f"## Files\n"
+                f"- {rel_name} — 蜂群工蜂 {req.role} 产出的交付文件\n\n"
+                f"## Checks\n"
+                f"- `exists({rel_name})` → True\n"
+            )
+            return AdapterResult(
+                text=text,
+                exit_code=0,
+                meta={"mode": "swarm", "model": active_model, "artifact": str(artifact)},
+            )
+
         # v0.8 — the restate gate. The prompt decides what is being asked for, so
         # the mock answers the question that was asked and writes no artifact:
         # that absence is what proves `dispatch --restate` ran no work.

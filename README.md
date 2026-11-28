@@ -151,12 +151,14 @@ DSH 自带自动压缩（`@deepseek-ai/dsh-compaction-basic`，base 默认挂载
 ```
 插件的 `tower_compact { session }` 保留为手动一键触发；`tower ctx` 照常打印各会话实时压力。
 
-## 场景看板（0.8+）
+## 场景看板与蜂群面板（0.8+ / Swarm）
 
-`tower panel` 起来后访问 **`/scene`**：等轴测玻璃塔楼，每个角色一台机器人、每层一个部门、
-楼层 LED 显示告警状态；批准 / 回复 / 跳过 / 维修直接在页面点（动作全部落台账）。
-运营表格视图仍在 `/`，两页右上角互相跳转。每个数字的口径见
-`docs/board-model.md`，中英切换 `?lang=zh|en`。
+`tower panel` 起来后可切换三个视图：
+- **`/`**：运营总控值守台（聚焦「需要你决定」与任务流转）；
+- **`/scene`**：等轴测玻璃塔楼，每个角色一台机器人、每层一个部门、楼层 LED 显示告警状态；批准 / 回复 / 跳过 / 维修直接在页面点（动作全部落台账）；
+- **`/swarm`**：**蜂群实时面板** —— 公开共享消息板（`@名字` 唤醒）、工蜂状态灯（`working` / `waiting` / `stopped` / `killed`）、独立工位（`inherit` / `share` / `branch`）状态、一键召唤/换模型/质检验收/合并工位。
+
+每个数字的口径见 `docs/board-model.md`，中英切换 `?lang=zh|en`。蜂群混合架构详见 **[docs/swarm.md](docs/swarm.md)**。
 
 ## 闭环长什么样
 
@@ -208,6 +210,46 @@ tower rework T-0001 --note "Checks 没写结果，重跑测试"
 | 每份回执都要你读一遍才知道要不要人插手 | `tower attention` 只列 `ready` / `blocked` / `failed` |
 | 重试或双击产生重复任务 | `tower dispatch --key <id>` 直接返回已有任务 |
 
+## 0.19 有什么新东西：蜂群混合模式（Swarm Mode）
+
+把「公开共享消息板 + `@唤醒` + 动态招人分片 + 独立工位 + 无损换模型」的蜂群协作体验，和控制塔最硬核的「真文件实查 + `verify_commands` 真跑 + 合并门」融为一体。全部状态以纯文本落在 `.tower/swarm/`，关键动作同步记入 `.tower/ledger.jsonl`，现有 `tower.toml` 无需修改即可启用。
+
+![swarm-panel](docs/assets/swarm-panel.png)
+
+- **公开共享消息板 + `@唤醒` + 自动复活。** 所有派活、回复、换模型和质检结果统一落在 `.tower/swarm/board.jsonl`。工蜂空闲时处于 `waiting`（零消耗），群里发 `@名字` 或 `@all` 立刻唤醒；离线/暂停的 `stopped` 工蜂被 `@` 时自动复活。
+- **随时动态招人、分片并行、记忆克隆与帮手招帮手。** 不用提前把所有角色写死在配置里：`tower swarm add` 支持 `--n N` 克隆同构工蜂、`--tasks ...` 按清单分片并行、`--fork <老工蜂>` 复制既有对话记忆续跑，也允许在岗工蜂通过 `--by <自己>` 召唤并管理自己的小帮手。
+- **独立工位隔离 + 安全合并清理。** 三种工位模式按需选用：`inherit`（共享主目录，适合只读审查/QA）、`share`（`git worktree` 独立工作副本，非 git 目录自动降级为安全拷贝，多人改代码互不踩文件）、`branch`（独立本地克隆）。通过 `merge` 合并回主分支，`kill` 永久解散时自动清理临时工位（默认拦截未合并改动，防止误删成果）。
+- **多后端单工蜂路由 + 无损换模型。** 每只工蜂可分别指定 `mock` / `cli` / `openai` / `dsh` 后端与模型；额度用完或任务变难时，`tower swarm model <工蜂> <新模型> --reason "..."` 原地切换引擎、完整保留对话记忆与工位并自动续跑。
+- **控制塔质检门 + 巡检催办。** `tower swarm verify <工蜂> --land` 先检查声明文件是否真实存在、再在工蜂工位里真实跑完 `verify_commands`，全部通过才自动合并，失败则把真实报错 `@回` 群里返工；`tower swarm monitor --nudge` 自动排查卡死的 `working` 工蜂与未响应 `@提及` 并催办。
+- **离线实时 `/swarm` 网页看板。** `tower panel` 新增 `/swarm` 视图（零 CDN 离线哑光主题、明暗双色、同源回环写保护），实时展示 4 色状态灯、工位/未合并徽章、一键召唤/换模型/质检/合并/解散，以及底部 `@提及` 群聊发送框。
+
+快速上手（复制粘贴即可跑）：
+
+```bash
+# 1. 离线 1 秒体验完整蜂群闭环（无需模型、无需网络）
+tower swarm demo
+
+# 2. 按模块分片召唤多只工蜂（独立 git worktree 工位）
+tower swarm add coder --brief "按模块补齐代码与测试" --tasks "auth模块" "pay模块" --workspace share --model openai:gpt-4.1-mini
+
+# 3. 克隆 coder-1 的对话记忆召唤只读审查工蜂
+tower swarm add qa --brief "复核 coder-1 的改动" --fork coder-1 --workspace inherit
+
+# 4. 在公开消息板 @唤醒 指定工蜂（或 @all）
+tower swarm post "@coder-1 补充边界单测并重跑验证"
+
+# 5. 无损换模型（保留工蜂完整历史记忆与工位）
+tower swarm model coder-1 claude-sonnet-4 --reason "复杂逻辑切换更强模型"
+
+# 6. 走控制塔质检门，通过后自动合并独立工位
+tower swarm verify coder-1 --land
+
+# 7. 打开离线实时蜂群面板
+tower panel   # 浏览器访问 http://127.0.0.1:8787/swarm
+```
+
+→ 完整架构、磁盘结构与权限边界见 **[docs/swarm.md](docs/swarm.md)**。
+
 ## 0.18 有什么新东西
 
 - **派活前先开会。** `tower kickoff "<brief>" --role backend --role qa` 写出计划、分工、验收线和合并顺序；`[kickoff].require = true` 时，包不完整 `dispatch` 直接拒绝开工。
@@ -257,7 +299,7 @@ pip install -e .
 
 Python 3.10+，运行时只依赖 `PyYAML`。
 
-版本以 `v0.18.0` 到 `v0.18.5` 打在 [GitHub Releases](https://github.com/evolution301/agent-control-tower/releases) 上。
+版本以 `v0.18.0`、`v0.18.5` 到 `v0.19.0` 打在 [GitHub Releases](https://github.com/evolution301/agent-control-tower/releases) 上。
 
 ## 面板：一眼看清谁在干什么
 
@@ -350,6 +392,7 @@ verify_commands:
 | `tower review <task>` | 对已交回执的任务跑一轮对抗审查 |
 | `tower rework <task> --note "…"` | 带意见打回并重派 |
 | `tower status [--json]` | 任务看板 |
+| `tower swarm <add\|post\|status\|board\|model\|verify\|merge\|kill\|monitor\|demo>` | **蜂群协作模式**：共享消息板 `@唤醒`、随时招人分片、独立工位隔离、无损换模型、联动验证门合并 |
 | `tower show <task>` / `tower log` | 看单个任务 / 跟 ledger |
 | `tower demo` | 离线全链路演示 |
 | `tower doctor` | 检查配置、适配器、Key、会话 |
@@ -405,6 +448,7 @@ my-project/
 
 | 文档 | 内容 |
 |---|---|
+| [蜂群协作模式](docs/swarm.md) | 共享消息板 `@唤醒`、动态招人分片、独立工位隔离、无损换模型与质检合并门 |
 | [DSH 快速开始](docs/dsh-quickstart.md) | 主推配置的完整步骤 + 它能避免的 5 个失败模式 |
 | [架构](docs/architecture.md) | 组件、状态机、为什么用文件而不是队列 |
 | [适配器](docs/adapters.md) | mock / cli / dsh / openai，以及怎么加自己的 |

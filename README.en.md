@@ -167,6 +167,46 @@ tower rework T-0001 --note "Checks list no results; re-run the suite"
 | You re-read every report to see if a human is needed | `tower attention` lists only `ready` / `blocked` / `failed` |
 | A retry or a double-click creates duplicate work | `tower dispatch --key <id>` returns the existing task |
 
+## What's new in 0.19: Hybrid Swarm Mode
+
+Combines an open shared-board swarm workflow — `@mention` wakeup, dynamic sharding, isolated workspaces, and lossless model switching — with Control Tower's evidence-before-done verification gate. Everything persists as plain Git-friendly files under `.tower/swarm/` and mirrors key lifecycle events into `.tower/ledger.jsonl`; existing `tower.toml` files work with zero edits.
+
+![swarm-panel](docs/assets/swarm-panel.png)
+
+- **Shared message board, `@mention` wakeup & automatic revival.** Briefs, replies, model switches, verifications, and nudges all land on `.tower/swarm/board.jsonl`. Idle workers rest in `waiting` at zero cost and wake on `@<name>` or `@all`; `stopped` workers automatically revive when mentioned.
+- **Dynamic spawning, sharding, history forking & helper-adds-helper.** No need to hardcode every worker in `tower.toml`: `tower swarm add` supports `--n N` homogeneous copies, `--tasks ...` sharded fan-out, `--fork <member>` to branch an existing conversation history, and `--by <worker>` so live workers can recruit and manage their own helpers.
+- **Workspace isolation + safe merge & cleanup.** Pick the right isolation per worker: `inherit` (shared repo for read-only reviewers/QA), `share` (`git worktree` working copy with safe directory-copy fallback for non-git repos so parallel coders never trample each other), or `branch` (isolated local clone). Land work with `merge`; `kill` retires a worker and cleans up its workspace while guarding against unmerged changes unless `--land` or `--force`.
+- **Per-worker multi-backend model routing & lossless switching.** Assign each worker to `mock`, `cli`, `openai`, or `dsh` (`--model adapter:model` or `--adapter`). When quota runs low or a task gets harder, `tower swarm model <name> <new_model> --reason "..."` switches models in place while keeping full conversation history and workspace state, then resumes work automatically.
+- **Control Tower `verify --land` gate & `monitor --nudge` watchdog.** `tower swarm verify <name> --land` verifies claimed files on disk and runs `verify_commands` inside the worker's workspace — landing changes only on PASS and bouncing real failure output back to `@<name>` on FAIL. `tower swarm monitor --nudge` catches stalled `working` workers and unanswered `@mentions`, nudging and resetting stuck states automatically.
+- **Offline real-time `/swarm` web panel.** `tower panel` now serves `/swarm` alongside `/` and `/scene` (vendored matte UI, zero CDN, light/dark toggle, loopback/same-origin write guard) with live 4-state worker lamps, workspace and unmerged-file badges, one-click spawn/model-switch/verify/merge/kill controls, and an interactive `@mention` composer.
+
+Quickstart (copy-pasteable):
+
+```bash
+# 1. Run the 1-second offline demo (no model, no network, no API key)
+tower swarm demo
+
+# 2. Spawn sharded workers with isolated git-worktree workspaces
+tower swarm add coder --brief "Implement module and unit tests" --tasks "auth" "billing" --workspace share --model openai:gpt-4.1-mini
+
+# 3. Fork an existing worker's memory for a read-only QA reviewer
+tower swarm add qa --brief "Review coder-1 changes" --fork coder-1 --workspace inherit
+
+# 4. Post to the shared board to wake @worker or @all
+tower swarm post "@coder-1 Add edge-case tests and re-run the suite"
+
+# 5. Switch model losslessly without dropping history or workspace
+tower swarm model coder-1 claude-sonnet-4 --reason "Need stronger reasoning for edge cases"
+
+# 6. Verify with the Control Tower gate and auto-land on PASS
+tower swarm verify coder-1 --land
+
+# 7. Open the offline real-time Swarm panel
+tower panel   # Visit http://127.0.0.1:8787/swarm
+```
+
+→ Full architecture, disk layout, and permission rules: **[docs/swarm.md](docs/swarm.md)**.
+
 ## What's new in 0.18
 
 - **Kickoff before the first dispatch.** `tower kickoff "<brief>" --role backend --role qa` writes a package with the plan, assignments, acceptance bar and merge order; with `[kickoff].require = true`, `dispatch` refuses to start until that package is complete.
@@ -220,7 +260,7 @@ pip install -e .
 
 Python 3.10+. One runtime dependency (`PyYAML`).
 
-Releases are tagged `v0.18.0` through `v0.18.5` on [GitHub Releases](https://github.com/evolution301/agent-control-tower/releases).
+Releases are tagged `v0.18.0`, `v0.18.5` through `v0.19.0` on [GitHub Releases](https://github.com/evolution301/agent-control-tower/releases).
 
 ## Panel: what needs me, and is this team working well
 
@@ -403,6 +443,7 @@ That is the difference between *"the agent said it works"* and *"the tower check
 | `tower review <task>` | run one adversarial review pass over a reported task |
 | `tower rework <task> --note "…"` | send back with reasons and re-dispatch |
 | `tower status [--json]` | task board |
+| `tower swarm <add\|post\|status\|board\|model\|verify\|merge\|kill\|monitor\|demo>` | **Hybrid Swarm mode**: shared board `@mention` wakeup, dynamic sharding, isolated workspaces, lossless model switching, and verified landing |
 | `tower show <task>` / `tower log` | inspect one task / tail the ledger |
 | `tower demo` | offline end-to-end demo |
 | `tower doctor` | validate config, adapter options, keys, sessions |
@@ -465,6 +506,7 @@ tower stops and tells you to escalate instead of looping.
 
 | Doc | What's inside |
 |---|---|
+| [Hybrid Swarm mode](docs/swarm.md) | shared board `@mention` wakeup, dynamic sharding, workspace isolation, lossless model switching & verify gate |
 | [DSH quickstart](docs/dsh-quickstart.md) | the primary setup, end to end, plus five failure modes it prevents |
 | [Architecture](docs/architecture.md) | components, state machine, why files instead of a queue |
 | [Adapters](docs/adapters.md) | mock / cli / dsh / openai, and how to add your own |

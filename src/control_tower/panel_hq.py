@@ -91,6 +91,7 @@ PAGE = r"""<!doctype html>
     <span class="grow"></span>
     <span class="kpis" id="kpis"></span>
     <span class="seg">
+      <a href="/swarm">蜂群</a>
       <a href="?lang=zh" data-lang="zh">中文</a>
       <a href="?lang=en" data-lang="en">EN</a>
       <button type="button" data-theme-choice="dark">暗</button>

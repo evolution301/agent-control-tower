@@ -65,9 +65,9 @@ class OpenAIAdapter:
         self.api_key = api_key or os.environ.get(api_key_env, "")
         self.max_steps = int(max_steps)
 
-    def _chat(self, messages: list[dict], timeout: float) -> dict:
+    def _chat(self, messages: list[dict], timeout: float, model: str | None = None) -> dict:
         body = json.dumps(
-            {"model": self.model, "messages": messages, "tools": TOOLS, "tool_choice": "auto"}
+            {"model": model or self.model, "messages": messages, "tools": TOOLS, "tool_choice": "auto"}
         ).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -88,15 +88,22 @@ class OpenAIAdapter:
 
         cwd = Path(req.cwd)
         cwd.mkdir(parents=True, exist_ok=True)
+        active_model = str((req.options or {}).get("model") or self.model)
         messages: list[dict] = [
             {"role": "system", "content": f"You are the {req.role} role." + SYSTEM_SUFFIX},
-            {"role": "user", "content": req.prompt},
         ]
+        # 蜂群模式：携带工蜂的历史对话记忆，实现无损换模型后接着往下干
+        for item in (req.options or {}).get("history") or []:
+            role = item.get("role")
+            content = item.get("content")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": str(content)})
+        messages.append({"role": "user", "content": req.prompt})
         transcript: list[str] = []
 
         for step in range(self.max_steps):
             try:
-                data = self._chat(messages, timeout=min(req.timeout_s, 180))
+                data = self._chat(messages, timeout=min(req.timeout_s, 180), model=active_model)
             except urllib.error.HTTPError as exc:
                 return AdapterResult(text=f"[openai] http {exc.code}: {exc.read()[:300]!r}", exit_code=3)
             except Exception as exc:

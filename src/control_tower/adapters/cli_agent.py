@@ -33,12 +33,14 @@ class CliAdapter:
         self.shell = shell
 
     def _argv(self, req: AdapterRequest, prompt_file: Path) -> list[str] | str:
+        model = str((req.options or {}).get("model") or "")
         fields = {
             "prompt": req.prompt,
             "prompt_file": str(prompt_file),
             "cwd": str(req.cwd),
             "role": req.role,
             "task_id": req.task_id,
+            "model": model,
         }
         if isinstance(self.command, str):
             expanded = self.command.format(**{k: shlex.quote(v) if k == "prompt" else v for k, v in fields.items()})
@@ -56,6 +58,8 @@ class CliAdapter:
         env["TOWER_ROLE"] = req.role
         env["TOWER_TASK_ID"] = req.task_id
         env["TOWER_PROMPT_FILE"] = str(prompt_file)
+        if (req.options or {}).get("model"):
+            env["TOWER_MODEL"] = str((req.options or {})["model"])
 
         argv = self._argv(req, prompt_file)
         try:

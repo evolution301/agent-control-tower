@@ -2873,6 +2873,10 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--dry-run", action="store_true")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=cmd_plugin_install)
+
+    from .swarm.cli_cmd import register_swarm_parser
+
+    register_swarm_parser(sub, _cfg)
     return p
 
 

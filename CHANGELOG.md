@@ -5,6 +5,46 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/): the Python package
 (`agent-control-tower`) and the DSH bundle (`dsh-tower`) share one version.
 
+## [0.19.0] - 2026-11-28
+
+### Added
+
+- **Hybrid Swarm + Control Tower mode (`src/control_tower/swarm/`)**: Combines an open shared-board swarm workflow with Control Tower's evidence-before-done verification gate (`docs/swarm.md`, `tests/test_swarm_mode.py`). All swarm state persists as plain, Git-friendly files under `.tower/swarm/` (`state.json`, `board.jsonl`, `workspaces/`), and key lifecycle events mirror into `.tower/ledger.jsonl`.
+- **Shared message board, `@mention`/`@all` wakeup & `stopped` revival (`tower swarm post`, `tower swarm board`)**: Public append-only board recording briefs, replies, model switches, verifications, and monitor nudges. Idle workers sleep in `waiting` at zero cost and wake on `@<name>` or `@all` (with bounded cascading hops via `--max-hops`); `stopped` workers automatically revive when mentioned.
+- **Dynamic worker spawning, sharding, memory forking & helper-adds-helper (`tower swarm add`, `tower swarm title`)**: Spawn workers on demand without editing `tower.toml`; fan out homogeneous copies with `--n <N>` (`<name>-1..N`) or shard a task list with `--tasks ...`; fork an existing member's (or `coordinator`'s) conversation history via `--fork <member>`; allow live workers to spawn and manage their own helpers via `--by <worker>` with strict ownership permissions.
+- **Workspace isolation + safe merge & cleanup (`inherit` / `share` / `branch`, `tower swarm merge`, `tower swarm kill`)**: `inherit` shares the main repo for read-only reviewers/QA; `share` gives parallel coders isolated `git worktree` working copies (falling back safely to directory copies in non-git workspaces); `branch` creates isolated local clones. `merge` lands changes back to the main workspace; `kill` permanently retires a worker (guarding unmerged work unless `--land` or `--force`) and cleans up its temporary workspace.
+- **Multi-backend per-worker model routing & lossless `model` switching (`tower swarm models`, `tower swarm model`)**: Route individual workers across `mock`, `cli`, `openai`, and `dsh` backends (`--model adapter:model` or `--adapter`); hot-switch any waiting worker's (or `coordinator`'s) model via `tower swarm model <name> <new_model> --reason "..."` while preserving its full conversation history and workspace, then auto-resume work.
+- **Control Tower `verify --land` gate & `monitor --nudge` watchdog (`tower swarm verify`, `tower swarm monitor`)**: `verify` checks claimed files on disk and runs `verify_commands` inside the worker's workspace, landing changes automatically with `--land` only on PASS and posting real failure output back to `@<name>` on FAIL (`--no-review` records an explicit QA waiver). `monitor` scans for stalled `working` workers (`--stale`), unanswered `@mentions`, and unverified deliverables, with `--nudge` to auto-remind and reset stalled workers.
+- **Offline `/swarm` real-time web panel (`src/control_tower/panel_swarm.py`)**: Integrated into `tower panel` alongside `/` and `/scene` using the vendored offline matte theme (zero CDN, light/dark toggle) and the same loopback/same-origin write guard — featuring live 4-state worker lamps (`working` / `waiting` / `stopped` / `killed`), workspace and unmerged-file badges, one-click spawn/model-switch/verify/merge/kill actions, and an interactive `@mention` board composer.
+- **Offline 1-second end-to-end demo (`tower swarm demo`)**: Runs a full deterministic swarm walkthrough (spawn, post, switch model, verify, and land) with zero API keys or network.
+
+### How to use / 快速上手
+
+```bash
+# 1. Run the 1-second offline demo / 离线 1 秒体验完整蜂群闭环（无需模型、无需网络）
+tower swarm demo
+
+# 2. Spawn workers with isolated git-worktree workspaces / 召唤分片工蜂（独立 git worktree 工位）
+tower swarm add coder --brief "Implement module and unit tests" --tasks "auth" "billing" --workspace share --model openai:gpt-4.1-mini
+
+# 3. Fork an existing worker's memory for a read-only reviewer / 克隆老工蜂记忆，零冲突复核
+tower swarm add qa --brief "Review coder-1 changes" --fork coder-1 --workspace inherit
+
+# 4. Post to the shared board to wake @worker or @all / 在共享消息板 @唤醒 指定工蜂或 @all
+tower swarm post "@coder-1 Tighten error handling and re-run tests"
+
+# 5. Losslessly switch model while keeping history & workspace / 无损换模型（保留完整记忆与工位）
+tower swarm model coder-1 claude-sonnet-4 --reason "Need stronger reasoning for edge cases"
+
+# 6. Run the Control Tower verify gate and auto-land on PASS / 走控制塔质检门，通过后自动合并回主分支
+tower swarm verify coder-1 --land
+
+# 7. Launch the offline real-time web panel / 启动离线实时网页看板
+tower panel   # Visit http://127.0.0.1:8787/swarm
+```
+
+See [docs/swarm.md](docs/swarm.md) for the full guide, disk layout, and permission rules.
+
 ## [0.18.6] - 2026-11-26
 
 ### Added
